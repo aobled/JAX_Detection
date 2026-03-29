@@ -20,6 +20,7 @@ from model_library import get_model
 from dataset_configs import get_dataset_config, print_config as print_dataset_config
 from trainer import Trainer
 from reporting import ModelReporter, DetectionReporter
+from task_strategies import ClassificationStrategy, DetectionStrategy
 
 
 # ======================
@@ -100,14 +101,27 @@ def main(dataset_name="FIGHTERJET_9CLASSES"):
     
     model = get_model(model_name, num_classes=num_classes, dropout_rate=dropout_rate)
     
-    # === 3. CRÉATION DU TRAINER ===
-    print(f"\n🎯 CRÉATION DU TRAINER")
+    # 4. INSTANCIATION DE LA STRATEGIE (Injection de dépendance)
+    task_type = config.get("task_type", "classification")
+    if task_type == "classification":
+        print("🎯 Application de la logique d'entraînement : CLASSIFICATION")
+        strategy = ClassificationStrategy(
+            num_classes=num_classes,
+            label_smoothing=config.get("label_smoothing", 0.0),
+            mixup_alpha=config.get("mixup_alpha", 0.0)
+        )
+    else:
+        print("🎯 Application de la logique d'entraînement : DETECTION")
+        strategy = DetectionStrategy()
+
+    # 5. INITIALISATION DU TRAINER
+    print("\n🎯 CRÉATION DU TRAINER")
     print("=" * 60)
-    
     trainer = Trainer(
         model=model,
         config=config,
         backend=backend,
+        strategy=strategy,
         dtype=dtype
     )
     

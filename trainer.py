@@ -36,7 +36,7 @@ class Trainer:
     - Gestion des checkpoints
     """
     
-    def __init__(self, model, config: dict, backend: str, dtype=jnp.float32):
+    def __init__(self, model, config: dict, backend: str, strategy, dtype=jnp.float32):
         """
         Initialise le trainer
         
@@ -44,11 +44,13 @@ class Trainer:
             model: Modèle JAX/Flax
             config: Configuration du dataset (depuis dataset_configs)
             backend: Backend JAX ('tpu' ou 'gpu')
+            strategy: Stratégie polymorphique d'exécution des pertes et métriques (TaskStrategy)
             dtype: Type de données (float16 ou float32)
         """
         self.model = model
         self.config = config
         self.backend = backend
+        self.strategy = strategy
         self.dtype = dtype
         
         # Extraire les paramètres backend-specific
@@ -60,13 +62,8 @@ class Trainer:
         
         # Paramètres d'entraînement
         self.epochs = config["epochs"]
-        self.patience = config["patience"]
-        self.num_classes = config["num_classes"]
+        # Suppression de task_type (désormais géré par strategy)
         self.model_name = config["model_name"]
-        
-        # Régularisation
-        self.label_smoothing = config.get("label_smoothing", 0.0)
-        self.mixup_alpha = config.get("mixup_alpha", 0.0)  # 🎨 Mixup (0 = désactivé)
         
         # Image configuration
         self.grayscale = config.get("grayscale", False)
@@ -148,71 +145,49 @@ class Trainer:
         print(f"   Paramètres totaux: {total_params:,}")
         print(f"   Taille: {model_size_mb:.1f} MB")
         
-        # Afficher les régularisations actives
-        if self.mixup_alpha > 0:
-            print(f"🎨 MIXUP ACTIVÉ (alpha={self.mixup_alpha})")
-        if self.label_smoothing > 0:
-            print(f"🎯 LABEL SMOOTHING ACTIVÉ (factor={self.label_smoothing})")
-        
         return state
     
     def _create_train_step(self):
-        """Crée la fonction de train step JIT"""
-        num_classes = self.num_classes
-        label_smoothing = self.label_smoothing
-        mixup_alpha = self.mixup_alpha
-        task_type = self.config.get("task_type", "classification")
+        """Crée la fonction de train step JIT avec délégation de stratégie."""
         
         @jax.jit
         def train_step(params, batch_stats, images, targets, rng):
-            # 🎨 Mixup si activé (appliqué AVANT le forward pass)
-            if task_type == "classification":
-                if mixup_alpha > 0:
-                    rng, mixup_rng = jax.random.split(rng)
-                    images, labels_target = mixup_batch(images, targets, mixup_alpha, num_classes, mixup_rng)
-                    # Mixup retourne déjà des labels one-hot mixés
-                    use_onehot_labels = True
-                elif label_smoothing > 0:
-                    # Label smoothing (si pas de mixup)
-                    labels_target = smooth_labels(targets, num_classes, label_smoothing)
-                    use_onehot_labels = True
-                else:
-                    # Labels entiers classiques
-                    labels_target = targets
-                    use_onehot_labels = False
+            # Délégation complète du prétraitement (Mixup, Cast, Label Smoothing)
+            rng, mix_rng, drop_rng = jax.random.split(rng, 3)
+            images, targets, use_onehot_labels = self.strategy.preprocess_batch(
+                images, targets, is_training=True, rng=mix_rng
+            )
             
             def loss_fn(params):
                 vars = {'params': params, 'batch_stats': batch_stats}
                 outputs, new_batch_stats = self.state.apply_fn(
                     vars, images, training=True,
-                    rngs={'dropout': rng},
+                    rngs={'dropout': drop_rng},
                     mutable=['batch_stats']
                 )
                 
-                if task_type == "classification":
-                    # Cross-entropy adapté au type de labels
-                    if use_onehot_labels:
-                        loss = optax.softmax_cross_entropy(outputs, labels_target).mean()
-                    else:
-                        loss = optax.softmax_cross_entropy_with_integer_labels(outputs, labels_target).mean()
-                else:
-                    # Detection loss
-                    loss = compute_grid_loss(outputs, targets)
-                
+                # Délégation du calcul de la perte
+                loss = self.strategy.compute_loss(outputs, targets, use_onehot_labels=use_onehot_labels)
                 return loss, (outputs, new_batch_stats)
             
             (loss, (outputs, new_batch_stats)), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
             
-            return loss, grads, outputs, new_batch_stats
+            # Délégation du calcul interne de l'Accuracy
+            acc = self.strategy.compute_metrics(outputs, targets)
+            
+            return loss, grads, acc, new_batch_stats
         
         return train_step
     
     def _create_eval_step(self):
-        """Crée la fonction d'évaluation JIT"""
-        task_type = self.config.get("task_type", "classification")
+        """Crée la fonction d'évaluation JIT avec délégation de stratégie."""
 
         @jax.jit
         def eval_step(state, images, targets, rng):
+            images, targets, _ = self.strategy.preprocess_batch(
+                images, targets, is_training=False
+            )
+            
             vars = {"params": state.params}
             if state.batch_stats is not None and state.batch_stats != {}:
                 vars["batch_stats"] = state.batch_stats
@@ -220,12 +195,8 @@ class Trainer:
             rngs = {"dropout": rng}
             outputs, _ = state.apply_fn(vars, images, training=False, mutable=["batch_stats"], rngs=rngs)
             
-            if task_type == "classification":
-                loss = optax.softmax_cross_entropy_with_integer_labels(outputs, targets).mean()
-                score = jnp.mean(jnp.argmax(outputs, axis=-1) == targets)
-            else:
-                loss = compute_grid_loss(outputs, targets)
-                score = -loss  # Score inverse pour garder la même logique de maximisation
+            loss = self.strategy.compute_loss(outputs, targets, use_onehot_labels=False)
+            score = self.strategy.compute_metrics(outputs, targets)
                 
             return loss, score
         
@@ -262,12 +233,8 @@ class Trainer:
         
         for batch in batch_iterator:
             images_np, labels_np = batch
-            task_type = self.config.get("task_type", "classification")
             images = jnp.array(images_np, dtype=self.dtype)
-            if task_type == "classification":
-                labels = jnp.array(labels_np, dtype=jnp.int32)
-            else:
-                labels = jnp.array(labels_np, dtype=jnp.float32)
+            labels = jnp.array(labels_np) # dtype handles by strategy
             
             # Monitoring agressif de la RAM dans la boucle
             if PSUTIL_AVAILABLE and micro_count == 0 and nb_updates % 50 == 0:
@@ -279,8 +246,8 @@ class Trainer:
             # Split RNG
             rng, step_rng = jax.random.split(rng)
             
-            # Train step
-            loss, grads, outputs, new_batch_stats = self._train_step(
+            # Train step: Acc délégué depuis l'intérieur du JAX JIT
+            loss, grads, step_acc, new_batch_stats = self._train_step(
                 self.state.params, self.state.batch_stats, images, labels, step_rng
             )
             
@@ -303,13 +270,9 @@ class Trainer:
                         lambda a, b: a + b, batch_stats_accum, new_bs
                     )
             
-            task_type = self.config.get("task_type", "classification")
             # Métriques
             total_loss += float(loss)
-            if task_type == "classification":
-                total_acc += float((jnp.argmax(outputs, -1) == labels).mean())
-            else:
-                total_acc += float(-loss)
+            total_acc += float(step_acc)
             micro_count += 1
             
             # Appliquer quand on atteint accum_steps
@@ -379,12 +342,8 @@ class Trainer:
         
         for batch in batch_iterator:
             images_np, labels_np = batch
-            task_type = self.config.get("task_type", "classification")
             images = jnp.array(images_np, dtype=self.dtype)
-            if task_type == "classification":
-                labels = jnp.array(labels_np, dtype=jnp.int32)
-            else:
-                labels = jnp.array(labels_np, dtype=jnp.float32)
+            labels = jnp.array(labels_np) # Preprocessed by strategy
             
             # Évaluation
             loss, acc = self._eval_step(self.state, images, labels, eval_rng)
@@ -528,7 +487,7 @@ class Trainer:
                 # Sauvegarder le checkpoint Orbax
                 self.checkpoint_manager.save(
                     self.state, self.best_val_acc, self.patience_counter,
-                    epoch, rng, self.model_name, self.num_classes
+                    epoch, rng, self.model_name, self.config["num_classes"]
                 )
                 
                 # --- EXPORT PKL ---
@@ -562,7 +521,7 @@ class Trainer:
                     print(f"   [⚠️] Erreur d'export PKL: {e}")
             else:
                 self.patience_counter += 1
-                if self.patience_counter >= self.patience:
+                if self.patience_counter >= self.config.get("patience", 10):
                     print(f"Early stopping at epoch {epoch+1}")
                     break
         
