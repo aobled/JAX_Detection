@@ -1,0 +1,13 @@
+/data
+/checkpoints
+/detection_predictions
+/errors
+/__pycache__
+/tools/__pycache__
+/sauv
+/test
+.pth
+.npz
+.pkl
+.zip
+

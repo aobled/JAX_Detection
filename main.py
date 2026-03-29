@@ -1,0 +1,199 @@
+"""
+Version POO de l'entraînement
+Architecture orientée objet pour meilleure organisation et maintenance
+"""
+
+import os
+# Supprimé: Ne pas désactiver la pré-allocation XLA sur TPU, cela cause une fragmentation mémoire (Crashes silencieux)
+# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+# os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+import jax
+import jax.numpy as jnp
+import gc
+import psutil
+from tqdm import tqdm
+
+# Import des modules
+from model_library import get_model
+from dataset_configs import get_dataset_config, print_config as print_dataset_config
+from trainer import Trainer
+from reporting import ModelReporter, DetectionReporter
+
+
+# ======================
+# Hardware init
+# ======================
+backend = jax.default_backend()
+if backend == "tpu":
+    print("🚀 TPU détecté - Optimisations activées")
+    jax.config.update("jax_enable_x64", False)
+    dtype = jnp.float16
+    print("📊 TPU: Utilisation de float16")
+else:
+    print("🖥️  GPU détecté")
+    jax.config.update("jax_platform_name", "gpu")
+    dtype = jnp.float16
+    print("📊 GPU: Utilisation de float16")
+
+print("Backend JAX:", backend)
+print("Devices:", jax.devices())
+device = jax.devices()[0]
+print("Using device:", device)
+
+
+# ======================
+# Fonction principale
+# ======================
+
+def main(dataset_name="FIGHTERJET_9CLASSES"):
+    """
+    Fonction principale d'entraînement - Version POO
+    
+    Args:
+        dataset_name: Nom du dataset à utiliser (défini dans dataset_configs.py)
+    """
+    # 🔧 CHARGER LA CONFIGURATION DU DATASET
+    print(f"\n📊 Chargement de la configuration: {dataset_name}")
+    config = get_dataset_config(dataset_name)
+    print_dataset_config(dataset_name)
+    
+    # Extraire les paramètres essentiels
+    num_classes = config["num_classes"]
+    class_names = config["class_names"]
+    
+    # === 1. GESTION DES DONNÉES ===
+    print(f"\n📁 GESTION DES DONNÉES")
+    print("=" * 60)
+    
+    from data_management import get_datasets
+    
+    # Obtenir les paramètres backend-specific
+    backend_config = config[backend]
+    micro_batch_size = backend_config["micro_batch_size"]
+    
+    # === CRÉATION DU PIPELINE UNIFIÉ ===
+    train_ds, val_ds = get_datasets(config, backend_config)
+    
+    # Vérification des datasets
+    print("\n🔍 Vérification des datasets...")
+    sample_train = next(iter(train_ds.as_numpy_iterator()))
+    if val_ds:
+        sample_val = next(iter(val_ds.as_numpy_iterator()))
+        print(f"📊 Train: shape={sample_train[0].shape}, targets={sample_train[1].shape}")
+        print(f"📊 Val: shape={sample_val[0].shape}, targets={sample_val[1].shape}")
+    
+    train_dataset_final = train_ds
+    val_dataset_final = val_ds
+    
+    # === 2. CRÉATION DU MODÈLE ===
+    print(f"\n🏗️  CRÉATION DU MODÈLE")
+    print("=" * 60)
+    
+    model_name = config["model_name"]
+    dropout_rate = backend_config["dropout_rate"]
+    
+    print(f"Modèle: {model_name}")
+    print(f"Classes: {num_classes}")
+    print(f"Dropout: {dropout_rate}")
+    
+    model = get_model(model_name, num_classes=num_classes, dropout_rate=dropout_rate)
+    
+    # === 3. CRÉATION DU TRAINER ===
+    print(f"\n🎯 CRÉATION DU TRAINER")
+    print("=" * 60)
+    
+    trainer = Trainer(
+        model=model,
+        config=config,
+        backend=backend,
+        dtype=dtype
+    )
+    
+    # === 4. ENTRAÎNEMENT ===
+    print(f"\n🚀 LANCEMENT DE L'ENTRAÎNEMENT")
+    print("=" * 60)
+    
+    rng = jax.random.PRNGKey(42)
+    
+    # Monitoring RAM avant entraînement
+    memory = psutil.virtual_memory()
+    print(f"💾 RAM avant entraînement: {memory.percent:.1f}%")
+    
+    final_state, best_val_acc = trainer.train(
+        train_dataset=train_dataset_final,
+        val_dataset=val_dataset_final,
+        rng=rng,
+        resume_from_checkpoint=True
+    )
+    
+    # Garbage collection si RAM élevée
+    memory = psutil.virtual_memory()
+    if memory.percent > 85:
+        print("🧹 RAM élevée, garbage collection...")
+        gc.collect()
+        memory = psutil.virtual_memory()
+        print(f"💾 RAM après GC: {memory.percent:.1f}%")
+    
+    # === 5. GÉNÉRATION DES MÉTRIQUES (Confusion/Detection) ===
+    print(f"\n📊 GÉNÉRATION DES MÉTRIQUES")
+    print("=" * 60)
+    
+    task_type = config.get("task_type", "classification")
+    if task_type == "classification":
+        reporter = ModelReporter(class_names=class_names)
+        try:
+            reporter.confusion_matrix_from_pkl(
+                dataset=val_ds,
+                pkl_path=config["checkpoint_path"],
+                confusion_matrix_png_path=config["confusion_matrix_path"],
+                use_subset=config.get("eval_use_subset", False),
+                batch_size=config["eval_batch_size"],
+                max_subset=config.get("eval_max_subset", 1000)
+            )
+            print("✅ Matrice de confusion générée avec succès!")
+        except Exception as e:
+            print(f"❌ Erreur metrics: {e}")
+    else:
+        # Visualisation finale pour la détection
+        reporter = DetectionReporter(
+            image_size=config["image_size"],
+            grid_size=config.get("grid_size", 7)
+        )
+        try:
+            for vis_imgs, vis_boxes in val_ds.take(1).as_numpy_iterator():
+                import numpy as np
+                vars = {'params': final_state.params, 'batch_stats': final_state.batch_stats}
+                pred_grid = final_state.apply_fn(vars, vis_imgs, training=False)
+                reporter.visualize_batch(
+                    images=np.array(vis_imgs),
+                    predictions=np.array(pred_grid),
+                    targets=np.array(vis_boxes),
+                    save_path=f"final_detection_vis.png",
+                    conf_threshold=0.5
+                )
+                break
+            print("✅ Visualisation finale générée!")
+        except Exception as e:
+            print(f"❌ Erreur metrics: {e}")
+    
+    print(f"\n🏁 Programme terminé")
+    print(f"   Meilleur score validation (Accuracy ou Loss Inverse): {best_val_acc:.4f}")
+
+
+if __name__ == "__main__":
+    import sys
+    
+    # Permettre de spécifier le dataset en ligne de commande
+    # Usage: python main_poo.py [DATASET_NAME]
+    # Exemple: python main_poo.py FIGHTERJET_9CLASSES
+    if len(sys.argv) > 1:
+        dataset_name = sys.argv[1]
+        print(f"🎯 Dataset spécifié: {dataset_name}")
+    else:
+        dataset_name = "FIGHTERJET_CLASSES"  # Défaut
+        print(f"🎯 Dataset par défaut: {dataset_name}")
+    
+    main(dataset_name)
+
