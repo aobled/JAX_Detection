@@ -91,8 +91,11 @@ class Trainer:
         self.class_names = config.get("class_names", [])
         
         # Checkpoint manager
-        self.checkpoint_manager = CheckpointManager(config["checkpoint_path"])
-        
+        from checkpoint_manager import CheckpointManager
+        ckpt_path = config.get("checkpoint_path", "best_model.pkl")
+        if ckpt_path.endswith(".pkl"):
+            ckpt_path = ckpt_path.replace(".pkl", "_training_state.pkl")
+        self.checkpoint_manager = CheckpointManager(ckpt_path)        
         # Fonctions JIT
         self._train_step = None
         self._eval_step = None
