@@ -51,8 +51,14 @@ class Reporter:
             model_data = pickle.load(f)
         
         # Extraire les données du modèle (structure de main.py)
-        if 'model_state' in model_data:
-            # Structure de main.py
+        if 'config' in model_data:
+            # Nouvelle structure unifiée JAX_Detection
+            params = model_data['params']
+            batch_stats = model_data.get('batch_stats', {})
+            model_name = model_data['config'].get('model_name', 'sophisticated_cnn')
+            num_classes = model_data['config'].get('num_classes', len(self.class_names))
+        elif 'model_state' in model_data:
+            # Ancienne Structure de main.py
             model_state = model_data['model_state']
             params = model_state['params']
             batch_stats = model_state.get('batch_stats', {})
@@ -67,7 +73,7 @@ class Reporter:
                 model_name = model_data.get('model_name', 'sophisticated_cnn')
                 num_classes = model_data.get('num_classes', 2)
         else:
-            # Structure alternative (ancienne)
+            # Structure alternative (très ancienne)
             params = model_data['params']
             batch_stats = model_data.get('batch_stats', {})
             model_name = model_data.get('model_name', 'sophisticated_cnn')

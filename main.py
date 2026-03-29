@@ -19,7 +19,6 @@ from tqdm import tqdm
 from model_library import get_model
 from dataset_configs import get_dataset_config, print_config as print_dataset_config
 from trainer import Trainer
-from reporting import ModelReporter, DetectionReporter
 from task_strategies import ClassificationStrategy, DetectionStrategy
 
 
@@ -151,46 +150,10 @@ def main(dataset_name="FIGHTERJET_9CLASSES"):
         print(f"💾 RAM après GC: {memory.percent:.1f}%")
     
     # === 5. GÉNÉRATION DES MÉTRIQUES (Confusion/Detection) ===
-    print(f"\n📊 GÉNÉRATION DES MÉTRIQUES")
+    print(f"\n📊 GÉNÉRATION DES MÉTRIQUES DÉLÉGUÉE À LA STRATÉGIE")
     print("=" * 60)
     
-    task_type = config.get("task_type", "classification")
-    if task_type == "classification":
-        reporter = ModelReporter(class_names=class_names)
-        try:
-            reporter.confusion_matrix_from_pkl(
-                dataset=val_ds,
-                pkl_path=config["checkpoint_path"],
-                confusion_matrix_png_path=config["confusion_matrix_path"],
-                use_subset=config.get("eval_use_subset", False),
-                batch_size=config["eval_batch_size"],
-                max_subset=config.get("eval_max_subset", 1000)
-            )
-            print("✅ Matrice de confusion générée avec succès!")
-        except Exception as e:
-            print(f"❌ Erreur metrics: {e}")
-    else:
-        # Visualisation finale pour la détection
-        reporter = DetectionReporter(
-            image_size=config["image_size"],
-            grid_size=config.get("grid_size", 7)
-        )
-        try:
-            for vis_imgs, vis_boxes in val_ds.take(1).as_numpy_iterator():
-                import numpy as np
-                vars = {'params': final_state.params, 'batch_stats': final_state.batch_stats}
-                pred_grid = final_state.apply_fn(vars, vis_imgs, training=False)
-                reporter.visualize_batch(
-                    images=np.array(vis_imgs),
-                    predictions=np.array(pred_grid),
-                    targets=np.array(vis_boxes),
-                    save_path=f"final_detection_vis.png",
-                    conf_threshold=0.5
-                )
-                break
-            print("✅ Visualisation finale générée!")
-        except Exception as e:
-            print(f"❌ Erreur metrics: {e}")
+    strategy.generate_reports(val_ds, final_state, model, config)
     
     print(f"\n🏁 Programme terminé")
     print(f"   Meilleur score validation (Accuracy ou Loss Inverse): {best_val_acc:.4f}")

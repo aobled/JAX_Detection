@@ -20,6 +20,11 @@ class TaskStrategy(ABC):
     def compute_metrics(self, outputs, targets):
         """Calcule la ou les métriques d'évaluation."""
         pass
+        
+    @abstractmethod
+    def generate_reports(self, val_ds, final_state, model, config):
+        """Génère les rapports post-entraînement (Matrice de confusion, Visualisation Boxes...)."""
+        pass
 
 class ClassificationStrategy(TaskStrategy):
     def __init__(self, num_classes: int, label_smoothing: float = 0.0, mixup_alpha: float = 0.0):
@@ -59,6 +64,27 @@ class ClassificationStrategy(TaskStrategy):
         else:
             true_classes = targets
         return (jnp.argmax(outputs, axis=-1) == true_classes).mean()
+        
+    def generate_reports(self, val_ds, final_state, model, config):
+        from reporting import Reporter as ModelReporter # Utilise la classe Reporter
+        reporter = ModelReporter(class_names=config["class_names"])
+        try:
+            # Déterminer le bon fichier PKL engendré par le Trainer
+            pkl_path = config.get("checkpoint_path", "best_model.pkl")
+            if "checkpoints" in pkl_path and not pkl_path.endswith('.pkl'):
+                pkl_path = "best_model_classification.pkl"
+                
+            reporter.confusion_matrix_from_pkl(
+                dataset=val_ds,
+                pkl_path=pkl_path,
+                confusion_matrix_png_path=config.get("confusion_matrix_path", "confusion_matrix.png"),
+                use_subset=config.get("eval_use_subset", False),
+                batch_size=config.get("eval_batch_size", 32),
+                max_subset=config.get("eval_max_subset", 1000)
+            )
+            print(f"✅ Matrice de confusion générée avec succès depuis l'export pur (pkl) !")
+        except Exception as e:
+            print(f"❌ Erreur metrics: {e}")
 
 
 class DetectionStrategy(TaskStrategy):
@@ -73,3 +99,26 @@ class DetectionStrategy(TaskStrategy):
         # En détection, pour le système de Checkpoint qui "maximise", 
         # on retourne l'inverse mathématique de la Loss
         return -compute_grid_loss(outputs, targets)
+        
+    def generate_reports(self, val_ds, final_state, model, config):
+        from reporting import DetectionReporter
+        import numpy as np
+        reporter = DetectionReporter(
+            image_size=config["image_size"],
+            grid_size=config.get("grid_size", 7)
+        )
+        try:
+            for vis_imgs, vis_boxes in val_ds.take(1).as_numpy_iterator():
+                vars = {'params': final_state.params, 'batch_stats': final_state.batch_stats}
+                pred_grid = final_state.apply_fn(vars, vis_imgs, training=False)
+                reporter.visualize_batch(
+                    images=np.array(vis_imgs),
+                    predictions=np.array(pred_grid),
+                    targets=np.array(vis_boxes),
+                    save_path="final_detection_vis.png",
+                    conf_threshold=0.5
+                )
+                break
+            print("✅ Visualisation de détection finale générée avec succès!")
+        except Exception as e:
+            print(f"❌ Erreur lors de la visualisation: {e}")
