@@ -118,7 +118,7 @@ def reporting_single_boxes_target_class_size(df, target_class, target_size):
     
     # 3. Exporter le résultat
     print(single_box_target[COLUMNS])
-    single_box_target[COLUMNS].to_csv("tmp_count1.csv", index=False)
+    single_box_target[COLUMNS].to_csv("search_single_class_"+target_class+".csv", index=False)
 
 
 #  specific classe images with size > 16px
@@ -209,5 +209,5 @@ reporting_groupby_class_and_split(df)
 #reporting_boxes_on_wrong_directory(df)
 #reporting_single_boxes_target_class_size(df, target_class='a10', target_size=2)
 #reporting_single_classe_images(df, target_class='b52', min_size=16)
-#reporting_all_images_in_class_list(df, class_list=['mig23'])
+#reporting_all_images_in_class_list(df, class_list=['unknown'])
 #reporting_small_boxes(df, min_size=16)

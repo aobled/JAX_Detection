@@ -161,9 +161,9 @@ def process_dataset_stretched(
             json_files = glob.glob(json_pattern)
 
             # 🔥 NOUVEAU: Vérifier les superpositions AVANT de traiter les boxes
-            if has_overlapping_boxes(json_files, overlap_threshold):
-                print(f"[⚠️] Image ignorée (superpositions): {os.path.basename(image_path)}")
-                continue
+            #if has_overlapping_boxes(json_files, overlap_threshold):
+            #    print(f"[⚠️] Image ignorée (superpositions): {os.path.basename(image_path)}")
+            #    continue
 
             for json_file in json_files:
                 with open(json_file, "r") as f:

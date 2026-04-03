@@ -25,12 +25,67 @@ class TaskStrategy(ABC):
     def generate_reports(self, val_ds, final_state, model, config):
         """Génère les rapports post-entraînement (Matrice de confusion, Visualisation Boxes...)."""
         pass
+        
+    @property
+    @abstractmethod
+    def primary_metric_name(self) -> str:
+        """Nom textuel de la métrique principale (ex: 'Accuracy', 'Score')."""
+        pass
+        
+    def export_model(self, state, config):
+        """Exporte le modèle (params et batch_stats) au format .pkl."""
+        try:
+            import pickle
+            import jax
+            
+            pkl_path = self._get_export_path(config)
+            
+            # Convertir les tenseurs XLA/TPU en Numpy natif CPU pour éviter tous les problèmes de portabilité
+            params_cpu = jax.device_get(state.params)
+            batch_stats_cpu = jax.device_get(state.batch_stats) if state.batch_stats is not None else {}
+            
+            model_dict = {
+                'params': params_cpu,
+                'batch_stats': batch_stats_cpu,
+                'config': config 
+            }
+            with open(pkl_path, 'wb') as f:
+                pickle.dump(model_dict, f)
+            print(f"   [💾] Export pur PKL généré: {pkl_path}")
+            
+            # Libérer la mémoire des copies numpy
+            del params_cpu, batch_stats_cpu
+        except Exception as e:
+            print(f"   [⚠️] Erreur d'export PKL: {e}")
+            
+    @abstractmethod
+    def _get_export_path(self, config) -> str:
+        """Retourne le chemin cible pour l'export .pkl."""
+        pass
+        
+    @abstractmethod
+    def get_training_state_path(self, config) -> str:
+        """Retourne le chemin pour la sauvegarde de l'état d'entraînement complet (.pkl lourd)."""
+        pass
 
 class ClassificationStrategy(TaskStrategy):
     def __init__(self, num_classes: int, label_smoothing: float = 0.0, mixup_alpha: float = 0.0):
         self.num_classes = num_classes
         self.label_smoothing = label_smoothing
         self.mixup_alpha = mixup_alpha
+
+    @property
+    def primary_metric_name(self) -> str:
+        return "Accuracy"
+        
+    def _get_export_path(self, config) -> str:
+        pkl_path = config.get("checkpoint_path", "best_model.pkl")
+        if "checkpoints" in pkl_path and not pkl_path.endswith('.pkl'):
+            pkl_path = "best_model_classification.pkl"
+        return pkl_path
+
+    def get_training_state_path(self, config) -> str:
+        return "best_model_training_state_classification.pkl"
 
     def preprocess_batch(self, images, targets, is_training, rng=None):
         targets = jnp.array(targets, dtype=jnp.int32)
@@ -88,6 +143,16 @@ class ClassificationStrategy(TaskStrategy):
 
 
 class DetectionStrategy(TaskStrategy):
+    @property
+    def primary_metric_name(self) -> str:
+        return "Score (-Loss)"
+        
+    def _get_export_path(self, config) -> str:
+        return "best_model_detection.pkl"
+
+    def get_training_state_path(self, config) -> str:
+        return "best_model_training_state_detection.pkl"
+
     def preprocess_batch(self, images, targets, is_training, rng=None):
         targets = jnp.array(targets, dtype=jnp.float32)
         return images, targets, False

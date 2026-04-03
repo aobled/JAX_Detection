@@ -20,7 +20,7 @@ except ImportError:
 from model_library import TrainStateWithBatchStats
 from checkpoint_manager import CheckpointManager
 from utils import smooth_labels, mixup_batch, tree_add, tree_div, batch_stats_div, count_parameters, get_model_size_mb
-from reporting import TrainingVisualizer, ViTAttentionVisualizer
+from reporting import TrainingVisualizer
 from loss_functions import compute_grid_loss
 
 
@@ -86,15 +86,11 @@ class Trainer:
             'learning_rate': []
         }
         
-        # Batch test fixe pour visualisation attention (si ViT)
-        self.test_batch_for_viz = None
         self.class_names = config.get("class_names", [])
         
         # Checkpoint manager
         from checkpoint_manager import CheckpointManager
-        ckpt_path = config.get("checkpoint_path", "best_model.pkl")
-        if ckpt_path.endswith(".pkl"):
-            ckpt_path = ckpt_path.replace(".pkl", "_training_state.pkl")
+        ckpt_path = self.strategy.get_training_state_path(self.config)
         self.checkpoint_manager = CheckpointManager(ckpt_path)        
         # Fonctions JIT
         self._train_step = None
@@ -405,11 +401,11 @@ class Trainer:
             train_loss, train_acc, rng = self.train_epoch(train_dataset, rng)
             train_time = time.time() - start_time
             
-            print(f"Train | Loss={train_loss:.4f} | Acc={train_acc:.4f} | Time={train_time:.1f}s")
+            print(f"Train | Loss={train_loss:.4f} | {self.strategy.primary_metric_name}={train_acc:.4f} | Time={train_time:.1f}s")
             
             # Évaluation
             val_loss, val_acc = self.evaluate(val_dataset)
-            print(f"Val   | Loss={val_loss:.4f} | Acc={val_acc:.4f}")
+            print(f"Val   | Loss={val_loss:.4f} | {self.strategy.primary_metric_name}={val_acc:.4f}")
             
             # Extraire le learning rate actuel depuis le schedule
             current_step = int(self.state.step)
@@ -431,44 +427,7 @@ class Trainer:
             )
             visualizer.plot_training_curves(epoch_start=0, save_path=f"{self.model_name}.png")
             
-            # Visualisation attention maps (tous les 5 epochs pour ViT)
-            is_vit = 'vit' in self.model_name.lower()
-            if is_vit and (epoch % 5 == 0 or epoch == self.epochs - 1):
-                # Stocker un batch test fixe au premier epoch
-                if self.test_batch_for_viz is None:
-                    try:
-                        if isinstance(val_dataset, list):
-                            # Dataset en cache
-                            if len(val_dataset) > 0:
-                                self.test_batch_for_viz = val_dataset[0]  # Premier batch
-                        else:
-                            # TensorFlow Dataset
-                            for batch in val_dataset.take(1).as_numpy_iterator():
-                                self.test_batch_for_viz = batch
-                                break
-                    except:
-                        pass
-                
-                if self.test_batch_for_viz is not None:
-                    try:
-                        test_images, test_labels = self.test_batch_for_viz
-                        test_images = jnp.array(test_images[:4], dtype=self.dtype)  # 4 images
-                        test_labels = jnp.array(test_labels[:4], dtype=jnp.int32)
-                        
-                        attention_viz = ViTAttentionVisualizer(
-                            state=self.state,
-                            model=self.model,
-                            class_names=self.class_names
-                        )
-                        attention_viz.visualize_attention(
-                            test_images=test_images,
-                            test_labels=test_labels,
-                            epoch=epoch + 1,
-                            save_path=f"attention_epoch_{epoch+1:03d}.png",
-                            num_samples=8
-                        )
-                    except Exception as e:
-                        print(f"⚠️ Attention visualization skipped: {e}")
+
             
             # Garbage collection agressif en fin d'epoch
             if PSUTIL_AVAILABLE:
@@ -494,34 +453,7 @@ class Trainer:
                 )
                 
                 # --- EXPORT PKL ---
-                task_type = self.config.get("task_type", "classification")
-                if task_type == "classification":
-                    pkl_path = self.config.get("checkpoint_path", "best_model.pkl")
-                    if "checkpoints" in pkl_path and not pkl_path.endswith('.pkl'):
-                        pkl_path = "best_model_classification.pkl"
-                else:
-                    pkl_path = "best_model_detection.pkl"  # Attendu par le script d'inférence
-                
-                try:
-                    import pickle
-                    
-                    # Convertir les tenseurs XLA/TPU en Numpy natif CPU pour éviter tous les problèmes de portabilité
-                    params_cpu = jax.device_get(self.state.params)
-                    batch_stats_cpu = jax.device_get(self.state.batch_stats) if self.state.batch_stats is not None else {}
-                    
-                    model_dict = {
-                        'params': params_cpu,
-                        'batch_stats': batch_stats_cpu,
-                        'config': self.config 
-                    }
-                    with open(pkl_path, 'wb') as f:
-                        pickle.dump(model_dict, f)
-                    print(f"   [💾] Export pur PKL généré: {pkl_path} (12 Mo)")
-                    
-                    # Libérer la mémoire des copies numpy
-                    del params_cpu, batch_stats_cpu
-                except Exception as e:
-                    print(f"   [⚠️] Erreur d'export PKL: {e}")
+                self.strategy.export_model(self.state, self.config)
             else:
                 self.patience_counter += 1
                 if self.patience_counter >= self.config.get("patience", 10):
@@ -529,7 +461,7 @@ class Trainer:
                     break
         
         print(f"\n🎯 ENTRAÎNEMENT TERMINÉ")
-        print(f"   Meilleure accuracy validation: {self.best_val_acc:.4f}")
+        print(f"   Meilleur {self.strategy.primary_metric_name} validation: {self.best_val_acc:.4f}")
         
         return self.state, self.best_val_acc
     
