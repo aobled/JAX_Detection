@@ -272,8 +272,8 @@ DATASET_CONFIGS = {
         "grayscale": True,
         
         # === Modèle ---
-        "model_name": "aircraft_detector_v3",
-        "grid_size": 7,      # 224 / 32 = 7
+        "model_name": "aircraft_detector_v5_highres",
+        "grid_size": 14,      # 224 / 16 = 14
         
         # === Hyperparamètres TPU ===
         "tpu": {

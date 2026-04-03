@@ -1678,6 +1678,76 @@ def create_aircraft_detector_v4(dropout_rate=0.2, **kwargs):
     """Factory for V4"""
     return AircraftDetectorV4(dropout_rate=dropout_rate)
 
+
+class AircraftDetectorV5_HighRes(nn.Module):
+    """
+    Détecteur d'avions V5 "High-Res Grid" (14x14)
+    Identique à V3 mais maintient la résolution à 14x14 pour éviter les
+    collisions spatiales (plusieurs avions dans la même cellule).
+    """
+    dropout_rate: float = 0.2
+
+    @nn.compact
+    def __call__(self, x, training=True):
+        # --- STAGE 0: STEM ---
+        x = nn.Conv(64, (3, 3), strides=(2, 2), padding="SAME", use_bias=False)(x)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x)
+        
+        # --- STAGE 1: 64 filters ---
+        x = SeparableConv(64, (3, 3), strides=(2, 2))(x, training)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x)
+        
+        x = ResidualBlockSeparable(64, dropout_rate=self.dropout_rate)(x, training)
+        x = ResidualBlockSeparable(64, dropout_rate=self.dropout_rate)(x, training)
+        
+        # --- STAGE 2: 128 filters ---
+        x = ResidualBlockSeparable(128, stride=2, dropout_rate=self.dropout_rate)(x, training)
+        x = ResidualBlockSeparable(128, dropout_rate=self.dropout_rate)(x, training)
+        x = CBAMBlock()(x, training)
+        
+        # --- STAGE 3: 256 filters ---
+        x = ResidualBlockSeparable(256, stride=2, dropout_rate=self.dropout_rate)(x, training)
+        x = ResidualBlockSeparable(256, dropout_rate=self.dropout_rate)(x, training)
+        feat_p3 = x 
+        
+        # --- STAGE 4: 512 filters ---
+        x = ResidualBlockSeparable(512, stride=2, dropout_rate=self.dropout_rate)(x, training)
+        x = ResidualBlockSeparable(512, dropout_rate=self.dropout_rate)(x, training)
+        x = CBAMBlock()(x, training)
+        feat_p4 = x
+        
+        # --- FPN: FEATURE FUSION ---
+        p4_up = nn.Conv(256, (1, 1))(feat_p4) 
+        p4_up = nn.BatchNorm(use_running_average=not training)(p4_up)
+        p4_up = nn.silu(p4_up)
+        
+        target_h, target_w = feat_p3.shape[1], feat_p3.shape[2]
+        p4_up = jax.image.resize(p4_up, shape=(p4_up.shape[0], target_h, target_w, p4_up.shape[3]), method='bilinear')
+        
+        fusion_28 = jnp.concatenate([feat_p3, p4_up], axis=-1)
+        
+        fusion_28 = SeparableConv(256, (3, 3))(fusion_28, training)
+        fusion_28 = nn.BatchNorm(use_running_average=not training)(fusion_28)
+        fusion_28 = nn.silu(fusion_28)
+        
+        # CHANGEMENT MAJEUR : Pas de stride=(2, 2)
+        final_grid = nn.Conv(512, (3, 3), padding="SAME")(fusion_28)
+        final_grid = nn.BatchNorm(use_running_average=not training)(final_grid)
+        final_grid = nn.silu(final_grid)
+        
+        # --- DETECTION HEAD (14x14) ---
+        out = nn.Conv(5, (1, 1), padding="SAME")(final_grid)
+        out = nn.sigmoid(out)
+        
+        return out
+
+
+def create_aircraft_detector_v5_highres(dropout_rate=0.2, **kwargs):
+    """Factory for V5 HighRes"""
+    return AircraftDetectorV5_HighRes(dropout_rate=dropout_rate)
+
 # ... (Previous MODELS dict)
 
 MODELS = {
@@ -1685,6 +1755,7 @@ MODELS = {
     'aircraft_detector_v2': create_aircraft_detector_v2, # NEW
     'aircraft_detector_v3': create_aircraft_detector_v3, # 🚀 Optimized Nano
     'aircraft_detector_v4': create_aircraft_detector_v4, # 🚀 V4 Anchors (B=2)
+    'aircraft_detector_v5_highres': create_aircraft_detector_v5_highres, # 🚀 V5 HighRes (Grid 14x14)
     'sophisticated_cnn': create_sophisticated_cnn,
     'sophisticated_cnn_droped_out': create_sophisticated_cnn_droped_out,
     'sophisticated_cnn_128': create_sophisticated_cnn_128,
