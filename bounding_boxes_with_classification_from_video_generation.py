@@ -18,36 +18,24 @@ from dataset_configs import get_dataset_config
 from model_library import get_model  # Uniquement get_model (pas besoin de la classe directe)
 
 # =================================================================================================
-# CONFIGURATION
+# Input CONFIGURATION
 # =================================================================================================
 # 1. Configuration du dataset et du modèle de classification
 DATASET_NAME = "FIGHTERJET_CLASSES"     # Nom de la config dans dataset_configs.py
 CHECKPOINT_PATH = "best_model.pkl"      # Chemin vers le modèle de CLASSIFICATION
-INPUT_DIR = "/home/aobled/Downloads/tmp_multi"  # Dossier d'entrée (images à traiter)
-CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
 
 # 2. Configuration du modèle de détection
 DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl" # Chemin vers le modèle de DÉTECTION
 DETECTION_IMAGE_SIZE = (224, 224)       # Taille d'entrée du modèle de détection
-DETECTION_CONF_THRESHOLD = 0.65          # Seuil pour considérer une détection valide (objectness + class) best 0.65
-NMS_THRESHOLD = 0.4                     # Seuil IoU pour NMS best 0.4
 
-DEFAULT_CLASSE = "unknown"
-
-
-import sys
-import os
-
-# ==========================================================
 # PRIORITÉ AU DOSSIER PARENT
-# ==========================================================
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # ==========================================================
-# CONFIGURATION
+# Detection CONFIGURATION
 # ==========================================================
-VIDEO_PATH = "/home/aobled/Downloads/maverick3.mp4"
+VIDEO_PATH = "/home/aobled/Downloads/maverick0.mp4"
 OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 
 FRAME_STRIDE = 1  # 1 = toutes les frames
@@ -56,11 +44,17 @@ DATASET_NAME = "FIGHTERJET_CLASSES"
 CHECKPOINT_PATH = "best_model.pkl"
 DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl"
 
-CONFIDENCE_THRESHOLD = 0.5
-DETECTION_CONF_THRESHOLD = 0.5
-NMS_THRESHOLD = 0.4
+CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
+DETECTION_CONF_THRESHOLD = 0.7          # Seuil pour considérer une détection valide (objectness + class) best 0.65
+NMS_THRESHOLD = 0.15                     # Seuil IoU pour NMS best 0.4
 DEFAULT_CLASSE = "unknown"
-TARGET_CLASS_LIST = ["hawkeye", "f18", "su57"]
+TARGET_CLASS_LIST = ["f14", "su57"]
+
+# Paramètres de Lissage Temporel (Anti-Flickering / Tracking)
+SMOOTHING_ENABLED = True
+SMOOTHING_ALPHA = 0.7              # Ratio de lissage (ex: 0.7 = 70% de la détection actuelle + 30% d'historique)
+SMOOTHING_MAX_MISSING_FRAMES = 6   # Nombre de frames passées mémorisées (pour pallier un raté de détection)
+SMOOTHING_IOU_THRESHOLD = 0.3      # Seuil IoU pour associer la boîte frame T avec frame T-1
 
 
 # 3. Chargement de la config dataset
@@ -266,6 +260,78 @@ def get_iou(box1, box2):
     union = area1 + area2 - intersection
     return intersection / union if union > 0 else 0
 
+
+class TemporalSmoother:
+    """Traque et lisse temporellement les bounding boxes (EMA Tracking basique)."""
+    def __init__(self, alpha=0.7, max_missing_frames=5, iou_threshold=0.3):
+        self.alpha = alpha
+        self.max_missing_frames = max_missing_frames
+        self.iou_threshold = iou_threshold
+        self.trackers = {} # {id: {'box': [x1, y1, x2, y2], 'missing_count': 0, 'score': score}}
+        self.next_id = 0
+
+    def update(self, detections):
+        """
+        Met à jour les trajectoires et retourne les boîtes lissées.
+        detections: list de tuples (x1, y1, x2, y2, score)
+        """
+        smoothed_detections = []
+        matched_tracker_ids = set()
+
+        for det in detections:
+            x1, y1, x2, y2, score = det
+            best_iou = 0
+            best_id = -1
+            
+            # 1. Associer la nouvelle détection avec une trajectoire existante
+            for t_id, t_info in self.trackers.items():
+                if t_id in matched_tracker_ids:
+                     continue
+                iou = get_iou(det[:4], t_info['box'])
+                if iou > best_iou:
+                    best_iou = iou
+                    best_id = t_id
+            
+            if best_iou >= self.iou_threshold:
+                # 2a. Si ça correspond au même avion -> Lissage temporel (alpha)
+                old_box = self.trackers[best_id]['box']
+                nx1 = int(self.alpha * x1 + (1 - self.alpha) * old_box[0])
+                ny1 = int(self.alpha * y1 + (1 - self.alpha) * old_box[1])
+                nx2 = int(self.alpha * x2 + (1 - self.alpha) * old_box[2])
+                ny2 = int(self.alpha * y2 + (1 - self.alpha) * old_box[3])
+                
+                self.trackers[best_id]['box'] = [nx1, ny1, nx2, ny2]
+                self.trackers[best_id]['missing_count'] = 0
+                self.trackers[best_id]['score'] = score
+                matched_tracker_ids.add(best_id)
+                smoothed_detections.append((nx1, ny1, nx2, ny2, score))
+            else:
+                # 2b. Nouvel avion détecté
+                self.trackers[self.next_id] = {
+                    'box': [x1, y1, x2, y2],
+                    'missing_count': 0,
+                    'score': score
+                }
+                matched_tracker_ids.add(self.next_id)
+                smoothed_detections.append((x1, y1, x2, y2, score))
+                self.next_id += 1
+                
+        # 3. Récupérer les "fantômes" (avions non détectés sur CETTE frame mais dans le passé récent)
+        for t_id in list(self.trackers.keys()):
+            if t_id not in matched_tracker_ids:
+                self.trackers[t_id]['missing_count'] += 1
+                if self.trackers[t_id]['missing_count'] > self.max_missing_frames:
+                    # Vraiment disparu de l'écran -> on oublie
+                    del self.trackers[t_id]
+                else:
+                    # Toujours censé être là -> on rend sa dernière position connue
+                    box = self.trackers[t_id]['box']
+                    score = self.trackers[t_id]['score']
+                    smoothed_detections.append((box[0], box[1], box[2], box[3], score))
+
+        return smoothed_detections
+
+
 def non_max_suppression(boxes, scores, iou_threshold):
     """Applique NMS sur les boxes filtrées"""
     indices = np.argsort(scores)[::-1]
@@ -417,6 +483,12 @@ if __name__ == "__main__":
     frame_id = 0
     saved_count = 0
 
+    smoother = TemporalSmoother(
+        alpha=SMOOTHING_ALPHA,
+        max_missing_frames=SMOOTHING_MAX_MISSING_FRAMES,
+        iou_threshold=SMOOTHING_IOU_THRESHOLD
+    ) if SMOOTHING_ENABLED else None
+
     with tqdm(total=total_frames, desc="Traitement vidéo") as pbar:
 
         while True:
@@ -444,6 +516,9 @@ if __name__ == "__main__":
                 nms_threshold=NMS_THRESHOLD
             )
 
+            if SMOOTHING_ENABLED and smoother is not None:
+                detections = smoother.update(detections)
+
             # ==================================================
             # CLASSIFICATION + DRAW
             # ==================================================
@@ -463,11 +538,14 @@ if __name__ == "__main__":
                 )
 
                 # if (confidence < CONFIDENCE_THRESHOLD):
-                if (predicted_class not in TARGET_CLASS_LIST):
-                    predicted_class = DEFAULT_CLASSE
+                #if (predicted_class not in TARGET_CLASS_LIST):
+                #    predicted_class = DEFAULT_CLASSE
 
                 # Couleur selon confiance
-                color = (0, 255, 0) if confidence >= CONFIDENCE_THRESHOLD else (0, 0, 255)
+                #color = (0, 255, 0) if confidence >= CONFIDENCE_THRESHOLD else (0, 0, 255)
+                
+                # Couleur selon classe OK/KO
+                color = (0, 255, 0) if predicted_class in (TARGET_CLASS_LIST) else (0, 0, 255)
 
                 label = f"{predicted_class} ({confidence:.2f})"
 

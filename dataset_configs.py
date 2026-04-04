@@ -78,7 +78,7 @@ DATASET_CONFIGS = {
         
         # === Entraînement ===
         "epochs": 40,              # 40
-        "patience": 7,
+        "patience": 5,
         "label_smoothing": 0.1,    # ✅ Aide légèrement
         "mixup_alpha": 0.05,        # ✅ OPTIMAL: Mixup doux (meilleur compromis trouvé)
         

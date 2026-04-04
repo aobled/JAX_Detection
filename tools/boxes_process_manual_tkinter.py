@@ -1039,5 +1039,5 @@ CROP_HEIGHT = 0  # Hauteur en pixels à croper (0 = désactivé)
 AUTO_CROP = False  # Croper automatiquement lors de la sauvegarde (touche 's')
 
 if __name__ == "__main__":
-    root_folder = "/home/aobled/Downloads/tmp_multi/unknown"
+    root_folder = "/home/aobled/Downloads/tmp_multi"
     viewer = PhotoViewer(root_folder, category_name=CATEGORY_NAME, crop_height=CROP_HEIGHT, auto_crop=AUTO_CROP)
