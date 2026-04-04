@@ -45,7 +45,7 @@ CHECKPOINT_PATH = "best_model.pkl"
 DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl"
 
 CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
-DETECTION_CONF_THRESHOLD = 0.7          # Seuil pour considérer une détection valide (objectness + class) best 0.65
+DETECTION_CONF_THRESHOLD = 0.75          # Seuil pour considérer une détection valide (objectness + class) best 0.7
 NMS_THRESHOLD = 0.15                     # Seuil IoU pour NMS best 0.4
 DEFAULT_CLASSE = "unknown"
 TARGET_CLASS_LIST = ["f14", "su57"]
@@ -53,7 +53,7 @@ TARGET_CLASS_LIST = ["f14", "su57"]
 # Paramètres de Lissage Temporel (Anti-Flickering / Tracking)
 SMOOTHING_ENABLED = True
 SMOOTHING_ALPHA = 0.7              # Ratio de lissage (ex: 0.7 = 70% de la détection actuelle + 30% d'historique)
-SMOOTHING_MAX_MISSING_FRAMES = 6   # Nombre de frames passées mémorisées (pour pallier un raté de détection)
+SMOOTHING_MAX_MISSING_FRAMES = 2   # Nombre de frames passées mémorisées (pour pallier un raté de détection)
 SMOOTHING_IOU_THRESHOLD = 0.3      # Seuil IoU pour associer la boîte frame T avec frame T-1
 
 
