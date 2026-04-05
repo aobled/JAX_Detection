@@ -190,7 +190,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataset_configs import get_dataset_config
 
-DATASET_PATH = '/home/aobled/Downloads/Aircraft_DATASET/classification'
+DATASET_PATH = '/home/aobled/Downloads/Aircraft_DATASET/detection'
 DATASET_NAME = "FIGHTERJET_CLASSES"     # Nom de la config dans dataset_configs.py
 try:
     config = get_dataset_config(DATASET_NAME)
@@ -204,8 +204,8 @@ except Exception as e:
 # Charger les données
 df = load_dataset_to_dataframe(DATASET_PATH)
 
-reporting_groupby_class_and_split(df)
-#reporting_groupby_box_count(df)
+#reporting_groupby_class_and_split(df)
+reporting_groupby_box_count(df)
 #reporting_boxes_on_wrong_directory(df)
 #reporting_single_boxes_target_class_size(df, target_class='a10', target_size=2)
 #reporting_single_classe_images(df, target_class='b52', min_size=16)

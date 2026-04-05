@@ -1749,6 +1749,15 @@ def create_aircraft_detector_v5_highres(dropout_rate=0.2, **kwargs):
     return AircraftDetectorV5_HighRes(dropout_rate=dropout_rate)
 
 
+
+"""
+Étape (Layer)	    input_res	Stride	output_res	Receptive Field
+Stage 0	            224x224	    2	    112x112	    2x2 pixels
+Stage 1	            112x112	    2	    56x56	    4x4 pixels
+Stage 2	            56x56	    2	    28x28	    8x8 pixels
+Stage 3 (feat_p3)	28x28	    2	    14x14	    16x16 pixels
+Stage 4 (feat_p4)	14x14	    2	    7x7	        32x32 pixels
+"""
 class AircraftDetectorV6_MultiLevel(nn.Module):
     """
     Détecteur d'avions V6 "Dual-Scale & Anchors"
@@ -1827,6 +1836,112 @@ def create_aircraft_detector_v6_multilevel(dropout_rate=0.2, **kwargs):
     """Factory for V6 MultiLevel"""
     return AircraftDetectorV6_MultiLevel(dropout_rate=dropout_rate, num_anchors=2)
 
+class AircraftDetectorV7_Advanced(nn.Module):
+    """
+    Détecteur d'avions V7 "Anchor-Free, Decoupled Head, Tri-Scale"
+    Grilles: 28x28, 14x14 et 7x7
+    Anchor-Free: 1 seule prédiction par cellule (conf, x, y, w, h). 
+    """
+    dropout_rate: float = 0.2
+
+    @nn.compact
+    def __call__(self, x, training=True):
+        # --- STAGE 0: STEM ---
+        x = nn.Conv(64, (3, 3), strides=(2, 2), padding="SAME", use_bias=False)(x)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x) # 112x112
+        
+        # --- STAGE 1: 64 filters ---
+        x = SeparableConv(64, (3, 3), strides=(2, 2))(x, training)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x) # 56x56
+        
+        x = ResidualBlockSeparable(64, dropout_rate=self.dropout_rate)(x, training)
+        x = ResidualBlockSeparable(64, dropout_rate=self.dropout_rate)(x, training)
+        
+        # --- STAGE 2: 128 filters (P2 -> 28x28) ---
+        x = ResidualBlockSeparable(128, stride=2, dropout_rate=self.dropout_rate)(x, training) # 28x28
+        x = ResidualBlockSeparable(128, dropout_rate=self.dropout_rate)(x, training)
+        x = CBAMBlock()(x, training)
+        feat_p2 = x # 28x28
+        
+        # --- STAGE 3: 256 filters (P3 -> 14x14) ---
+        x = ResidualBlockSeparable(256, stride=2, dropout_rate=self.dropout_rate)(x, training) # 14x14
+        x = ResidualBlockSeparable(256, dropout_rate=self.dropout_rate)(x, training)
+        feat_p3 = x # 14x14
+        
+        # --- STAGE 4: 512 filters (P4 -> 7x7) ---
+        x = ResidualBlockSeparable(512, stride=2, dropout_rate=self.dropout_rate)(x, training) # 7x7
+        x = ResidualBlockSeparable(512, dropout_rate=self.dropout_rate)(x, training)
+        x = CBAMBlock()(x, training)
+        feat_p4 = x # 7x7
+        
+        # --- FEATURE PYRAMID NETWORK (FPN) TOP-DOWN ---
+        # 1. P4 (7x7)
+        out_p4_feat = SeparableConv(512, (3, 3))(feat_p4, training)
+        out_p4_feat = nn.BatchNorm(use_running_average=not training)(out_p4_feat)
+        out_p4_feat = nn.silu(out_p4_feat)
+        
+        # 2. P3 (14x14)
+        p4_up = nn.Conv(256, (1, 1))(feat_p4) 
+        p4_up = nn.BatchNorm(use_running_average=not training)(p4_up)
+        p4_up = nn.silu(p4_up)
+        
+        target_h, target_w = feat_p3.shape[1], feat_p3.shape[2]
+        p4_up = jax.image.resize(p4_up, shape=(p4_up.shape[0], target_h, target_w, p4_up.shape[3]), method='bilinear')
+        
+        fusion_p3 = jnp.concatenate([feat_p3, p4_up], axis=-1)
+        
+        out_p3_feat = SeparableConv(256, (3, 3))(fusion_p3, training)
+        out_p3_feat = nn.BatchNorm(use_running_average=not training)(out_p3_feat)
+        out_p3_feat = nn.silu(out_p3_feat)
+        
+        # 3. P2 (28x28)
+        p3_up = nn.Conv(128, (1, 1))(out_p3_feat) 
+        p3_up = nn.BatchNorm(use_running_average=not training)(p3_up)
+        p3_up = nn.silu(p3_up)
+        
+        target_h_p2, target_w_p2 = feat_p2.shape[1], feat_p2.shape[2]
+        p3_up = jax.image.resize(p3_up, shape=(p3_up.shape[0], target_h_p2, target_w_p2, p3_up.shape[3]), method='bilinear')
+        
+        fusion_p2 = jnp.concatenate([feat_p2, p3_up], axis=-1)
+        
+        out_p2_feat = SeparableConv(128, (3, 3))(fusion_p2, training)
+        out_p2_feat = nn.BatchNorm(use_running_average=not training)(out_p2_feat)
+        out_p2_feat = nn.silu(out_p2_feat)
+        
+        # --- DECOUPLED HEADS (Anchor-Free) ---
+        def decoupled_head(features, name_prefix):
+            # Branch Confiance
+            conf_feat = SeparableConv(features.shape[-1] // 2, (3, 3))(features, training)
+            conf_feat = nn.BatchNorm(use_running_average=not training)(conf_feat)
+            conf_feat = nn.silu(conf_feat)
+            out_conf = nn.Conv(1, (1, 1), padding="SAME", name=f"{name_prefix}_conf")(conf_feat)
+            
+            # Branch Regression (x, y, w, h)
+            reg_feat = SeparableConv(features.shape[-1] // 2, (3, 3))(features, training)
+            reg_feat = nn.BatchNorm(use_running_average=not training)(reg_feat)
+            reg_feat = nn.silu(reg_feat)
+            out_reg = nn.Conv(4, (1, 1), padding="SAME", name=f"{name_prefix}_reg")(reg_feat)
+            
+            # Concaténation et Sigmoid
+            out = jnp.concatenate([out_conf, out_reg], axis=-1)
+            return nn.sigmoid(out)
+        
+        # Génération des 3 grilles (28x28, 14x14, 7x7) avec 5 canaux (conf, x, y, w, h)
+        grid_28 = decoupled_head(out_p2_feat, "head_28")
+        grid_14 = decoupled_head(out_p3_feat, "head_14")
+        grid_7 = decoupled_head(out_p4_feat, "head_7")
+        
+        # Tuple de sortie respectant l'ordre décroissant de la taille spatiale
+        return grid_28, grid_14, grid_7
+
+
+def create_aircraft_detector_v7_advanced(dropout_rate=0.2, **kwargs):
+    """Factory for V7 Advanced"""
+    return AircraftDetectorV7_Advanced(dropout_rate=dropout_rate)
+
+
 # ... (Previous MODELS dict)
 
 MODELS = {
@@ -1836,6 +1951,7 @@ MODELS = {
     'aircraft_detector_v4': create_aircraft_detector_v4, # 🚀 V4 Anchors (B=2)
     'aircraft_detector_v5_highres': create_aircraft_detector_v5_highres, # 🚀 V5 HighRes (Grid 14x14)
     'aircraft_detector_v6_multilevel': create_aircraft_detector_v6_multilevel, # 🚀 V6 Dual-Scale (14x14, 7x7)
+    'aircraft_detector_v7_advanced': create_aircraft_detector_v7_advanced, # 🚀 V7 Tri-Scale Anchor-Free
     'sophisticated_cnn': create_sophisticated_cnn,
     'sophisticated_cnn_droped_out': create_sophisticated_cnn_droped_out,
     'sophisticated_cnn_128': create_sophisticated_cnn_128,

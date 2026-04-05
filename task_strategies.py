@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import optax
 from abc import ABC, abstractmethod
-from loss_functions import compute_grid_loss, compute_grid_loss_multilevel
+from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss
 from utils import mixup_batch, smooth_labels
 
 class TaskStrategy(ABC):
@@ -158,15 +158,25 @@ class DetectionStrategy(TaskStrategy):
         return images, targets, False
         
     def compute_loss(self, outputs, targets, **kwargs):
-        if isinstance(outputs, tuple):
-            return compute_grid_loss_multilevel(outputs, targets)
+        if isinstance(outputs, (tuple, list)):
+            if len(outputs) == 3:
+                return compute_v7_loss(outputs, targets)
+            elif len(outputs) == 2:
+                return compute_grid_loss_multilevel(outputs, targets)
+            else:
+                raise ValueError(f"Nombre de grilles non supporté: {len(outputs)}")
         return compute_grid_loss(outputs, targets)
         
     def compute_metrics(self, outputs, targets):
         # En détection, pour le système de Checkpoint qui "maximise", 
         # on retourne l'inverse mathématique de la Loss
-        if isinstance(outputs, tuple):
-            return -compute_grid_loss_multilevel(outputs, targets)
+        if isinstance(outputs, (tuple, list)):
+            if len(outputs) == 3:
+                return -compute_v7_loss(outputs, targets)
+            elif len(outputs) == 2:
+                return -compute_grid_loss_multilevel(outputs, targets)
+            else:
+                raise ValueError(f"Nombre de grilles non supporté: {len(outputs)}")
         return -compute_grid_loss(outputs, targets)
         
     def generate_reports(self, val_ds, final_state, model, config):

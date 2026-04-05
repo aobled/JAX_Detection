@@ -21,7 +21,7 @@ import flax.linen as nn
 # Imports locaux
 from model_library import AircraftDetector, TrainStateWithBatchStats, get_model # ✅ Added get_model
 from data_management import DetectionDataset
-from loss_functions import compute_grid_loss
+from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss
 from reporting import DetectionReporter
 
 # Configuration par défaut
@@ -132,10 +132,16 @@ class DetectionTrainer:
                 rngs={'dropout': rng}
             )
             
-            # Loss calculation
-            # pred_grid: (B, 7, 7, 5)
-            # target_boxes: (B, N, 5)
-            loss = compute_grid_loss(pred_grid, target_boxes)
+            # Loss calculation router
+            if isinstance(pred_grid, (tuple, list)):
+                if len(pred_grid) == 3:
+                    loss = compute_v7_loss(pred_grid, target_boxes)
+                elif len(pred_grid) == 2:
+                    loss = compute_grid_loss_multilevel(pred_grid, target_boxes)
+                else:
+                    raise ValueError(f"Nombre de grilles en sortie non supporté: {len(pred_grid)}")
+            else:
+                loss = compute_grid_loss(pred_grid, target_boxes)
             
             return loss, (pred_grid, new_batch_stats)
         
@@ -150,7 +156,18 @@ class DetectionTrainer:
         """Une étape de validation (JIT)"""
         vars = {'params': state.params, 'batch_stats': state.batch_stats}
         pred_grid = state.apply_fn(vars, images, training=False)
-        loss = compute_grid_loss(pred_grid, target_boxes)
+        
+        # Loss calculation router
+        if isinstance(pred_grid, (tuple, list)):
+            if len(pred_grid) == 3:
+                loss = compute_v7_loss(pred_grid, target_boxes)
+            elif len(pred_grid) == 2:
+                loss = compute_grid_loss_multilevel(pred_grid, target_boxes)
+            else:
+                raise ValueError(f"Nombre de grilles en sortie non supporté: {len(pred_grid)}")
+        else:
+            loss = compute_grid_loss(pred_grid, target_boxes)
+            
         return loss
 
     def run(self):

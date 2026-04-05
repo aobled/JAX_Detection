@@ -125,7 +125,7 @@ def process_all_files(directory):
 threshold = 1
 
 
-directory = '/home/aobled/Downloads/tmp_multi'
+directory = '/home/aobled/Downloads/tmp_test'
 duplicates = find_duplicates_optimized(directory, threshold)
 process_duplicates(directory, duplicates)
 process_all_files(directory)

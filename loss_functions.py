@@ -301,3 +301,107 @@ def compute_grid_loss_multilevel(pred_grids, gt_boxes, lambda_coord=5.0, lambda_
     total_loss = (loss_14 + loss_7) / batch_size
     return total_loss
 
+
+def compute_v7_loss(pred_grids, gt_boxes, lambda_coord=5.0, lambda_noobj=0.5):
+    """
+    Calcule la loss Anchor-Free Tri-Scale pour V7.
+    
+    Args:
+        pred_grids: Tuple de 3 tenseurs:
+            - pred_28: (Batch, 28, 28, 5)
+            - pred_14: (Batch, 14, 14, 5)
+            - pred_7:  (Batch, 7, 7, 5)
+        gt_boxes: (Batch, MaxBoxes, 5) -> [HasObject, cx, cy, w, h] (valeurs relatives 0-1)
+    """
+    pred_28, pred_14, pred_7 = pred_grids
+    batch_size = pred_28.shape[0]
+    
+    # Stratégie d'assignation basée sur l'aire de la bounding box (anchor-free FPN)
+    # Aire relative = w * h (0-1)
+    # P2 (28x28) : pour les petits objets (area < 0.05)
+    # P3 (14x14) : pour les objets moyens (0.05 <= area < 0.20)
+    # P4 (7x7)   : pour les grands objets (area >= 0.20)
+    
+    def build_target_single_image(boxes):
+        target_28 = jnp.zeros((28, 28, 5))
+        target_14 = jnp.zeros((14, 14, 5))
+        target_7 = jnp.zeros((7, 7, 5))
+        
+        def step_fn(state, box):
+            t_28, t_14, t_7 = state
+            has_obj = box[0]
+            cx, cy, w, h = box[1:5]
+            
+            area = w * h
+            
+            # --- Logique P2 (28x28) ---
+            cx_28, cy_28 = cx * 28.0, cy * 28.0
+            col_28 = jnp.clip(cx_28.astype(jnp.int32), 0, 27)
+            row_28 = jnp.clip(cy_28.astype(jnp.int32), 0, 27)
+            tx_28 = cx_28 - col_28
+            ty_28 = cy_28 - row_28
+            val_28 = jnp.array([1.0, tx_28, ty_28, w, h])
+            
+            # --- Logique P3 (14x14) ---
+            cx_14, cy_14 = cx * 14.0, cy * 14.0
+            col_14 = jnp.clip(cx_14.astype(jnp.int32), 0, 13)
+            row_14 = jnp.clip(cy_14.astype(jnp.int32), 0, 13)
+            tx_14 = cx_14 - col_14
+            ty_14 = cy_14 - row_14
+            val_14 = jnp.array([1.0, tx_14, ty_14, w, h])
+            
+            # --- Logique P4 (7x7) ---
+            cx_7, cy_7 = cx * 7.0, cy * 7.0
+            col_7 = jnp.clip(cx_7.astype(jnp.int32), 0, 6)
+            row_7 = jnp.clip(cy_7.astype(jnp.int32), 0, 6)
+            tx_7 = cx_7 - col_7
+            ty_7 = cy_7 - row_7
+            val_7 = jnp.array([1.0, tx_7, ty_7, w, h])
+            
+            # Assignation FPN
+            cond_28 = jnp.logical_and(has_obj > 0.5, area < 0.05)
+            cond_14 = jnp.logical_and(has_obj > 0.5, jnp.logical_and(area >= 0.05, area < 0.20))
+            cond_7  = jnp.logical_and(has_obj > 0.5, area >= 0.20)
+            
+            new_t_28 = t_28.at[row_28, col_28].set(val_28)
+            t_28 = jnp.where(cond_28, new_t_28, t_28)
+            
+            new_t_14 = t_14.at[row_14, col_14].set(val_14)
+            t_14 = jnp.where(cond_14, new_t_14, t_14)
+            
+            new_t_7 = t_7.at[row_7, col_7].set(val_7)
+            t_7 = jnp.where(cond_7, new_t_7, t_7)
+            
+            return (t_28, t_14, t_7), None
+
+        (final_28, final_14, final_7), _ = jax.lax.scan(step_fn, (target_28, target_14, target_7), boxes)
+        return final_28, final_14, final_7
+
+    target_28, target_14, target_7 = jax.vmap(build_target_single_image)(gt_boxes)
+    
+    def compute_single_scale_loss(pred_g, tgt_g):
+        obj_mask = tgt_g[..., 0:1]
+        noobj_mask = 1.0 - obj_mask
+        
+        pred_conf = pred_g[..., 0:1]
+        pred_xy = pred_g[..., 1:3]
+        pred_wh = pred_g[..., 3:5]
+        
+        tgt_conf = tgt_g[..., 0:1]
+        tgt_xy = tgt_g[..., 1:3]
+        tgt_wh = tgt_g[..., 3:5]
+        
+        loss_xy = jnp.sum(obj_mask * (pred_xy - tgt_xy)**2)
+        loss_wh = jnp.sum(obj_mask * (jnp.sqrt(jnp.abs(pred_wh) + 1e-6) - jnp.sqrt(tgt_wh + 1e-6))**2)
+        
+        loss_obj = jnp.sum(obj_mask * (pred_conf - tgt_conf)**2)
+        loss_noobj = lambda_noobj * jnp.sum(noobj_mask * (pred_conf - 0.0)**2)
+        
+        return lambda_coord * (loss_xy + loss_wh) + loss_obj + loss_noobj
+
+    loss_28 = compute_single_scale_loss(pred_28, target_28)
+    loss_14 = compute_single_scale_loss(pred_14, target_14)
+    loss_7 = compute_single_scale_loss(pred_7, target_7)
+    
+    total_loss = (loss_28 + loss_14 + loss_7) / batch_size
+    return total_loss
