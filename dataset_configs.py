@@ -272,7 +272,7 @@ DATASET_CONFIGS = {
         "grayscale": True,
         
         # === Modèle ---
-        "model_name": "aircraft_detector_v5_highres",
+        "model_name": "aircraft_detector_v6_multilevel",
         "grid_size": 14,      # 224 / 16 = 14
         
         # === Hyperparamètres TPU ===

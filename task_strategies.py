@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import optax
 from abc import ABC, abstractmethod
-from loss_functions import compute_grid_loss
+from loss_functions import compute_grid_loss, compute_grid_loss_multilevel
 from utils import mixup_batch, smooth_labels
 
 class TaskStrategy(ABC):
@@ -158,11 +158,15 @@ class DetectionStrategy(TaskStrategy):
         return images, targets, False
         
     def compute_loss(self, outputs, targets, **kwargs):
+        if isinstance(outputs, tuple):
+            return compute_grid_loss_multilevel(outputs, targets)
         return compute_grid_loss(outputs, targets)
         
     def compute_metrics(self, outputs, targets):
         # En détection, pour le système de Checkpoint qui "maximise", 
         # on retourne l'inverse mathématique de la Loss
+        if isinstance(outputs, tuple):
+            return -compute_grid_loss_multilevel(outputs, targets)
         return -compute_grid_loss(outputs, targets)
         
     def generate_reports(self, val_ds, final_state, model, config):
@@ -176,9 +180,15 @@ class DetectionStrategy(TaskStrategy):
             for vis_imgs, vis_boxes in val_ds.take(1).as_numpy_iterator():
                 vars = {'params': final_state.params, 'batch_stats': final_state.batch_stats}
                 pred_grid = final_state.apply_fn(vars, vis_imgs, training=False)
+                
+                if isinstance(pred_grid, (tuple, list)):
+                    formatted_preds = [np.array(p) for p in pred_grid]
+                else:
+                    formatted_preds = np.array(pred_grid)
+                    
                 reporter.visualize_batch(
                     images=np.array(vis_imgs),
-                    predictions=np.array(pred_grid),
+                    predictions=formatted_preds,
                     targets=np.array(vis_boxes),
                     save_path="final_detection_vis.png",
                     conf_threshold=0.5

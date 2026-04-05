@@ -190,3 +190,114 @@ def compute_grid_loss(pred_grid, gt_boxes, lambda_coord=5.0, lambda_noobj=0.5):
     total_loss = (loss_coord + loss_obj + loss_noobj) / batch_size
     
     return total_loss
+
+def compute_grid_loss_multilevel(pred_grids, gt_boxes, lambda_coord=5.0, lambda_noobj=0.5):
+    """
+    Calcule la loss YOLO multi-échelles (Dual-Scale 14x14 et 7x7).
+    
+    Args:
+        pred_grids: Tuple de 2 tenseurs:
+            - pred_14x14: (Batch, 14, 14, 10)  (2 anchors x 5 channels)
+            - pred_7x7:   (Batch, 7, 7, 10)    (2 anchors x 5 channels)
+        gt_boxes: (Batch, MaxBoxes, 5) -> [HasObject, cx, cy, w, h] (valeurs relatives 0-1)
+    """
+    pred_14, pred_7 = pred_grids
+    batch_size = pred_14.shape[0]
+    
+    # Anchors empiriques (w, h) en coordonnées normalisées relatives à l'image complète
+    # 2 anchors pour 14x14 (petits avions/drones), 2 anchors pour 7x7 (gros avions en gros plan)
+    anchors_14 = jnp.array([[0.1, 0.1], [0.15, 0.08]]) # Carré petit, Rectangulaire moyen
+    anchors_7  = jnp.array([[0.4, 0.4], [0.6, 0.3]])   # Carré grand, Rectangulaire large
+    all_anchors = jnp.concatenate([anchors_14, anchors_7], axis=0) # (4, 2)
+    
+    def compute_iou_wh(box_wh, anchors_wh):
+        # Calcule l'IoU uniquement sur la largeur et hauteur (Prior Matching)
+        intersection = jnp.minimum(box_wh[0], anchors_wh[:, 0]) * jnp.minimum(box_wh[1], anchors_wh[:, 1])
+        box_area = box_wh[0] * box_wh[1]
+        anchors_area = anchors_wh[:, 0] * anchors_wh[:, 1]
+        union = box_area + anchors_area - intersection + 1e-6
+        return intersection / union
+        
+    def build_target_single_image(boxes):
+        target_14 = jnp.zeros((14, 14, 2, 5))
+        target_7 = jnp.zeros((7, 7, 2, 5))
+        
+        def step_fn(state, box):
+            t_14, t_7 = state
+            has_obj = box[0]
+            cx, cy, w, h = box[1:5]
+            
+            # IoU avec les 4 anchors
+            ious = compute_iou_wh(jnp.array([w, h]), all_anchors)
+            best_idx = jnp.argmax(ious) # 0, 1, 2, ou 3
+            
+            # Logique pour la grille 14x14
+            cx_14, cy_14 = cx * 14.0, cy * 14.0
+            col_14 = jnp.clip(cx_14.astype(jnp.int32), 0, 13)
+            row_14 = jnp.clip(cy_14.astype(jnp.int32), 0, 13)
+            tx_14 = cx_14 - col_14
+            ty_14 = cy_14 - row_14
+            val_14 = jnp.array([1.0, tx_14, ty_14, w, h])
+            
+            # Logique pour la grille 7x7
+            cx_7, cy_7 = cx * 7.0, cy * 7.0
+            col_7 = jnp.clip(cx_7.astype(jnp.int32), 0, 6)
+            row_7 = jnp.clip(cy_7.astype(jnp.int32), 0, 6)
+            tx_7 = cx_7 - col_7
+            ty_7 = cy_7 - row_7
+            val_7 = jnp.array([1.0, tx_7, ty_7, w, h])
+            
+            # Appliquer conditionnellement
+            # Fait partie de 14x14 si best_idx est 0 ou 1
+            cond_14 = jnp.logical_and(has_obj > 0.5, best_idx < 2)
+            anchor_idx_14 = best_idx
+            new_t_14 = t_14.at[row_14, col_14, anchor_idx_14].set(val_14)
+            t_14 = jnp.where(cond_14, new_t_14, t_14)
+            
+            # Fait partie de 7x7 si best_idx est 2 ou 3
+            cond_7 = jnp.logical_and(has_obj > 0.5, best_idx >= 2)
+            anchor_idx_7 = best_idx - 2
+            new_t_7 = t_7.at[row_7, col_7, anchor_idx_7].set(val_7)
+            t_7 = jnp.where(cond_7, new_t_7, t_7)
+            
+            return (t_14, t_7), None
+
+        # JAX scannera toutes les boxes (par exemple les 30 boxes paddées de notre max)
+        (final_14, final_7), _ = jax.lax.scan(step_fn, (target_14, target_7), boxes)
+        return final_14, final_7
+
+    # Vmap sur tout le batch
+    target_14, target_7 = jax.vmap(build_target_single_image)(gt_boxes)
+    # (Batch, 14, 14, 2, 5) et (Batch, 7, 7, 2, 5)
+    
+    # Reshapes des dimensions des tenseurs prédictions
+    pred_14 = pred_14.reshape(batch_size, 14, 14, 2, 5)
+    pred_7 = pred_7.reshape(batch_size, 7, 7, 2, 5)
+    
+    def compute_single_scale_loss(pred_g, tgt_g):
+        obj_mask = tgt_g[..., 0:1]
+        noobj_mask = 1.0 - obj_mask
+        
+        pred_conf = pred_g[..., 0:1]
+        pred_xy = pred_g[..., 1:3]
+        pred_wh = pred_g[..., 3:5]
+        
+        tgt_conf = tgt_g[..., 0:1]
+        tgt_xy = tgt_g[..., 1:3]
+        tgt_wh = tgt_g[..., 3:5]
+        
+        loss_xy = jnp.sum(obj_mask * (pred_xy - tgt_xy)**2)
+        loss_wh = jnp.sum(obj_mask * (jnp.sqrt(jnp.abs(pred_wh) + 1e-6) - jnp.sqrt(tgt_wh + 1e-6))**2)
+        
+        loss_obj = jnp.sum(obj_mask * (pred_conf - tgt_conf)**2)
+        loss_noobj = lambda_noobj * jnp.sum(noobj_mask * (pred_conf - 0.0)**2)
+        
+        return lambda_coord * (loss_xy + loss_wh) + loss_obj + loss_noobj
+
+    # Calculer séparément puis additionner
+    loss_14 = compute_single_scale_loss(pred_14, target_14)
+    loss_7 = compute_single_scale_loss(pred_7, target_7)
+    
+    total_loss = (loss_14 + loss_7) / batch_size
+    return total_loss
+

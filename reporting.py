@@ -890,40 +890,43 @@ class DetectionReporter:
                         ax.add_patch(rect)
             
             # 2. Dessiner Prédictions (Rouge)
-            # pred: (S, S, C)
-            pred = predictions[i]
-            C_pred = pred.shape[-1]
-            B_boxes = C_pred // 5
+            preds_list = predictions if isinstance(predictions, (tuple, list)) else [predictions]
             
-            # Reshape en (S, S, B_boxes, 5)
-            pred = pred.reshape((S, S, B_boxes, 5))
-            
-            # Itérer sur la grille et les ancres
-            for row in range(S):
-                for col in range(S):
-                    for b in range(B_boxes):
-                        cell = pred[row, col, b]
-                        conf = cell[0]
-                        
-                        if conf > conf_threshold:
-                            # Décoder la box
-                            # x, y sont relatifs à la cellule (0-1)
-                            # On veut cx, cy relatifs à l'image (0-1)
-                            bx = (col + cell[1]) / S
-                            by = (row + cell[2]) / S
-                            bw = cell[3]
-                            bh = cell[4]
+            for pred_batch in preds_list:
+                pred = pred_batch[i]
+                S = pred.shape[0]  # Taille dynamique de la grille (ex: 14 ou 7)
+                C_pred = pred.shape[-1]
+                B_boxes = C_pred // 5
+                
+                # Reshape en (S, S, B_boxes, 5)
+                pred = pred.reshape((S, S, B_boxes, 5))
+                
+                # Itérer sur la grille et les ancres
+                for row in range(S):
+                    for col in range(S):
+                        for b in range(B_boxes):
+                            cell = pred[row, col, b]
+                            conf = cell[0]
                             
-                            # Convertir en pixel
-                            pix_w = bw * self.image_size[0]
-                            pix_h = bh * self.image_size[1]
-                            pix_x = (bx * self.image_size[0]) - (pix_w / 2)
-                            pix_y = (by * self.image_size[1]) - (pix_h / 2)
-                            
-                            rect = patches.Rectangle((pix_x, pix_y), pix_w, pix_h, 
-                                                   linewidth=2, edgecolor='red', facecolor='none')
-                            ax.add_patch(rect)
-                            ax.text(pix_x, pix_y - 5, f"{conf:.2f}", color='red', fontsize=8, fontweight='bold')
+                            if conf > conf_threshold:
+                                # Décoder la box
+                                # x, y sont relatifs à la cellule (0-1)
+                                # On veut cx, cy relatifs à l'image entière (0-1)
+                                bx = (col + cell[1]) / S
+                                by = (row + cell[2]) / S
+                                bw = cell[3]
+                                bh = cell[4]
+                                
+                                # Convertir en pixel
+                                pix_w = bw * self.image_size[0]
+                                pix_h = bh * self.image_size[1]
+                                pix_x = (bx * self.image_size[0]) - (pix_w / 2)
+                                pix_y = (by * self.image_size[1]) - (pix_h / 2)
+                                
+                                rect = patches.Rectangle((pix_x, pix_y), pix_w, pix_h, 
+                                                       linewidth=2, edgecolor='red', facecolor='none')
+                                ax.add_patch(rect)
+                                ax.text(pix_x, pix_y - 5, f"{conf:.2f}", color='red', fontsize=8, fontweight='bold')
             
             ax.axis('off')
             ax.set_title(f"Image {i}")

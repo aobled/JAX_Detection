@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ==========================================================
 # Detection CONFIGURATION
 # ==========================================================
-VIDEO_PATH = "/home/aobled/Downloads/maverick0.mp4"
+VIDEO_PATH = "/home/aobled/Downloads/ennemie.mp4"
 OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 
 FRAME_STRIDE = 1  # 1 = toutes les frames
@@ -45,10 +45,10 @@ CHECKPOINT_PATH = "best_model.pkl"
 DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl"
 
 CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
-DETECTION_CONF_THRESHOLD = 0.75          # Seuil pour considérer une détection valide (objectness + class) best 0.7
-NMS_THRESHOLD = 0.15                     # Seuil IoU pour NMS best 0.4
+DETECTION_CONF_THRESHOLD = 0.5          # Seuil pour considérer une détection valide (objectness + class) best 0.7
+NMS_THRESHOLD = 0.5                     # Seuil IoU pour NMS best 0.4
 DEFAULT_CLASSE = "unknown"
-TARGET_CLASS_LIST = ["f14", "su57"]
+TARGET_CLASS_LIST = ["f18"]
 
 # Paramètres de Lissage Temporel (Anti-Flickering / Tracking)
 SMOOTHING_ENABLED = True
@@ -374,49 +374,58 @@ def decode_grid_and_detect(img_bgr, model, variables, config_model, conf_thresho
         img_jax = img_input[np.newaxis, :, :, :]
     
     # 2. Inférence
-    # Note: On suppose que le modèle de détection rend une grille (ex: 7x7x5)
-    # avec pour chaque cellule: [conf, x, y, w, h]
-    pred_grid = model.apply(variables, jnp.array(img_jax), training=False)
-    pred_grid = np.array(pred_grid[0]) # (S, S, 5)
+    # Note: On suppose que le modèle de détection rend une grille (ex: 14x14x5) ou un tuple de grilles
+    # avec pour chaque cellule: [conf, x, y, w, h] * B_boxes
+    preds = model.apply(variables, jnp.array(img_jax), training=False)
     
-    S = pred_grid.shape[0] # Taille de grille
+    if isinstance(preds, (tuple, list)):
+        preds_list = [np.array(p[0]) for p in preds] # Extraire l'élément du batch = 0
+    else:
+        preds_list = [np.array(preds[0])]
     
     boxes = []
     scores = []
     
-    # 3. Décodage de la grille
-    for row in range(S):
-        for col in range(S):
-            cell = pred_grid[row, col]
-            conf = cell[0]
-            
-            if conf > conf_threshold:
-                # Coordonnées relatives à la cellule (0-1) -> relatives à l'image (0-1)
-                bx = (col + cell[1]) / S
-                by = (row + cell[2]) / S
-                bw = cell[3]
-                bh = cell[4]
-                
-                # Conversion en pixels absolus sur l'image ORIGINALE
-                # x,y sont le centre de la boite
-                center_x = bx * w_orig
-                center_y = by * h_orig
-                width = bw * w_orig
-                height = bh * h_orig
-                
-                x1 = int(center_x - width / 2)
-                y1 = int(center_y - height / 2)
-                x2 = int(center_x + width / 2)
-                y2 = int(center_y + height / 2)
-                
-                # Clipper
-                x1 = max(0, min(x1, w_orig))
-                y1 = max(0, min(y1, h_orig))
-                x2 = max(0, min(x2, w_orig))
-                y2 = max(0, min(y2, h_orig))
-                
-                boxes.append([x1, y1, x2, y2])
-                scores.append(float(conf))
+    # 3. Décodage des grilles
+    for pred_grid in preds_list:
+        S = pred_grid.shape[0] # Taille de grille 
+        C_pred = pred_grid.shape[-1]
+        B_boxes = C_pred // 5
+        
+        pred_grid = pred_grid.reshape((S, S, B_boxes, 5))
+        
+        for row in range(S):
+            for col in range(S):
+                for b in range(B_boxes):
+                    cell = pred_grid[row, col, b]
+                    conf = cell[0]
+                    
+                    if conf > conf_threshold:
+                        # Coordonnées relatives à la cellule (0-1) -> relatives à l'image (0-1)
+                        bx = (col + cell[1]) / S
+                        by = (row + cell[2]) / S
+                        bw = cell[3]
+                        bh = cell[4]
+                        
+                        # Conversion en pixels absolus sur l'image ORIGINALE
+                        center_x = bx * w_orig
+                        center_y = by * h_orig
+                        width = bw * w_orig
+                        height = bh * h_orig
+                        
+                        x1 = int(center_x - width / 2)
+                        y1 = int(center_y - height / 2)
+                        x2 = int(center_x + width / 2)
+                        y2 = int(center_y + height / 2)
+                        
+                        # Clipper
+                        x1 = max(0, min(x1, w_orig))
+                        y1 = max(0, min(y1, h_orig))
+                        x2 = max(0, min(x2, w_orig))
+                        y2 = max(0, min(y2, h_orig))
+                        
+                        boxes.append([x1, y1, x2, y2])
+                        scores.append(float(conf))
                 
     if not boxes:
         return []

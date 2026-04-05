@@ -1748,6 +1748,85 @@ def create_aircraft_detector_v5_highres(dropout_rate=0.2, **kwargs):
     """Factory for V5 HighRes"""
     return AircraftDetectorV5_HighRes(dropout_rate=dropout_rate)
 
+
+class AircraftDetectorV6_MultiLevel(nn.Module):
+    """
+    Détecteur d'avions V6 "Dual-Scale & Anchors"
+    Grilles: 14x14 et 7x7
+    Anchors: 2 anchors par niveau
+    """
+    dropout_rate: float = 0.2
+    num_anchors: int = 2
+
+    @nn.compact
+    def __call__(self, x, training=True):
+        # Input: (B, 224, 224, 3) 
+        
+        # --- STAGE 0: STEM ---
+        x = nn.Conv(64, (3, 3), strides=(2, 2), padding="SAME", use_bias=False)(x)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x) # 112x112
+        
+        # --- STAGE 1: 64 filters ---
+        x = SeparableConv(64, (3, 3), strides=(2, 2))(x, training)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x) # 56x56
+        
+        x = ResidualBlockSeparable(64, dropout_rate=self.dropout_rate)(x, training)
+        x = ResidualBlockSeparable(64, dropout_rate=self.dropout_rate)(x, training)
+        
+        # --- STAGE 2: 128 filters ---
+        x = ResidualBlockSeparable(128, stride=2, dropout_rate=self.dropout_rate)(x, training) # 28x28
+        x = ResidualBlockSeparable(128, dropout_rate=self.dropout_rate)(x, training)
+        x = CBAMBlock()(x, training)
+        
+        # --- STAGE 3: 256 filters (P3 -> 14x14) ---
+        x = ResidualBlockSeparable(256, stride=2, dropout_rate=self.dropout_rate)(x, training) # 14x14
+        x = ResidualBlockSeparable(256, dropout_rate=self.dropout_rate)(x, training)
+        feat_p3 = x 
+        
+        # --- STAGE 4: 512 filters (P4 -> 7x7) ---
+        x = ResidualBlockSeparable(512, stride=2, dropout_rate=self.dropout_rate)(x, training) # 7x7
+        x = ResidualBlockSeparable(512, dropout_rate=self.dropout_rate)(x, training)
+        x = CBAMBlock()(x, training)
+        feat_p4 = x
+        
+        # --- FEATURE PYRAMID NETWORK (FPN) ---
+        # 1. Branche 7x7 (P4)
+        out_p4_feat = SeparableConv(512, (3, 3))(feat_p4, training)
+        out_p4_feat = nn.BatchNorm(use_running_average=not training)(out_p4_feat)
+        out_p4_feat = nn.silu(out_p4_feat)
+        
+        # Prediction Head 7x7 (B, 7, 7, num_anchors * 5)
+        out_7x7 = nn.Conv(self.num_anchors * 5, (1, 1), padding="SAME")(out_p4_feat)
+        out_7x7 = nn.sigmoid(out_7x7)
+        
+        # 2. Branche 14x14 (P3 + Upsampled P4)
+        p4_up = nn.Conv(256, (1, 1))(feat_p4) 
+        p4_up = nn.BatchNorm(use_running_average=not training)(p4_up)
+        p4_up = nn.silu(p4_up)
+        
+        target_h, target_w = feat_p3.shape[1], feat_p3.shape[2]
+        p4_up = jax.image.resize(p4_up, shape=(p4_up.shape[0], target_h, target_w, p4_up.shape[3]), method='bilinear')
+        
+        fusion_p3 = jnp.concatenate([feat_p3, p4_up], axis=-1)
+        
+        out_p3_feat = SeparableConv(256, (3, 3))(fusion_p3, training)
+        out_p3_feat = nn.BatchNorm(use_running_average=not training)(out_p3_feat)
+        out_p3_feat = nn.silu(out_p3_feat)
+        
+        # Prediction Head 14x14
+        out_14x14 = nn.Conv(self.num_anchors * 5, (1, 1), padding="SAME")(out_p3_feat)
+        out_14x14 = nn.sigmoid(out_14x14)
+        
+        # Tuple de sortie: (Grid_14x14, Grid_7x7)
+        return out_14x14, out_7x7
+
+
+def create_aircraft_detector_v6_multilevel(dropout_rate=0.2, **kwargs):
+    """Factory for V6 MultiLevel"""
+    return AircraftDetectorV6_MultiLevel(dropout_rate=dropout_rate, num_anchors=2)
+
 # ... (Previous MODELS dict)
 
 MODELS = {
@@ -1756,6 +1835,7 @@ MODELS = {
     'aircraft_detector_v3': create_aircraft_detector_v3, # 🚀 Optimized Nano
     'aircraft_detector_v4': create_aircraft_detector_v4, # 🚀 V4 Anchors (B=2)
     'aircraft_detector_v5_highres': create_aircraft_detector_v5_highres, # 🚀 V5 HighRes (Grid 14x14)
+    'aircraft_detector_v6_multilevel': create_aircraft_detector_v6_multilevel, # 🚀 V6 Dual-Scale (14x14, 7x7)
     'sophisticated_cnn': create_sophisticated_cnn,
     'sophisticated_cnn_droped_out': create_sophisticated_cnn_droped_out,
     'sophisticated_cnn_128': create_sophisticated_cnn_128,
