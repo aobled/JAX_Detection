@@ -28,14 +28,14 @@ from model_library import get_model  # Uniquement get_model (pas besoin de la cl
 # 1. Configuration du dataset et du modèle de classification
 DATASET_NAME = "FIGHTERJET_CLASSES"     # Nom de la config dans dataset_configs.py
 CHECKPOINT_PATH = "best_model.pkl"      # Chemin vers le modèle de CLASSIFICATION
-INPUT_DIR = "/home/aobled/Downloads/tmp_test"  # Dossier d'entrée (images à traiter)
+INPUT_DIR = "/home/aobled/Downloads/tmp_multi"  # Dossier d'entrée (images à traiter)
 CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
 
 # 2. Configuration du modèle de détection
 DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl" # Chemin vers le modèle de DÉTECTION
 DETECTION_IMAGE_SIZE = (224, 224)       # Taille d'entrée du modèle de détection
 DETECTION_CONF_THRESHOLD = 0.5          # Seuil pour considérer une détection valide (objectness + class) best 0.5
-NMS_THRESHOLD = 0.4                     # Seuil IoU pour NMS best 0.4
+NMS_THRESHOLD = 0.5                     # Seuil IoU pour NMS best 0.4
 
 DEFAULT_CLASSE = "unknown"
 

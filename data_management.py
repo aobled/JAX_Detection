@@ -266,14 +266,14 @@ class ChunkManager:
                 
         return stats
     
-    def create_tf_datasets(self, micro_batch_size: int = 32, augment: bool = True, aggressive_aug: bool = False) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
+    def create_tf_datasets(self, micro_batch_size: int = 32, augment: bool = True, augmentation_params: dict = None) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
         """
         Crée les datasets TensorFlow pour l'entraînement
         
         Args:
-            aggressive_aug: Si True, utilise augmentation agressive pour ViT
+            augmentation_params: Dictionnaire de paramètres pour l'augmentation
         """
-        def create_chunked_tf_dataset(split: str, batch_size: int, augment: bool = True, aggressive_aug: bool = False) -> tf.data.Dataset:
+        def create_chunked_tf_dataset(split: str, batch_size: int, augment: bool = True, augmentation_params: dict = None) -> tf.data.Dataset:
             """Crée un dataset TensorFlow à partir des chunks"""
             chunk_files = sorted(glob.glob(f"{self.output_prefix}_{split}_chunk*.npz"))
             
@@ -305,31 +305,38 @@ class ChunkManager:
             if split == "train" and augment:
                 dataset = dataset.shuffle(4096)  # ⚡ Augmenté pour 224×224 (meilleur mélange)
                 
-                # 🔥 CHOIX D'AUGMENTATION selon besoin
-                # Mode "aggressive" pour ViT (simuler dataset ×10)
-                # Mode "moderate" pour CNN (équilibre)
+                if augmentation_params is None:
+                    augmentation_params = {}
                 
-                if aggressive_aug:
-                    # 🔥 AUGMENTATION TRÈS AGRESSIVE (pour Vision Transformers)
-                    # Simule un dataset 10× plus grand
-                    data_augmentation = tf.keras.Sequential([
-                        layers.RandomFlip("horizontal"),
-                        layers.RandomFlip("vertical"),                         # 🔥 Nouveau
-                        layers.RandomRotation(0.30, fill_mode="reflect"),      # 🔥 ±30° (vs ±12°)
-                        layers.RandomZoom(0.25, fill_mode="reflect"),          # 🔥 ±25% (vs ±10%)
-                        layers.RandomTranslation(0.15, 0.15, fill_mode="reflect"),  # 🔥 Translation ±15%
-                        layers.RandomBrightness(0.30, value_range=(0.0, 1.0)), # 🔥 ±30% (vs ±10%)
-                        layers.RandomContrast(0.30),                           # 🔥 ±30% (vs ±10%)
-                    ])
-                else:
-                    # 🎯 AUGMENTATION MODÉRÉE (pour CNNs)
-                    data_augmentation = tf.keras.Sequential([
-                        layers.RandomFlip("horizontal"),
-                        layers.RandomRotation(0.12, fill_mode="reflect"),      # ±12°
-                        layers.RandomZoom(0.10, fill_mode="reflect"),          # ±10%
-                        layers.RandomBrightness(0.10, value_range=(0.0, 1.0)), # ±10%
-                        layers.RandomContrast(0.10),                           # ±10%
-                    ])
+                # Construction dynamique du pipeline d'augmentation
+                aug_layers = []
+                
+                if augmentation_params.get("flip_h", False):
+                    aug_layers.append(layers.RandomFlip("horizontal"))
+                if augmentation_params.get("flip_v", False):
+                    aug_layers.append(layers.RandomFlip("vertical"))
+                    
+                rot_factor = augmentation_params.get("rotation_factor", 0.0)
+                if rot_factor > 0.0:
+                    aug_layers.append(layers.RandomRotation(rot_factor, fill_mode="reflect"))
+                    
+                zoom_factor = augmentation_params.get("zoom_factor", 0.0)
+                if zoom_factor > 0.0:
+                    aug_layers.append(layers.RandomZoom(zoom_factor, fill_mode="reflect"))
+                    
+                trans_factor = augmentation_params.get("translation_factor", 0.0)
+                if trans_factor > 0.0:
+                    aug_layers.append(layers.RandomTranslation(trans_factor, trans_factor, fill_mode="reflect"))
+                    
+                bright_delta = augmentation_params.get("brightness_delta", 0.0)
+                if bright_delta > 0.0:
+                    aug_layers.append(layers.RandomBrightness(bright_delta, value_range=(0.0, 1.0)))
+                    
+                cont_factor = augmentation_params.get("contrast_factor", 0.0)
+                if cont_factor > 0.0:
+                    aug_layers.append(layers.RandomContrast(cont_factor))
+                
+                data_augmentation = tf.keras.Sequential(aug_layers)
                 
                 def aug_norm_fn(img, lab):
                     img = tf.expand_dims(img, axis=0)
@@ -356,12 +363,12 @@ class ChunkManager:
             return dataset.batch(batch_size, drop_remainder=False).prefetch(tf.data.AUTOTUNE)
         
         # Créer les datasets
-        train_ds = create_chunked_tf_dataset('train', micro_batch_size, augment=augment, aggressive_aug=aggressive_aug)
-        val_ds = create_chunked_tf_dataset('val', micro_batch_size, augment=False, aggressive_aug=False)
+        train_ds = create_chunked_tf_dataset('train', micro_batch_size, augment=augment, augmentation_params=augmentation_params)
+        val_ds = create_chunked_tf_dataset('val', micro_batch_size, augment=False, augmentation_params=None)
         
         return train_ds, val_ds
     
-    def ensure_chunks_ready(self, micro_batch_size: int = 32, augment: bool = True, aggressive_aug: bool = False) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
+    def ensure_chunks_ready(self, micro_batch_size: int = 32, augment: bool = True, augmentation_params: dict = None) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
         """
         Point d'entrée principal : s'assure que les chunks sont prêts et retourne les datasets
         """
@@ -392,18 +399,19 @@ class ChunkManager:
         return self.create_tf_datasets(
             micro_batch_size=micro_batch_size,
             augment=augment,
-            aggressive_aug=aggressive_aug
+            augmentation_params=augmentation_params
         )
 class DetectionDataset:
     """
     Gestionnaire de dataset pour la détection d'objets
     Charge les chunks générés par tools/fighterjet_detection_dataset_tools.py
     """
-    def __init__(self, output_prefix: str, image_size: tuple = (224, 224), batch_size: int = 16, grayscale: bool = False):
+    def __init__(self, output_prefix: str, image_size: tuple = (224, 224), batch_size: int = 16, grayscale: bool = False, augmentation_params: dict = None):
         self.output_prefix = output_prefix
         self.image_size = image_size
         self.batch_size = batch_size
         self.grayscale = grayscale  # 🎨 Support grayscale
+        self.augmentation_params = augmentation_params if augmentation_params is not None else {}
         
         # Repérer les chunks
         self.train_chunks = sorted(glob.glob(os.path.join(output_prefix, "detection_train_chunk*.npz")))
@@ -455,89 +463,84 @@ class DetectionDataset:
                 h = boxes[:, 4:5]
                 
                 # --- 1. Flips (Vertical & Horizontal) ---
-                do_flip_v = tf.random.uniform([]) > 0.5
-                img = tf.cond(do_flip_v, lambda: tf.image.flip_up_down(img), lambda: img)
-                cy = tf.where(do_flip_v, 1.0 - cy, cy)
+                flip_v_enabled = self.augmentation_params.get("flip_v", False)
+                if flip_v_enabled:
+                    do_flip_v = tf.random.uniform([]) > 0.5
+                    img = tf.cond(do_flip_v, lambda: tf.image.flip_up_down(img), lambda: img)
+                    cy = tf.where(do_flip_v, 1.0 - cy, cy)
                 
-                do_flip_h = tf.random.uniform([]) > 0.5
-                img = tf.cond(do_flip_h, lambda: tf.image.flip_left_right(img), lambda: img)
-                cx = tf.where(do_flip_h, 1.0 - cx, cx)
+                flip_h_enabled = self.augmentation_params.get("flip_h", False)
+                if flip_h_enabled:
+                    do_flip_h = tf.random.uniform([]) > 0.5
+                    img = tf.cond(do_flip_h, lambda: tf.image.flip_left_right(img), lambda: img)
+                    cx = tf.where(do_flip_h, 1.0 - cx, cx)
                 
                 # --- 2. Translation (Shift) ---
-                do_translate = tf.random.uniform([]) > 0.5
-                shift_x = tf.random.uniform([], -0.1, 0.1)
-                shift_y = tf.random.uniform([], -0.1, 0.1)
-                
-                img_h = tf.shape(img)[0]
-                img_w = tf.shape(img)[1]
-                
-                def apply_translation(i, sx, sy):
-                    # Convert shift to pixels
-                    px = tf.cast(sx * tf.cast(img_w, tf.float32), tf.int32)
-                    py = tf.cast(sy * tf.cast(img_h, tf.float32), tf.int32)
+                trans_factor = self.augmentation_params.get("translation_factor", 0.0)
+                if trans_factor > 0.0:
+                    do_translate = tf.random.uniform([]) > 0.5
+                    shift_x = tf.random.uniform([], -trans_factor, trans_factor)
+                    shift_y = tf.random.uniform([], -trans_factor, trans_factor)
                     
-                    # Pad the image symmetrically (larger than needed)
-                    # We pad by max possible shift (10% + safety margin)
-                    pad_h = tf.cast(0.15 * tf.cast(img_h, tf.float32), tf.int32)
-                    pad_w = tf.cast(0.15 * tf.cast(img_w, tf.float32), tf.int32)
+                    img_h = tf.shape(img)[0]
+                    img_w = tf.shape(img)[1]
                     
-                    # Pad using REFLECT mode
-                    padded_img = tf.pad(i, paddings=[[pad_h, pad_h], [pad_w, pad_w], [0, 0]], mode='REFLECT')
+                    def apply_translation(i, sx, sy):
+                        px = tf.cast(sx * tf.cast(img_w, tf.float32), tf.int32)
+                        py = tf.cast(sy * tf.cast(img_h, tf.float32), tf.int32)
+                        
+                        pad_h = tf.cast(0.20 * tf.cast(img_h, tf.float32), tf.int32)  # pad plus grand que shift max
+                        pad_w = tf.cast(0.20 * tf.cast(img_w, tf.float32), tf.int32)
+                        
+                        padded_img = tf.pad(i, paddings=[[pad_h, pad_h], [pad_w, pad_w], [0, 0]], mode='REFLECT')
+                        
+                        start_y = pad_h - py
+                        start_x = pad_w - px
+                        
+                        shifted_img = tf.image.crop_to_bounding_box(padded_img, start_y, start_x, img_h, img_w)
+                        return shifted_img
                     
-                    # Define new crop start (center pad_h/pad_w, minus the shift)
-                    start_y = pad_h - py
-                    start_x = pad_w - px
+                    img = tf.cond(do_translate, 
+                                  lambda: apply_translation(img, shift_x, shift_y), 
+                                  lambda: img)
                     
-                    # Crop back to original size
-                    shifted_img = tf.image.crop_to_bounding_box(padded_img, start_y, start_x, img_h, img_w)
-                    return shifted_img
-                
-                img = tf.cond(do_translate, 
-                              lambda: apply_translation(img, shift_x, shift_y), 
-                              lambda: img)
-                
-                cx = tf.where(do_translate, cx + shift_x, cx)
-                cy = tf.where(do_translate, cy + shift_y, cy)
+                    cx = tf.where(do_translate, cx + shift_x, cx)
+                    cy = tf.where(do_translate, cy + shift_y, cy)
                 
                 # --- 3. Zoom (Scale) ---
-                # Zoom in (scale > 1) ou out (scale < 1) de +/- 20%
-                do_zoom = tf.random.uniform([]) > 0.5
-                scale = tf.random.uniform([], 0.8, 1.2)
-                
-                # Pour zoomer avec tf.image, on crop au centre puis redimensionne (Zoom In)
-                # Ou on pad puis redimensionne (Zoom Out). tf.image.central_crop est simple.
-                def apply_zoom(i, cur_scale):
-                    # Central crop & resize
-                    crop_frac = 1.0 / cur_scale # Si scale=1.2 (zoom in), on crop 83% de l'image
-                    crop_frac = tf.clip_by_value(crop_frac, 0.1, 1.0)
-                    i_cropped = tf.image.central_crop(i, crop_frac)
-                    # We use img_h and img_w which are defined above translation
-                    target_shape = tf.cast([img_h, img_w], tf.int32)
-                    return tf.image.resize(i_cropped, target_shape)
-                
-                img = tf.cond(do_zoom, lambda: apply_zoom(img, scale), lambda: img)
-                
-                # Ajuster les boîtes (le centre change car on recadre par rapport au centre)
-                # Le centre de l'image est 0.5, 0.5. L'écart au centre est multiplié par le scale.
-                cx_dist = cx - 0.5
-                cy_dist = cy - 0.5
-                
-                new_cx = 0.5 + (cx_dist * scale)
-                new_cy = 0.5 + (cy_dist * scale)
-                new_w = w * scale
-                new_h = h * scale
-                
-                cx = tf.where(do_zoom, new_cx, cx)
-                cy = tf.where(do_zoom, new_cy, cy)
-                w = tf.where(do_zoom, new_w, w)
-                h = tf.where(do_zoom, new_h, h)
+                zoom_factor = self.augmentation_params.get("zoom_factor", 0.0)
+                if zoom_factor > 0.0:
+                    do_zoom = tf.random.uniform([]) > 0.5
+                    scale = tf.random.uniform([], 1.0 - zoom_factor, 1.0 + zoom_factor)
+                    
+                    def apply_zoom(i, cur_scale):
+                        crop_frac = 1.0 / cur_scale
+                        crop_frac = tf.clip_by_value(crop_frac, 0.1, 1.0)
+                        i_cropped = tf.image.central_crop(i, crop_frac)
+                        img_h_local = tf.shape(i)[0]
+                        img_w_local = tf.shape(i)[1]
+                        target_shape = tf.cast([img_h_local, img_w_local], tf.int32)
+                        return tf.image.resize(i_cropped, target_shape)
+                    
+                    img = tf.cond(do_zoom, lambda: apply_zoom(img, scale), lambda: img)
+                    
+                    cx_dist = cx - 0.5
+                    cy_dist = cy - 0.5
+                    
+                    new_cx = 0.5 + (cx_dist * scale)
+                    new_cy = 0.5 + (cy_dist * scale)
+                    new_w = w * scale
+                    new_h = h * scale
+                    
+                    cx = tf.where(do_zoom, new_cx, cx)
+                    cy = tf.where(do_zoom, new_cy, cy)
+                    w = tf.where(do_zoom, new_w, w)
+                    h = tf.where(do_zoom, new_h, h)
                 
                 # --- Séparation des boxes invalides ---
-                # Si une boîte sort complètement du cadre, on annule has_obj
                 is_invalid = (cx < 0.0) | (cx > 1.0) | (cy < 0.0) | (cy > 1.0)
                 has_obj = tf.where(is_invalid, tf.zeros_like(has_obj), has_obj)
                 
-                # Clip les dimensions pour rester [0, 1]
                 cx = tf.clip_by_value(cx, 0.0, 1.0)
                 cy = tf.clip_by_value(cy, 0.0, 1.0)
                 w = tf.clip_by_value(w, 0.0, 1.0)
@@ -545,9 +548,17 @@ class DetectionDataset:
                 
                 boxes = tf.concat([has_obj, cx, cy, w, h], axis=-1)
                 
-                # --- 4. Augmentation couleur (Dernier car non-destructeur pour boxes) ---
-                img = tf.image.random_brightness(img, 0.2)
-                img = tf.image.random_contrast(img, 0.8, 1.2)
+                # --- 4. Augmentation couleur ---
+                bright_delta = self.augmentation_params.get("brightness_delta", 0.0)
+                if bright_delta > 0.0:
+                    img = tf.image.random_brightness(img, bright_delta)
+                    
+                cont_factor = self.augmentation_params.get("contrast_factor", 0.0)
+                if cont_factor > 0.0:
+                    lower_cont = 1.0 - cont_factor
+                    lower_cont = max(0.1, lower_cont) # Prevent contrast going below 0.1
+                    upper_cont = 1.0 + cont_factor
+                    img = tf.image.random_contrast(img, lower_cont, upper_cont)
                 
                 return img, boxes
 
@@ -576,6 +587,8 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
     task_type = config.get("task_type", "classification")
     print(f"🔄 Initialisation du pipeline de données pour la tâche : {task_type.upper()}")
     
+    aug_params = config.get("augmentation_params", {})
+    
     if task_type == "classification":
         chunk_manager = ChunkManager(
             data_dir=config["data_dir"],
@@ -585,11 +598,10 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
             class_names=config["class_names"],
             grayscale=config.get("grayscale", False)
         )
-        aggressive_aug = config.get("aggressive_augmentation", False)
         return chunk_manager.ensure_chunks_ready(
             micro_batch_size=backend_config["micro_batch_size"],
             augment=True,
-            aggressive_aug=aggressive_aug
+            augmentation_params=aug_params
         )
         
     elif task_type == "detection":
@@ -597,7 +609,8 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
             output_prefix=config["output_prefix"],
             image_size=config["image_size"],
             batch_size=backend_config["micro_batch_size"],
-            grayscale=config.get("grayscale", False)
+            grayscale=config.get("grayscale", False),
+            augmentation_params=aug_params
         )
         train_ds = dataset_manager.create_tf_dataset('train', augment=True)
         val_ds = dataset_manager.create_tf_dataset('val', augment=False)

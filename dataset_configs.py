@@ -49,7 +49,15 @@ DATASET_CONFIGS = {
         "chunk_size": 27000,
         "image_size": (128, 128),  # ✅ 128×128 optimal (83.24% obtenu)
         "grayscale": True,  # ✅ GRAYSCALE (3× plus rapide, même accuracy)
-        "aggressive_augmentation": False,  # ✅ Aug modérée marche mieux
+        "augmentation_params": {
+            "flip_h": True,
+            "flip_v": False,
+            "rotation_factor": 0.15,      # Légèrement augmenté (12 -> 15)
+            "zoom_factor": 0.15,          # Augmenté pour forcer à voir l'avion petit ou rogné
+            "translation_factor": 0.12,   # 🔥 CURE POUR SCINTILLEMENT (0.0 -> 0.12)
+            "brightness_delta": 0.10,
+            "contrast_factor": 0.10
+        },
         
         "mean": None,
         "std": None,
@@ -105,7 +113,15 @@ DATASET_CONFIGS = {
         "chunk_size": 15000,
         "image_size": (128, 128),
         "grayscale": True,
-        "aggressive_augmentation": True,  # 🔥 Augmentation TRÈS agressive pour compenser 56K vs 1M images
+        "augmentation_params": {
+            "flip_h": True,
+            "flip_v": True,
+            "rotation_factor": 0.30,      
+            "zoom_factor": 0.25,          
+            "translation_factor": 0.15,   
+            "brightness_delta": 0.30,
+            "contrast_factor": 0.30
+        },
         
         "mean": None,
         "std": None,
@@ -161,7 +177,15 @@ DATASET_CONFIGS = {
         "chunk_size": 15000,
         "image_size": (128, 128),
         "grayscale": True,
-        "aggressive_augmentation": True,  # 🔥 Augmentation agressive pour compenser dataset
+        "augmentation_params": {
+            "flip_h": True,
+            "flip_v": True,
+            "rotation_factor": 0.30,      
+            "zoom_factor": 0.25,          
+            "translation_factor": 0.15,   
+            "brightness_delta": 0.30,
+            "contrast_factor": 0.30
+        },
         
         "mean": None,
         "std": None,
@@ -218,6 +242,15 @@ DATASET_CONFIGS = {
         "chunk_size": 15000,
         "image_size": (128, 128),
         "grayscale": True,
+        "augmentation_params": {
+            "flip_h": True,
+            "flip_v": False,
+            "rotation_factor": 0.12,
+            "zoom_factor": 0.10,
+            "translation_factor": 0.0,
+            "brightness_delta": 0.10,
+            "contrast_factor": 0.10
+        },
         
         "mean": None,
         "std": None,
@@ -270,6 +303,17 @@ DATASET_CONFIGS = {
         "output_prefix": "./data/chunks/detection",
         "image_size": (224, 224),
         "grayscale": True,
+        
+        # === Augmentation de Données ===
+        "augmentation_params": {
+            "flip_h": True,
+            "flip_v": True,
+            "rotation_factor": 0.0,
+            "zoom_factor": 0.25,          # ±25% (était 20%) : Pour apprendre le multi-échelles
+            "translation_factor": 0.15,   # Shifting ±15% (était 10%) : Désaxer les cibles
+            "brightness_delta": 0.30,     # Beaucoup plus agressif (casser la dominante ciel gris clair)
+            "contrast_factor": 0.30       # Très agressif (simule contre-jour et nuages sombres)
+        },
         
         # === Modèle ---
         "model_name": "aircraft_detector_v7_advanced",
