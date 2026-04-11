@@ -35,14 +35,14 @@ class CheckpointManager:
         if self.checkpoint_dir and not os.path.exists(self.checkpoint_dir):
             os.makedirs(self.checkpoint_dir, exist_ok=True)
     
-    def save(self, state, best_val_acc: float, patience_counter: int, 
+    def save(self, state, best_val_metric: float, patience_counter: int, 
              epoch: int, rng, model_name: str, num_classes: int):
         """
-        Sauvegarde complète du modèle pour reprise d'entraînement
+        Sauvegarde un checkpoint
         
         Args:
-            state: État d'entraînement (TrainState)
-            best_val_acc: Meilleure accuracy de validation
+            state: État JAX d'entraînement
+            best_val_metric: Meilleur score de validation (Accuracy ou Loss)
             patience_counter: Compteur de patience pour early stopping
             epoch: Numéro de l'epoch actuelle
             rng: Clé RNG actuelle
@@ -57,7 +57,7 @@ class CheckpointManager:
                 'opt_state': state.opt_state
             },
             'training_state': {
-                'best_val_acc': best_val_acc,
+                'best_val_metric': best_val_metric,
                 'patience_counter': patience_counter,
                 'epoch': epoch,
                 'rng': rng
@@ -101,7 +101,7 @@ class CheckpointManager:
             weight_decay: Weight decay
         
         Returns:
-            tuple: (state, best_val_acc, patience_counter, epoch, rng) ou (None, None, None, None, None)
+            tuple: (state, best_val_metric, patience_counter, epoch, rng) ou (None, None, None, None, None)
         """
         if checkpoint is None:
             return None, None, None, None, None
@@ -135,15 +135,17 @@ class CheckpointManager:
         state = state.replace(opt_state=checkpoint['model_state']['opt_state'])
         
         # Restaurer les variables d'entraînement
-        best_val_acc = checkpoint['training_state']['best_val_acc']
+        # Rétrocompatibilité : Les anciens checkpoints sauvaient "best_val_acc" 
+        # (même si c'était techniquement une loss négative en détection).
+        best_val_metric = checkpoint['training_state'].get('best_val_metric', checkpoint['training_state'].get('best_val_acc'))
         patience_counter = checkpoint['training_state']['patience_counter']
         epoch = checkpoint['training_state']['epoch']
         
-        print(f"🔄 Entraînement repris depuis l'epoch {epoch+1}")
-        print(f"   Meilleure accuracy: {best_val_acc:.4f}")
-        print(f"   Patience counter: {patience_counter}")
+        print(f"🏁 Reprise d'entraînement à l'epoch {epoch}")
+        print(f"   Meilleure métrique (Acc/Loss): {best_val_metric:.4f}")
+        print(f"   Patience utilisée: {patience_counter}")
         
-        return state, best_val_acc, patience_counter, epoch, rng
+        return state, best_val_metric, patience_counter, epoch, rng
     
     def exists(self) -> bool:
         """Vérifie si un checkpoint existe"""

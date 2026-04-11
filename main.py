@@ -134,11 +134,11 @@ def main(dataset_name="FIGHTERJET_9CLASSES"):
     memory = psutil.virtual_memory()
     print(f"💾 RAM avant entraînement: {memory.percent:.1f}%")
     
-    final_state, best_val_acc = trainer.train(
+    final_state, best_val_metric = trainer.train(
         train_dataset=train_dataset_final,
         val_dataset=val_dataset_final,
         rng=rng,
-        resume_from_checkpoint=True
+        resume_from_checkpoint=config.get("resume_training", True)
     )
     
     # Garbage collection si RAM élevée
@@ -156,7 +156,7 @@ def main(dataset_name="FIGHTERJET_9CLASSES"):
     strategy.generate_reports(val_ds, final_state, model, config)
     
     print(f"\n🏁 Programme terminé")
-    print(f"   Meilleur score validation (Accuracy ou Loss Inverse): {best_val_acc:.4f}")
+    print(f"   Meilleur score validation (Accuracy ou Loss): {best_val_metric:.4f}")
 
 
 if __name__ == "__main__":

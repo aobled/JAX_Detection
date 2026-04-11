@@ -32,6 +32,12 @@ class TaskStrategy(ABC):
         """Nom textuel de la métrique principale (ex: 'Accuracy', 'Score')."""
         pass
         
+    @property
+    @abstractmethod
+    def optimization_mode(self) -> str:
+        """Mode d'optimisation de la métrique ('max' ou 'min')."""
+        pass
+        
     def export_model(self, state, config):
         """Exporte le modèle (params et batch_stats) au format .pkl."""
         try:
@@ -77,6 +83,10 @@ class ClassificationStrategy(TaskStrategy):
     @property
     def primary_metric_name(self) -> str:
         return "Accuracy"
+        
+    @property
+    def optimization_mode(self) -> str:
+        return "max"
         
     def _get_export_path(self, config) -> str:
         pkl_path = config.get("checkpoint_path", "best_model.pkl")
@@ -145,7 +155,11 @@ class ClassificationStrategy(TaskStrategy):
 class DetectionStrategy(TaskStrategy):
     @property
     def primary_metric_name(self) -> str:
-        return "Score (-Loss)"
+        return "Loss"
+        
+    @property
+    def optimization_mode(self) -> str:
+        return "min"
         
     def _get_export_path(self, config) -> str:
         return "best_model_detection.pkl"
@@ -168,16 +182,9 @@ class DetectionStrategy(TaskStrategy):
         return compute_grid_loss(outputs, targets)
         
     def compute_metrics(self, outputs, targets):
-        # En détection, pour le système de Checkpoint qui "maximise", 
-        # on retourne l'inverse mathématique de la Loss
-        if isinstance(outputs, (tuple, list)):
-            if len(outputs) == 3:
-                return -compute_v7_loss(outputs, targets)
-            elif len(outputs) == 2:
-                return -compute_grid_loss_multilevel(outputs, targets)
-            else:
-                raise ValueError(f"Nombre de grilles non supporté: {len(outputs)}")
-        return -compute_grid_loss(outputs, targets)
+        # En détection, nous n'avons pas d'Accuracy simple à calculer tensoriellement.
+        # Le Trainer utilisera directement la vraie 'val_loss' grâce au mode 'min'.
+        return 0.0
         
     def generate_reports(self, val_ds, final_state, model, config):
         from reporting import DetectionReporter

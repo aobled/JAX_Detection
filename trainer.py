@@ -71,7 +71,7 @@ class Trainer:
         
         # État d'entraînement
         self.state = None
-        self.best_val_acc = float('-inf')
+        self.best_val_metric = float('-inf') if self.strategy.optimization_mode == "max" else float('inf')
         self.patience_counter = 0
         self.current_epoch = 0
         self.schedule = None  # Pour extraire le LR
@@ -374,14 +374,14 @@ class Trainer:
         if resume_from_checkpoint:
             checkpoint = self.checkpoint_manager.load()
             if checkpoint is not None:
-                self.state, self.best_val_acc, self.patience_counter, start_epoch, rng = \
+                self.state, self.best_val_metric, self.patience_counter, start_epoch, rng = \
                     self.checkpoint_manager.resume_training(
                         checkpoint, self.model, self.learning_rate, self.weight_decay
                     )
                 if self.state is None:
                     print("❌ Impossible de reprendre, démarrage depuis zéro")
                     start_epoch = 0
-                    self.best_val_acc = 0.0
+                    self.best_val_metric = float('-inf') if self.strategy.optimization_mode == "max" else float('inf')
                     self.patience_counter = 0
             else:
                 print("🚀 Démarrage d'un nouvel entraînement")
@@ -441,14 +441,17 @@ class Trainer:
                     print(f"💾 RAM après GC: {memory.percent:.1f}%")
             
             # Early stopping
-            if val_acc > self.best_val_acc:
-                self.best_val_acc = val_acc
+            current_metric = val_acc if self.strategy.optimization_mode == "max" else val_loss
+            is_better = (current_metric > self.best_val_metric) if self.strategy.optimization_mode == "max" else (current_metric < self.best_val_metric)
+            
+            if is_better:
+                self.best_val_metric = current_metric
                 self.patience_counter = 0
-                print(f"[✓] New best model saved (val_acc={val_acc:.4f})")
+                print(f"[✓] New best model saved ({self.strategy.primary_metric_name}={current_metric:.4f})")
                 
                 # Sauvegarder le checkpoint Orbax
                 self.checkpoint_manager.save(
-                    self.state, self.best_val_acc, self.patience_counter,
+                    self.state, self.best_val_metric, self.patience_counter,
                     epoch, rng, self.model_name, self.config["num_classes"]
                 )
                 
@@ -461,15 +464,15 @@ class Trainer:
                     break
         
         print(f"\n🎯 ENTRAÎNEMENT TERMINÉ")
-        print(f"   Meilleur {self.strategy.primary_metric_name} validation: {self.best_val_acc:.4f}")
+        print(f"   Meilleur {self.strategy.primary_metric_name} validation: {self.best_val_metric:.4f}")
         
-        return self.state, self.best_val_acc
+        return self.state, self.best_val_metric
     
     def get_state(self):
         """Retourne l'état d'entraînement actuel"""
         return self.state
     
-    def get_best_val_acc(self):
-        """Retourne la meilleure accuracy de validation"""
-        return self.best_val_acc
+    def get_best_val_metric(self):
+        """Retourne la meilleure métrique de validation"""
+        return self.best_val_metric
 
