@@ -169,7 +169,7 @@ if __name__ == "__main__":
         dataset_name = sys.argv[1]
         print(f"🎯 Dataset spécifié: {dataset_name}")
     else:
-        dataset_name = "FIGHTERJET_CLASSES"  # Défaut
+        dataset_name = "FIGHTERJET_CLASSIFICATION"  # Défaut
         print(f"🎯 Dataset par défaut: {dataset_name}")
     
     main(dataset_name)

@@ -21,7 +21,7 @@ from model_library import get_model  # Uniquement get_model (pas besoin de la cl
 # Input CONFIGURATION
 # =================================================================================================
 # 1. Configuration du dataset et du modèle de classification
-DATASET_NAME = "FIGHTERJET_CLASSES"     # Nom de la config dans dataset_configs.py
+DATASET_NAME = "FIGHTERJET_CLASSIFICATION"     # Nom de la config dans dataset_configs.py
 CHECKPOINT_PATH = "best_model.pkl"      # Chemin vers le modèle de CLASSIFICATION
 
 # 2. Configuration du modèle de détection
@@ -35,26 +35,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ==========================================================
 # Detection CONFIGURATION
 # ==========================================================
-VIDEO_PATH = "/home/aobled/Downloads/EAA AirVenture Oshkosh.mp4"
+VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
 OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 
 FRAME_STRIDE = 1  # 1 = toutes les frames
-
-DATASET_NAME = "FIGHTERJET_CLASSES"
-CHECKPOINT_PATH = "best_model.pkl"
-DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl"
-
-CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
-DETECTION_CONF_THRESHOLD = 0.4          # Seuil pour considérer une détection valide (objectness + class) best 0.7
+#CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
+DETECTION_CONF_THRESHOLD = 0.3          # Seuil pour considérer une détection valide (objectness + class) best 0.7
 NMS_THRESHOLD = 0.5                     # Seuil IoU pour NMS best 0.4
 DEFAULT_CLASSE = "unknown"
-TARGET_CLASS_LIST = ["f22", "f35", "a10", "f16"]
+TARGET_CLASS_LIST = ["b2", "b52", "b1b", "f15", "f22", "a10", "f16"]
 
 # Paramètres de Lissage Temporel (Anti-Flickering / Tracking)
 SMOOTHING_ENABLED = True
 SMOOTHING_ALPHA = 0.6              # Ratio de lissage (ex: 0.7 = 70% de la détection actuelle + 30% d'historique)
-SMOOTHING_MAX_MISSING_FRAMES = 4   # Nombre de frames passées mémorisées (pour pallier un raté de détection)
-SMOOTHING_IOU_THRESHOLD = 0.5      # Seuil IoU pour associer la boîte frame T avec frame T-1
+SMOOTHING_MAX_MISSING_FRAMES = 1   # Nombre de frames passées mémorisées (pour pallier un raté de détection)
+SMOOTHING_IOU_THRESHOLD = 0.7      # Seuil IoU pour associer la boîte frame T avec frame T-1
 
 
 # 3. Chargement de la config dataset
@@ -63,7 +58,7 @@ try:
     CLASS_NAMES = config["class_names"]
     print(f"✅ Configuration chargée: {DATASET_NAME}")
     print(f"📊 Classes ({len(CLASS_NAMES)}): {CLASS_NAMES}")
-    print(f"🔒 Seuil de confiance (Classification): {CONFIDENCE_THRESHOLD * 100}%")
+    #print(f"🔒 Seuil de confiance (Classification): {CONFIDENCE_THRESHOLD * 100}%")
 except Exception as e:
     print(f"❌ Erreur chargement config: {e}")
     sys.exit(1)

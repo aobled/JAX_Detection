@@ -62,11 +62,10 @@ def reporting_groupby_class_and_split(df):
     print(result)
     result.to_csv("comptage_classes_train_val.csv")
 
-# GROUP BY nombre de boxes
 def reporting_groupby_box_count(df):
     # 1. Compter le nombre de boxe par image et par split
     box_counts = df.groupby(['base_image_name', 'split']).size().reset_index(name='box_count')
-    
+
     # 2. Pivoter pour obtenir le nombre d'images par box_count et par split
     pivot = box_counts.pivot_table(
         index='box_count',
@@ -75,18 +74,40 @@ def reporting_groupby_box_count(df):
         aggfunc='count',
         fill_value=0
     ).reset_index()
-    
+
     # 3. Renommer les colonnes pour plus de clarté
     pivot.columns = ['box_count', 'train', 'val']
-    
-    # 4. Calculer le ratio val/(train+val) en pourcentage
-    pivot['ratio'] = (pivot['val'] / (pivot['train'] + pivot['val'])) * 100
-    
-    # 5. Arrondir le ratio à 2 décimales
-    pivot['ratio'] = pivot['ratio'].round(2).astype(str) + '%'
-    
-    # 6. Afficher le résultat
+
+    # 4. Calculer la somme pondérée pour train et val (count*box_count)
+    pivot['train_weighted'] = pivot['train'] * pivot['box_count']
+    pivot['val_weighted'] = pivot['val'] * pivot['box_count']
+
+    # 5. Ajouter une ligne TOTAL
+    total_train = pivot['train_weighted'].sum()
+    total_val = pivot['val_weighted'].sum()
+    total_row = pd.DataFrame({
+        'box_count': ['TOTAL'],
+        'train': [pivot['train'].sum()],
+        'val': [pivot['val'].sum()],
+        'train_weighted': [total_train],
+        'val_weighted': [total_val]
+    })
+
+    pivot = pd.concat([pivot, total_row], ignore_index=True)
+
+    # 6. Calculer le ratio val/(train+val) en pourcentage (y compris pour TOTAL)
+    pivot['ratio'] = (
+        (pivot['val_weighted'] / (pivot['train_weighted'] + pivot['val_weighted'])) * 100
+    ).round(2).astype(str) + '%'
+
+    # 7. Nettoyer les colonnes temporaires (optionnel)
+    pivot = pivot.drop(columns=['train_weighted', 'val_weighted'])
+
+    # 8. Afficher le résultat
     print(pivot)
+
+    # 9. Exporter le résultat
+    pivot.to_csv("box_count.csv", index=False)
 
 #  images avec une seule box dans le mauvais repertoire
 def reporting_boxes_on_wrong_directory(df):
@@ -191,7 +212,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataset_configs import get_dataset_config
 
 DATASET_PATH = '/home/aobled/Downloads/Aircraft_DATASET/detection'
-DATASET_NAME = "FIGHTERJET_CLASSES"     # Nom de la config dans dataset_configs.py
+DATASET_NAME = "FIGHTERJET_CLASSIFICATION"     # Nom de la config dans dataset_configs.py
 try:
     config = get_dataset_config(DATASET_NAME)
     CLASS_NAMES = config["class_names"]
@@ -207,7 +228,7 @@ df = load_dataset_to_dataframe(DATASET_PATH)
 #reporting_groupby_class_and_split(df)
 reporting_groupby_box_count(df)
 #reporting_boxes_on_wrong_directory(df)
-#reporting_single_boxes_target_class_size(df, target_class='a10', target_size=2)
+#reporting_single_boxes_target_class_size(df, target_class='a4', target_size=2)
 #reporting_single_classe_images(df, target_class='b52', min_size=16)
-#reporting_all_images_in_class_list(df, class_list=['unknown'])
+#reporting_all_images_in_class_list(df, class_list=['sr71'])
 #reporting_small_boxes(df, min_size=16)

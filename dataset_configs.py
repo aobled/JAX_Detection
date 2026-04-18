@@ -36,32 +36,29 @@ def validate_config(config_name, config):
 
 
 DATASET_CONFIGS = {
-    "FIGHTERJET_CLASSES": {
+    "FIGHTERJET_CLASSIFICATION": {
         # === CONFIG OPTIMALE CNN 128×128 GRAYSCALE STRETCHED ===
-        # Meilleur résultat obtenu: 83.24% val (epoch 30)
-        # Objectif améliorations: 85-87% val
-        
         # === Données ===
-        "num_classes": 30,
-        "class_names": ['a4', 'a10', 'a400m', 'alphajet', 'b1b', 'b2', 'b52', 'c130', 'c17', 'f4', 'f14', 'f15', 'f16', 'f18', 'f22', 'f35', 'f117', 'flanker', 'gripen', 'harrier', 'hawk', 'hawkeye', 'jaguar', 'mig29', 'mirage2000', 'rafale', 'su57', 'tornado', 'typhoon', 'v22'],
+        "num_classes": 35,
+        "class_names": ['a4', 'a10', 'a400m', 'alphajet', 'b1b', 'b2', 'b52', 'c5', 'c130', 'c17', 'f4', 'f14', 'f15', 'f16', 'f18', 'f22', 'f35', 'f117', 'flanker', 'gripen', 'harrier', 'hawk', 'hawkeye', 'jaguar', 'mig29', 'mirage2000', 'miragef1', 'mustang', 'rafale', 'spitfire', 'su57', 'sr71', 'tornado', 'typhoon', 'v22'],
         "data_dir": "/home/aobled/Downloads/_balanced_dataset_split",
-        "output_prefix": "./data/chunks/dataset_chunked",
+        "output_prefix": "./data/chunks/classification/dataset_classification",
         "chunk_size": 27000,
-        "image_size": (128, 128),  # ✅ 128×128 optimal (83.24% obtenu)
+        "image_size": (128, 128),
         "grayscale": True,  # ✅ GRAYSCALE (3× plus rapide, même accuracy)
         "augmentation_params": {
             "flip_h": True,
             "flip_v": False,
-            "rotation_factor": 0.15,      # Légèrement augmenté (12 -> 15)
-            "zoom_factor": 0.15,          # Augmenté pour forcer à voir l'avion petit ou rogné
-            "translation_factor": 0.12,   # 🔥 CURE POUR SCINTILLEMENT (0.0 -> 0.12)
+            "rotation_factor": 0.10,      # Adouci (était 0.15, 0.12 avant)
+            "zoom_factor": 0.10,          # Adouci (était 0.15)
+            "translation_factor": 0.06,   # Divisé par 2 (0.12 -> 0.06) : Assez pour garder l'invariance anti-scintillement sans détruire la cible
             "brightness_delta": 0.10,
             "contrast_factor": 0.10
         },
         
         "mean": None,
         "std": None,
-        "mean_std_path": "./data/chunks/dataset_chunked_meanstd.npz",
+        "mean_std_path": "./data/chunks/classification/dataset_classification_meanstd.npz",
         
         # === Modèle ===
         "model_name": "sophisticated_cnn_128_plus",  # ✅ OPTIMAL: Version optimisée+ (4M params, 88% val)
@@ -87,6 +84,8 @@ DATASET_CONFIGS = {
         # === Entraînement ===
         "epochs": 40,              # 40
         "patience": 5,
+        "warmup_steps": 1200,      # Rendu explicite (était hérité du Trainer)
+        "decay_steps": 6000,       # Le LR chute vite et stagne à 0 pour fine-tuning après ~15 epochs
         "label_smoothing": 0.1,    # ✅ Aide légèrement
         "mixup_alpha": 0.05,        # ✅ OPTIMAL: Mixup doux (meilleur compromis trouvé)
         
@@ -300,7 +299,7 @@ DATASET_CONFIGS = {
         # === Données ===
         "num_classes": 1,  # Single Class Object Detection
         "class_names": ['aircraft'],
-        "output_prefix": "./data/chunks/detection",
+        "output_prefix": "./data/chunks/detection/dataset_detection",
         "image_size": (224, 224),
         "grayscale": True,
         
@@ -339,9 +338,9 @@ DATASET_CONFIGS = {
         
         # === Entraînement ===
         "epochs": 30,
-        "patience": 10,
-        "warmup_steps": 2000,
-        "decay_steps": 90000,          # 🔥 Le LR restera fort sur ~100k itérations (évite la stagnation prématurée)
+        "patience": 5,
+        "warmup_steps": 2000,          # Préchauffage lent sur ~4 epochs
+        "decay_steps": 10000,          # 🔥 CORRIGÉ : Le LR chutera maintenant vers zéro autour de l'epoch 25 (au lieu de 200)
         
         # === Évaluation/Visualization ===
         "eval_batch_size": 16,

@@ -272,41 +272,58 @@ if __name__ == "__main__":
 
 # ========== 3. Création des fichiers NPZ ==========
 from PIL import Image
-def create_npz_splits(
-    dataset_dir,
-    output_prefix,
-    image_size=(128, 128)
-):
+def create_chunked_npz_classification(dataset_dir, output_prefix, image_size=(128, 128), chunk_size=27000, grayscale=True):
     for split in ['train', 'val']:
         split_dir = os.path.join(dataset_dir, split)
+        if not os.path.exists(split_dir): continue
+        
         class_names = sorted(os.listdir(split_dir))
         class_to_idx = {name: idx for idx, name in enumerate(class_names)}
-
-        images, labels = [], []
-
-        for class_name in tqdm.tqdm(class_names):
+        
+        file_paths = []
+        file_labels = []
+        for class_name in class_names:
             class_path = os.path.join(split_dir, class_name)
             for path in glob.glob(os.path.join(class_path, "*.png")):
-                img = Image.open(path).convert("RGB").resize(image_size)
-                images.append(np.asarray(img))
-                labels.append(class_to_idx[class_name])
-
-        images = np.stack(images).astype(np.uint8)
-        labels = np.array(labels).astype(np.uint8)
-
-        out_file = f"{output_prefix}_{split}.npz"
-        np.savez_compressed(out_file, image=images, label=labels)
-        print(f"[✓] {split} : {len(images)} images sauvegardées dans {out_file}")
+                file_paths.append(path)
+                file_labels.append(class_to_idx[class_name])
+                
+        indices = np.arange(len(file_paths))
+        np.random.shuffle(indices)
+        file_paths = [file_paths[i] for i in indices]
+        file_labels = [file_labels[i] for i in indices]
+        
+        num_chunks = (len(file_paths) + chunk_size - 1) // chunk_size
+        img_mode = "L" if grayscale else "RGB"
+        
+        for chunk_id in range(num_chunks):
+            start = chunk_id * chunk_size
+            end = min((chunk_id + 1) * chunk_size, len(file_paths))
+            
+            chunk_images, chunk_labels = [], []
+            for i in tqdm.tqdm(range(start, end), desc=f"Creating {split} chunk {chunk_id}"):
+                img = Image.open(file_paths[i]).convert(img_mode).resize(image_size)
+                img_array = np.array(img, dtype=np.float32) / 255.0
+                if grayscale and img_array.ndim == 2:
+                    img_array = np.expand_dims(img_array, axis=-1)
+                chunk_images.append(img_array)
+                chunk_labels.append(file_labels[i])
+                
+            out_file = f"{output_prefix}_{split}_chunk{chunk_id}.npz"
+            os.makedirs(os.path.dirname(out_file), exist_ok=True)
+            np.savez_compressed(out_file, image=np.stack(chunk_images), label=np.array(chunk_labels, dtype=np.int32))
+            print(f"[✓] {split} chunk {chunk_id}: {len(chunk_images)} images -> {out_file}")
 
 
 # Calcul du MEAN et STD
-def calculate_normalization_stats(root_dir, sample_size=None, save_path=None):
+def calculate_normalization_stats(root_dir, sample_size=None, grayscale=False, save_path=None):
     """
     Calcule la moyenne et l'écart-type du dataset de manière itérative (sans tout charger en RAM).
     
     Args:
         root_dir: Dossier racine des images.
         sample_size: Si défini, limite le calcul à un échantillon aléatoire de X images (ex: 5000).
+        grayscale: Si True, convertit les images en niveaux de gris (un seul canal).
         save_path: Si défini, sauvegarde les stats dans un fichier .npz (mean=..., std=...).
     """
     print(f"📊 Calcul des stats de normalisation sur {root_dir}")
@@ -328,24 +345,28 @@ def calculate_normalization_stats(root_dir, sample_size=None, save_path=None):
     else:
         print(f"📚 Traitement de toutes les images : {total_images}")
 
-    # Variables pour le calcul itératif
-    sum_rgb = np.zeros(3)
-    sum_sq_rgb = np.zeros(3)
+    num_channels = 1 if grayscale else 3
+    sum_pixels = np.zeros(num_channels)
+    sum_sq_pixels = np.zeros(num_channels)
     count = 0
+
+    mode = "L" if grayscale else "RGB"
 
     for img_path in tqdm.tqdm(image_paths, desc="Calcul Mean/Std"):
         try:
              with Image.open(img_path) as img:
-                # Convertir en RGB et normaliser [0, 1]
-                img_array = np.array(img.convert("RGB")) / 255.0
+                # Convertir au mode requis et normaliser [0, 1]
+                img_array = np.array(img.convert(mode)) / 255.0
                 
                 # Aplatir les dimensions H et W pour ne garder que les canaux
-                # img_array shape: (H, W, 3) -> reshape -> (N, 3)
-                pixels = img_array.reshape(-1, 3)
+                if grayscale:
+                    pixels = img_array.reshape(-1, 1)
+                else:
+                    pixels = img_array.reshape(-1, 3)
                 
                 # Sommes cumulées
-                sum_rgb += pixels.sum(axis=0)
-                sum_sq_rgb += (pixels ** 2).sum(axis=0)
+                sum_pixels += pixels.sum(axis=0)
+                sum_sq_pixels += (pixels ** 2).sum(axis=0)
                 count += pixels.shape[0]
                 
         except Exception as e:
@@ -353,9 +374,9 @@ def calculate_normalization_stats(root_dir, sample_size=None, save_path=None):
             continue
 
     # Calcul final
-    mean = sum_rgb / count
+    mean = sum_pixels / count
     # Var = E[X^2] - (E[X])^2
-    variance = (sum_sq_rgb / count) - (mean ** 2)
+    variance = (sum_sq_pixels / count) - (mean ** 2)
     # Std = sqrt(Var)
     std = np.sqrt(variance)
 
@@ -385,7 +406,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataset_configs import get_dataset_config
 
 DATASET_PATH = '/home/aobled/Downloads/Aircraft_DATASET/classification'
-DATASET_NAME = "FIGHTERJET_CLASSES"     # Nom de la config dans dataset_configs.py
+DATASET_NAME = "FIGHTERJET_CLASSIFICATION"     # Nom de la config dans dataset_configs.py
 try:
     config = get_dataset_config(DATASET_NAME)
     CLASS_NAMES = config["class_names"]
@@ -394,16 +415,45 @@ except Exception as e:
     print(f"❌ Erreur chargement config: {e}")
     sys.exit(1)
 #------------------------------
-process_dataset_stretched(root_dir="/home/aobled/Downloads/Aircraft_DATASET/classification", output_dir="/home/aobled/Downloads/_balanced_dataset_split", target_size=128, grayscale=True, overlap_threshold=0.15, categories = CLASS_NAMES)
+OUTPUT_DIR_STRETCHED = "/home/aobled/Downloads/_balanced_dataset_split"
+OUTPUT_PREFIX = "./data/chunks/classification/dataset_classification"
+IMAGE_SIZE = config.get("image_size", (128, 128))
+CHUNK_SIZE = config.get("chunk_size", 27000)
+GRAYSCALE = config.get("grayscale", True)
 
+print("\n🚀 [1/3] RESIZING ET ETALEMENT DES IMAGES")
+process_dataset_stretched(
+    root_dir=DATASET_PATH, 
+    output_dir=OUTPUT_DIR_STRETCHED, 
+    target_size=IMAGE_SIZE[0], 
+    grayscale=GRAYSCALE, 
+    overlap_threshold=0.15, 
+    categories=CLASS_NAMES
+)
 
-# Étape 3 : conversion en fichiers NPZ JAX-friendly
-IMAGE_SIZE = (TARGET_SIZE, TARGET_SIZE)
-# create_npz_splits("/home/aobled/Downloads/_balanced_dataset_split", "fighterjet", image_size=IMAGE_SIZE)
+print("\n🚀 [2/3] CALCUL DU MEAN ET STD")
+os.makedirs(os.path.dirname(OUTPUT_PREFIX), exist_ok=True)
+mean_std_path = config.get("mean_std_path", f"{OUTPUT_PREFIX}_meanstd.npz")
+mean, std = calculate_normalization_stats(
+    root_dir=OUTPUT_DIR_STRETCHED, 
+    sample_size=None, # Calculer sur l'entièreté du dataset d'entrainement + val
+    grayscale=GRAYSCALE,
+    save_path=mean_std_path
+)
 
-# Calcul des stats sur un échantillon et sauvegarde pour l'entraînement
-"""mean, std = calculate_normalization_stats(
-    root_dir='/home/aobled/Downloads/_balanced_dataset_split/', 
-    sample_size=10000,
-    save_path='./data/chunks/dataset_chunked_meanstd.npz'
-)"""
+print("\n🚀 [3/3] BUNDLING EN CHUNKS JAX-FRIENDLY")
+# Supprimer les anciens chunks
+old_chunks = glob.glob(f"{OUTPUT_PREFIX}_*_chunk*.npz")
+for chunk in old_chunks:
+    try: os.remove(chunk)
+    except: pass
+
+create_chunked_npz_classification(
+    dataset_dir=OUTPUT_DIR_STRETCHED,
+    output_prefix=OUTPUT_PREFIX,
+    image_size=IMAGE_SIZE,
+    chunk_size=CHUNK_SIZE,
+    grayscale=GRAYSCALE
+)
+
+print("\n✅ DATASET CLASSIFICATION PRÊT POUR L'ENTRAÎNEMENT !")

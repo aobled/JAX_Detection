@@ -155,7 +155,7 @@ def _save_chunk(output_dir, split_name, chunk_idx, images, boxes):
     images_np = np.array(images, dtype=np.float32) # (N, H, W, C) où C=1 (grayscale) ou 3 (RGB)
     boxes_np = np.array(boxes, dtype=np.float32)   # (N, 30, 5)
     
-    out_path = os.path.join(output_dir, f"detection_{split_name}_chunk{chunk_idx}.npz")
+    out_path = os.path.join(output_dir, f"dataset_detection_{split_name}_chunk{chunk_idx}.npz")
     np.savez_compressed(out_path, images=images_np, boxes=boxes_np)
     print(f"💾 Chunk {chunk_idx} saved: {len(images)} images")
 
@@ -170,7 +170,7 @@ if __name__ == "__main__":
     
     # 🗑️ Supprimer les anciens chunks si ils existent (pour éviter les conflits de taille)
     if os.path.exists(OUTPUT_DIR):
-        old_chunks = glob.glob(os.path.join(OUTPUT_DIR, "detection_*_chunk*.npz"))
+        old_chunks = glob.glob(os.path.join(OUTPUT_DIR, "dataset_detection_*_chunk*.npz"))
         if old_chunks:
             print(f"🗑️  Suppression de {len(old_chunks)} anciens chunks...")
             for chunk in old_chunks:

@@ -1,0 +1,13 @@
+rclone sync /home/aobled/Desktop/Development/JAX_Detection gdrive:JAX_Detection \
+    -P \
+    --exclude=".git/" \
+    --exclude="__pycache__/" \
+    --exclude="sauv_pkl_ok/"
+
+from google.colab import drive
+drive.mount('/content/drive')
+%cd "/content/drive/MyDrive/JAX_Detection"
+!ls -lrts
+!pip install tensorflow
+!python main.py FIGHTERJET_CLASSIFICATION
+

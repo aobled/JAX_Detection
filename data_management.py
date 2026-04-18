@@ -16,217 +16,20 @@ from typing import Tuple, Optional
 class ChunkManager:
     """
     Gestionnaire des chunks de données
-    Responsable de la création, vérification et chargement des chunks
+    Responsable UNIQUEMENT du chargement des chunks (la création se fait via _dataset_tools.py)
     """
-    
-    def __init__(self, data_dir: str, output_prefix: str, chunk_size: int = 1000, image_size: tuple = (64, 64), class_names: list = None, grayscale: bool = False):
-        self.data_dir = data_dir
+    def __init__(self, output_prefix: str, image_size: tuple = (128, 128), grayscale: bool = False):
         self.output_prefix = output_prefix
-        self.chunk_size = chunk_size
         self.image_size = image_size
-        self.grayscale = grayscale  # 🎨 Support images grayscale
-        
-        # 🔧 CLASSES DYNAMIQUES
-        if class_names is None:
-            # Détection automatique des classes depuis les dossiers
-            self.class_names = self._detect_classes()
-        else:
-            self.class_names = class_names
-        
-        print(f"📁 Classes détectées: {self.class_names}")
-        print(f"🎨 Mode: {'Grayscale (1 canal)' if grayscale else 'RGB (3 canaux)'}")
+        self.grayscale = grayscale
         
         # Chemins des chunks
         self.train_chunks = sorted(glob.glob(f"{output_prefix}_train_chunk*.npz"))
         self.val_chunks = sorted(glob.glob(f"{output_prefix}_val_chunk*.npz"))
-    
-    def _detect_classes(self) -> list:
-        """Détecte automatiquement les classes depuis les dossiers train/val"""
-        train_dir = os.path.join(self.data_dir, 'train')
-        if os.path.exists(train_dir):
-            classes = sorted([d for d in os.listdir(train_dir) 
-                            if os.path.isdir(os.path.join(train_dir, d))])
-            print(f"🔍 Détection automatique: {classes}")
-            return classes
-        else:
-            print("⚠️  Dossier train non trouvé, exit")
-            exit(0)
+        self.mean_std_path = f"{output_prefix}_meanstd.npz"
         
-    def check_chunks_exist(self) -> bool:
-        """Vérifie si les chunks existent"""
-        return len(self.train_chunks) > 0 and len(self.val_chunks) > 0
-    
-    def verify_chunks_quality(self) -> bool:
-        """
-        Vérifie la qualité des chunks (équilibrage des classes)
-        Retourne True si les chunks sont valides
-        """
-        if not self.check_chunks_exist():
-            return False
-            
-        print("🔍 Vérification de la qualité des chunks...")
-        val_has_both_classes = True
-        
-        # Vérifier les premiers chunks de validation
-        for i, chunk_path in enumerate(self.val_chunks[:5]):
-            try:
-                with np.load(chunk_path) as data:
-                    labels = data['label']
-                    class_counts = np.bincount(labels)
-                    print(f"Chunk val {i}: {len(labels)} échantillons, classes {class_counts}")
-                    
-                    # Vérifier si ce chunk contient les deux classes
-                    if len(class_counts) < 2:
-                        val_has_both_classes = False
-                        print(f"⚠️  Chunk val {i} ne contient qu'une seule classe")
-                        
-            except Exception as e:
-                print(f"Erreur chunk val {i}: {e}")
-                val_has_both_classes = False
-        
-        return val_has_both_classes
-    
-    def should_recreate_chunks(self) -> bool:
-        """
-        Détermine si les chunks doivent être recréés
-        """
-        if not self.check_chunks_exist():
-            print("❌ Aucun chunk trouvé")
-            return True
-            
-        if not self.verify_chunks_quality():
-            print("❌ Chunks existants sont défaillants")
-            return True
-            
-        print("✅ Chunks existants sont valides")
-        return False
-    
-    def cleanup_old_chunks(self):
-        """Supprime les anciens chunks"""
-        print("🗑️  Suppression des anciens chunks...")
-        old_chunks = glob.glob(f"{self.output_prefix}_*_chunk*.npz")
-        for chunk in old_chunks:
-            try:
-                os.remove(chunk)
-                print(f"Supprimé: {chunk}")
-            except Exception as e:
-                print(f"Erreur suppression {chunk}: {e}")
-    
-    def create_chunked_npz(self):
-        """
-        Crée les chunks avec répartition équilibrée - VERSION OPTIMISÉE MÉMOIRE
-        Charge les images progressivement au lieu de tout en RAM
-        """
-        print("🔄 Création des chunks avec répartition équilibrée (optimisé mémoire)...")
-        
-        # Créer le dossier de sortie si nécessaire
-        output_dir = os.path.dirname(self.output_prefix)
-        if output_dir and not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-
-        for split in ['train', 'val']:
-            split_dir = os.path.join(self.data_dir, split)
-            
-            # 🔄 COLLECTER LES CHEMINS DES FICHIERS (pas les images)
-            print(f"\n🔄 COLLECTE DES CHEMINS POUR {split}:")
-            file_paths = []
-            file_labels = []
-            
-            for label, class_name in enumerate(self.class_names):
-                class_path = os.path.join(split_dir, class_name)
-                print(f"Collecte {class_name}...")
-                
-                for img_file in os.listdir(class_path):
-                    file_paths.append(os.path.join(class_path, img_file))
-                    file_labels.append(label)
-            
-            # 🔀 MÉLANGER LES CHEMINS (pas les images)
-            print(f"Mélange de {len(file_paths)} chemins...")
-            indices = np.arange(len(file_paths))
-            np.random.shuffle(indices)
-            
-            file_paths = [file_paths[i] for i in indices]
-            file_labels = [file_labels[i] for i in indices]
-            
-            # Afficher la distribution des classes
-            class_counts = [file_labels.count(i) for i in range(len(self.class_names))]
-            print(f"Après mélange - Distribution: {dict(zip(self.class_names, class_counts))}")
-            
-            # Calcul des statistiques pour le train (sur un échantillon)
-            num_channels = 1 if self.grayscale else 3
-            mean_accumulator = np.zeros(num_channels, dtype=np.float64)
-            std_accumulator = np.zeros(num_channels, dtype=np.float64)
-            
-            if split == 'train':
-                print("Calcul des statistiques sur un échantillon...")
-                sample_size = min(1000, len(file_paths))
-                for i in tqdm.tqdm(range(sample_size), desc="Stats"):
-                    try:
-                        # 🎨 Chargement RGB ou Grayscale
-                        img_mode = 'L' if self.grayscale else 'RGB'
-                        img = Image.open(file_paths[i]).convert(img_mode)
-                        img_array = np.array(img.resize(self.image_size), dtype=np.float32) / 255.0
-                        
-                        # Si grayscale, ajouter dimension canal
-                        if self.grayscale and img_array.ndim == 2:
-                            img_array = np.expand_dims(img_array, axis=-1)  # (H, W) → (H, W, 1)
-                        
-                        mean_accumulator += img_array.mean(axis=(0, 1))
-                        std_accumulator += img_array.std(axis=(0, 1))
-                    except:
-                        pass
-                
-                mean = mean_accumulator / sample_size
-                std = std_accumulator / sample_size
-                np.savez(f"{self.output_prefix}_meanstd.npz", mean=mean.astype(np.float32), std=std.astype(np.float32))
-                print(f"Train mean: {mean}, std: {std}")
-            
-            # 💾 CRÉATION DES CHUNKS PROGRESSIVEMENT
-            num_chunks = (len(file_paths) + self.chunk_size - 1) // self.chunk_size
-            print(f"Création de {num_chunks} chunks...")
-            
-            for chunk_id in range(num_chunks):
-                start = chunk_id * self.chunk_size
-                end = min((chunk_id + 1) * self.chunk_size, len(file_paths))
-                
-                # Charger seulement les images de CE chunk
-                chunk_images = []
-                chunk_labels = []
-                
-                for i in tqdm.tqdm(range(start, end), desc=f"Chunk {chunk_id}/{num_chunks}"):
-                    try:
-                        # 🎨 Chargement RGB ou Grayscale
-                        img_mode = 'L' if self.grayscale else 'RGB'
-                        img = Image.open(file_paths[i]).convert(img_mode)
-                        img_array = np.array(img.resize(self.image_size), dtype=np.float32) / 255.0
-                        
-                        # Si grayscale, ajouter dimension canal
-                        if self.grayscale and img_array.ndim == 2:
-                            img_array = np.expand_dims(img_array, axis=-1)  # (H, W) → (H, W, 1)
-                        
-                        chunk_images.append(img_array)
-                        chunk_labels.append(file_labels[i])
-                    except Exception as e:
-                        print(f"Erreur sur {file_paths[i]}: {e}")
-                
-                # Convertir en numpy et sauvegarder
-                chunk_images_np = np.stack(chunk_images)
-                chunk_labels_np = np.array(chunk_labels, dtype=np.int32)
-                
-                # Vérifier l'équilibrage
-                chunk_class_counts = np.bincount(chunk_labels_np, minlength=len(self.class_names))
-                print(f"  Chunk {chunk_id}: {len(chunk_labels_np)} échantillons, classes {chunk_class_counts}")
-                
-                np.savez_compressed(
-                    f"{self.output_prefix}_{split}_chunk{chunk_id}.npz",
-                    image=chunk_images_np,
-                    label=chunk_labels_np
-                )
-                
-                # Libérer la mémoire
-                del chunk_images, chunk_labels, chunk_images_np, chunk_labels_np
-            
-            print(f"[✓] {split}: {len(file_paths)} images → {num_chunks} chunks")
+        mode_str = "Grayscale (1 canal)" if grayscale else "RGB (3 canaux)"
+        print(f"📦 Classification Dataset: {len(self.train_chunks)} train chunks, {len(self.val_chunks)} val chunks [{mode_str}]")
     
     def get_chunk_statistics(self) -> dict:
         """Retourne les statistiques des chunks"""
@@ -280,8 +83,10 @@ class ChunkManager:
             if not chunk_files:
                 raise FileNotFoundError(f"No chunk files found for {split}")
             
-            # Charger mean/std
-            meanstd = np.load(f"{self.output_prefix}_meanstd.npz")
+            # Charger mean/std pour la classification
+            if not os.path.exists(self.mean_std_path):
+                raise FileNotFoundError(f"Missing mean_std file: {self.mean_std_path}. Did you run fighterjet_classification_dataset_tools.py?")
+            meanstd = np.load(self.mean_std_path)
             mean = meanstd['mean'].astype(np.float32)
             std = meanstd['std'].astype(np.float32)
             
@@ -370,24 +175,18 @@ class ChunkManager:
     
     def ensure_chunks_ready(self, micro_batch_size: int = 32, augment: bool = True, augmentation_params: dict = None) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
         """
-        Point d'entrée principal : s'assure que les chunks sont prêts et retourne les datasets
+        Point d'entrée principal : vérifie que les chunks existent et crée les TF Datasets
         """
-        print("🔍 VÉRIFICATION DES CHUNKS...")
-        
-        # Mettre à jour les chemins des chunks
-        self.train_chunks = sorted(glob.glob(f"{self.output_prefix}_train_chunk*.npz"))
-        self.val_chunks = sorted(glob.glob(f"{self.output_prefix}_val_chunk*.npz"))
-        
-        if self.should_recreate_chunks():
-            print("\n🚨 RECRÉATION DES CHUNKS...")
-            self.cleanup_old_chunks()
-            self.create_chunked_npz()
+        if not self.train_chunks or not self.val_chunks:
+            error_msg = (
+                f"\n❌ ERREUR: Chunks introuvables pour la classification !\n"
+                f"   Je m'attendais à trouver {self.output_prefix}_[train|val]_chunk*.npz\n"
+                f"💡 LANCEZ D'ABORD : python fighterjet_classification_dataset_tools.py"
+            )
+            print(error_msg)
+            exit(1)
             
-            # Mettre à jour les chemins après création
-            self.train_chunks = sorted(glob.glob(f"{self.output_prefix}_train_chunk*.npz"))
-            self.val_chunks = sorted(glob.glob(f"{self.output_prefix}_val_chunk*.npz"))
-        else:
-            print("✅ Utilisation des chunks existants")
+        print("✅ Chunks de classification trouvés")
         
         # Afficher les statistiques
         stats = self.get_chunk_statistics()
@@ -395,7 +194,6 @@ class ChunkManager:
         print(f"   Train: {stats['train_chunks']} chunks, ~{stats['train_samples']} échantillons")
         print(f"   Val: {stats['val_chunks']} chunks, ~{stats['val_samples']} échantillons")
         
-        # 🔥 CORRECTION: Retourner les datasets après s'être assuré que les chunks existent
         return self.create_tf_datasets(
             micro_batch_size=micro_batch_size,
             augment=augment,
@@ -414,8 +212,8 @@ class DetectionDataset:
         self.augmentation_params = augmentation_params if augmentation_params is not None else {}
         
         # Repérer les chunks
-        self.train_chunks = sorted(glob.glob(os.path.join(output_prefix, "detection_train_chunk*.npz")))
-        self.val_chunks = sorted(glob.glob(os.path.join(output_prefix, "detection_val_chunk*.npz")))
+        self.train_chunks = sorted(glob.glob(f"{output_prefix}_train_chunk*.npz"))
+        self.val_chunks = sorted(glob.glob(f"{output_prefix}_val_chunk*.npz"))
         
         mode_str = "Grayscale (1 canal)" if self.grayscale else "RGB (3 canaux)"
         print(f"📦 Detection Dataset: {len(self.train_chunks)} train chunks, {len(self.val_chunks)} val chunks [{mode_str}]")
@@ -428,8 +226,13 @@ class DetectionDataset:
         """
         chunks = self.train_chunks if split == 'train' else self.val_chunks
         if not chunks:
-            print(f"⚠️ No chunks for {split}")
-            return None
+            error_msg = (
+                f"\n❌ ERREUR: Chunks introuvables pour la détection !\n"
+                f"   Je m'attendais à trouver {self.output_prefix}_[split]_chunk*.npz\n"
+                f"💡 LANCEZ D'ABORD : python fighterjet_detection_dataset_tools.py"
+            )
+            print(error_msg)
+            exit(1)
             
         def gen():
             for chunk_path in chunks:
@@ -591,11 +394,8 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
     
     if task_type == "classification":
         chunk_manager = ChunkManager(
-            data_dir=config["data_dir"],
             output_prefix=config["output_prefix"],
-            chunk_size=config["chunk_size"],
             image_size=config["image_size"],
-            class_names=config["class_names"],
             grayscale=config.get("grayscale", False)
         )
         return chunk_manager.ensure_chunks_ready(
