@@ -1941,6 +1941,96 @@ def create_aircraft_detector_v7_advanced(dropout_rate=0.2, **kwargs):
     """Factory for V7 Advanced"""
     return AircraftDetectorV7_Advanced(dropout_rate=dropout_rate)
 
+class AircraftDetectorUNet(nn.Module):
+    """
+    Détecteur d'avions par Segmentation Sémantique (U-Net)
+    Input: (B, 224, 224, C)
+    Output: (B, 224, 224, 1) Mask de probabilités (0 à 1)
+    """
+    dropout_rate: float = 0.2
+
+    @nn.compact
+    def __call__(self, x, training=True):
+        # --- ENCODER ---
+        # Block 1 (224x224 -> 112x112)
+        x1 = nn.Conv(32, (3, 3), padding="SAME")(x)
+        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.silu(x1)
+        x1 = nn.Conv(32, (3, 3), padding="SAME")(x1)
+        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.silu(x1)
+        p1 = nn.max_pool(x1, window_shape=(2, 2), strides=(2, 2)) # 112x112
+        
+        # Block 2 (112x112 -> 56x56)
+        x2 = nn.Conv(64, (3, 3), padding="SAME")(p1)
+        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.silu(x2)
+        x2 = nn.Conv(64, (3, 3), padding="SAME")(x2)
+        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.silu(x2)
+        p2 = nn.max_pool(x2, window_shape=(2, 2), strides=(2, 2)) # 56x56
+        
+        # Block 3 (56x56 -> 28x28)
+        x3 = nn.Conv(128, (3, 3), padding="SAME")(p2)
+        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.silu(x3)
+        x3 = nn.Conv(128, (3, 3), padding="SAME")(x3)
+        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.silu(x3)
+        p3 = nn.max_pool(x3, window_shape=(2, 2), strides=(2, 2)) # 28x28
+        
+        # --- BOTTLENECK ---
+        # 28x28
+        b = nn.Conv(256, (3, 3), padding="SAME")(p3)
+        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.silu(b)
+        b = nn.Conv(256, (3, 3), padding="SAME")(b)
+        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.silu(b)
+        
+        # --- DECODER ---
+        # Up 1 (28x28 -> 56x56)
+        u1 = jax.image.resize(b, shape=(b.shape[0], x3.shape[1], x3.shape[2], b.shape[3]), method='bilinear')
+        u1 = nn.Conv(128, (2, 2), padding="SAME")(u1)
+        u1 = jnp.concatenate([u1, x3], axis=-1)
+        u1 = nn.Conv(128, (3, 3), padding="SAME")(u1)
+        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.silu(u1)
+        u1 = nn.Conv(128, (3, 3), padding="SAME")(u1)
+        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.silu(u1)
+        
+        # Up 2 (56x56 -> 112x112)
+        u2 = jax.image.resize(u1, shape=(u1.shape[0], x2.shape[1], x2.shape[2], u1.shape[3]), method='bilinear')
+        u2 = nn.Conv(64, (2, 2), padding="SAME")(u2)
+        u2 = jnp.concatenate([u2, x2], axis=-1)
+        u2 = nn.Conv(64, (3, 3), padding="SAME")(u2)
+        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.silu(u2)
+        u2 = nn.Conv(64, (3, 3), padding="SAME")(u2)
+        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.silu(u2)
+        
+        # Up 3 (112x112 -> 224x224)
+        u3 = jax.image.resize(u2, shape=(u2.shape[0], x1.shape[1], x1.shape[2], u2.shape[3]), method='bilinear')
+        u3 = nn.Conv(32, (2, 2), padding="SAME")(u3)
+        u3 = jnp.concatenate([u3, x1], axis=-1)
+        u3 = nn.Conv(32, (3, 3), padding="SAME")(u3)
+        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.silu(u3)
+        u3 = nn.Conv(32, (3, 3), padding="SAME")(u3)
+        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.silu(u3)
+        
+        # --- OUTPUT ---
+        # Mask 224x224x1
+        out = nn.Conv(1, (1, 1), padding="SAME")(u3)
+        return nn.sigmoid(out)
+
+def create_aircraft_detector_unet(dropout_rate=0.2, **kwargs):
+    """Factory for UNet Detector"""
+    return AircraftDetectorUNet(dropout_rate=dropout_rate)
+
 
 # ... (Previous MODELS dict)
 
@@ -1952,6 +2042,7 @@ MODELS = {
     'aircraft_detector_v5_highres': create_aircraft_detector_v5_highres, # 🚀 V5 HighRes (Grid 14x14)
     'aircraft_detector_v6_multilevel': create_aircraft_detector_v6_multilevel, # 🚀 V6 Dual-Scale (14x14, 7x7)
     'aircraft_detector_v7_advanced': create_aircraft_detector_v7_advanced, # 🚀 V7 Tri-Scale Anchor-Free
+    'aircraft_detector_unet': create_aircraft_detector_unet, # 🚀 Semantic Segmentation U-Net
     'sophisticated_cnn': create_sophisticated_cnn,
     'sophisticated_cnn_droped_out': create_sophisticated_cnn_droped_out,
     'sophisticated_cnn_128': create_sophisticated_cnn_128,

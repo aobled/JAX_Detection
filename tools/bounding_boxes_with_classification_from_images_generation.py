@@ -28,16 +28,19 @@ from model_library import get_model  # Uniquement get_model (pas besoin de la cl
 # 1. Configuration du dataset et du modèle de classification
 DATASET_NAME = "FIGHTERJET_CLASSIFICATION"     # Nom de la config dans dataset_configs.py
 CHECKPOINT_PATH = "best_model.pkl"      # Chemin vers le modèle de CLASSIFICATION
-INPUT_DIR = "/home/aobled/Downloads/tmp_test"  # Dossier d'entrée (images à traiter)
-CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
+INPUT_DIR = "/home/aobled/Downloads/tmp_multi"  # Dossier d'entrée (images à traiter)
+CONFIDENCE_THRESHOLD = 0.7            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
 
 # 2. Configuration du modèle de détection
 DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl" # Chemin vers le modèle de DÉTECTION
 DETECTION_IMAGE_SIZE = (224, 224)       # Taille d'entrée du modèle de détection
-DETECTION_CONF_THRESHOLD = 0.3          # Seuil pour considérer une détection valide (objectness + class) best 0.5
-NMS_THRESHOLD = 0.5                     # Seuil IoU pour NMS best 0.4
+DETECTION_CONF_THRESHOLD = 0.7          # Seuil pour considérer une détection valide (objectness + class) best 0.5
 
-DEFAULT_CLASSE = "f15"
+# 3. Configuration de la zone de détection
+ELLIPSE_MARGIN_PERCENT = 5
+ELLIPSE_ITERATIONS = 3
+
+DEFAULT_CLASSE = "unknown"
 
 # 3. Chargement de la config dataset
 try:
@@ -239,126 +242,62 @@ def get_iou(box1, box2):
     union = area1 + area2 - intersection
     return intersection / union if union > 0 else 0
 
-def non_max_suppression(boxes, scores, iou_threshold):
-    """Applique NMS sur les boxes filtrées"""
-    indices = np.argsort(scores)[::-1]
-    keep = []
-    
-    while indices.size > 0:
-        i = indices[0]
-        keep.append(i)
-        
-        if indices.size == 1:
-            break
-            
-        ious = np.array([get_iou(boxes[i], boxes[j]) for j in indices[1:]])
-        indices = indices[1:][ious < iou_threshold]
-        
-    return keep
-
-def decode_grid_and_detect(img_bgr, model, variables, config_model, conf_threshold=0.5, nms_threshold=0.4):
+def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf_threshold=0.3):
     """
-    Exécute la détection sur une image.
-    Retourne une liste de boxes [x1, y1, x2, y2, score] (coordonnées absolues).
+    Exécute la détection par Segmentation Sémantique (U-Net).
+    Retourne une liste de boxes [x1, y1, x2, y2, score].
     """
     h_orig, w_orig = img_bgr.shape[:2]
     
     # 1. Prétraitement
     target_size = config_model.get("image_size", DETECTION_IMAGE_SIZE)
-    grayscale = config_model.get("grayscale", True) # Par défaut détection en grayscale
+    grayscale = config_model.get("grayscale", True)
     
     img_resized = cv2.resize(img_bgr, target_size)
     
     if grayscale:
         img_input = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
         img_input = img_input.astype(np.float32) / 255.0
-        # (H, W) -> (1, H, W, 1)
         img_jax = img_input[np.newaxis, :, :, np.newaxis]
     else:
         img_input = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
         img_input = img_input.astype(np.float32) / 255.0
-        # (H, W, 3) -> (1, H, W, 3)
         img_jax = img_input[np.newaxis, :, :, :]
     
-    # 2. Inférence
+    # 2. Inférence U-Net
     preds = model.apply(variables, jnp.array(img_jax), training=False)
+    # preds est (1, 224, 224, 1)
     
-    # Gérer sorties multiples (tuple/liste) ou unique
-    if isinstance(preds, (tuple, list)):
-        preds_list = [np.array(p[0]) for p in preds]  # extraire batch 0 pour chaque grille
-    else:
-        preds_list = [np.array(preds[0])]
+    pred_mask = np.array(preds[0, :, :, 0]) # (224, 224)
     
-    boxes = []
-    scores = []
+    # 3. Redimensionnement à la taille de l'image originale
+    mask_resized = cv2.resize(pred_mask, (w_orig, h_orig), interpolation=cv2.INTER_CUBIC)
     
-    # 3. Décodage des grilles
-    for pred_grid in preds_list:
-        # Cas 1: déjà (S, S, B, 5)
-        if pred_grid.ndim == 4 and pred_grid.shape[-1] == 5:
-            S = pred_grid.shape[0]
-            B_boxes = pred_grid.shape[2]
-            grid_reshaped = pred_grid
-        # Cas 2: (S, S, C) avec C = 5 * B
-        elif pred_grid.ndim == 3:
-            S = pred_grid.shape[0]
-            C_pred = pred_grid.shape[-1]
-            if C_pred % 5 != 0:
-                continue  # format inattendu
-            B_boxes = C_pred // 5
-            grid_reshaped = pred_grid.reshape((S, S, B_boxes, 5))
-        else:
-            # format inattendu
-            continue
-        
-        for row in range(S):
-            for col in range(S):
-                for b in range(B_boxes):
-                    cell = grid_reshaped[row, col, b]
-                    conf = cell[0]
-                    
-                    if conf > conf_threshold:
-                        # Coordonnées relatives à la cellule (0-1) -> relatives à l'image (0-1)
-                        bx = (col + cell[1]) / S
-                        by = (row + cell[2]) / S
-                        bw = cell[3]
-                        bh = cell[4]
-                        
-                        # Conversion en pixels absolus sur l'image ORIGINALE
-                        # x,y sont le centre de la boite
-                        center_x = bx * w_orig
-                        center_y = by * h_orig
-                        width = bw * w_orig
-                        height = bh * h_orig
-                        
-                        x1 = int(center_x - width / 2)
-                        y1 = int(center_y - height / 2)
-                        x2 = int(center_x + width / 2)
-                        y2 = int(center_y + height / 2)
-                        
-                        # Clipper
-                        x1 = max(0, min(x1, w_orig))
-                        y1 = max(0, min(y1, h_orig))
-                        x2 = max(0, min(x2, w_orig))
-                        y2 = max(0, min(y2, h_orig))
-                        
-                        boxes.append([x1, y1, x2, y2])
-                        scores.append(float(conf))
+    # 4. Binarisation
+    binary_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
     
-    if not boxes:
-        return []
+    # --- DILATATION MORPHOLOGIQUE ---
+    # On gonfle organiquement la tache blanche pour inclure du contexte autour de l'avion
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ELLIPSE_MARGIN_PERCENT, ELLIPSE_MARGIN_PERCENT))
+    binary_mask = cv2.dilate(binary_mask, kernel, iterations=ELLIPSE_ITERATIONS)
     
-    # 4. NMS
-    boxes_np = np.array(boxes)
-    scores_np = np.array(scores)
-    
-    keep_indices = non_max_suppression(boxes_np, scores_np, nms_threshold)
+    # 5. Extraction des Contours
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     final_detections = []
-    for i in keep_indices:
-        x1, y1, x2, y2 = boxes_np[i]
-        score = scores_np[i]
-        final_detections.append((int(x1), int(y1), int(x2), int(y2), score))
+    
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < 50: # Ignorer le bruit microscopique
+            continue
+            
+        x, y, w, h = cv2.boundingRect(contour)
+        
+        # Le "score" peut être la valeur moyenne ou max de probabilité dans la box
+        sub_mask = mask_resized[y:y+h, x:x+w]
+        score = float(np.max(sub_mask)) if sub_mask.size > 0 else 1.0
+        
+        final_detections.append((x, y, x+w, y+h, score))
         
     return final_detections
 
@@ -420,10 +359,9 @@ if __name__ == "__main__":
         h, w = img.shape[:2]
         
         # --- DÉTECTION CUSTOM ---
-        detections = decode_grid_and_detect(
+        detections = decode_segmentation_and_detect(
             img, det_model, det_vars, det_config, 
-            conf_threshold=DETECTION_CONF_THRESHOLD, 
-            nms_threshold=NMS_THRESHOLD
+            conf_threshold=DETECTION_CONF_THRESHOLD
         )
         
         json_files_created = []

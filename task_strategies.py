@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import optax
 from abc import ABC, abstractmethod
-from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss
+from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss, compute_segmentation_loss
 from utils import mixup_batch, smooth_labels
 
 class TaskStrategy(ABC):
@@ -172,14 +172,10 @@ class DetectionStrategy(TaskStrategy):
         return images, targets, False
         
     def compute_loss(self, outputs, targets, **kwargs):
-        if isinstance(outputs, (tuple, list)):
-            if len(outputs) == 3:
-                return compute_v7_loss(outputs, targets)
-            elif len(outputs) == 2:
-                return compute_grid_loss_multilevel(outputs, targets)
-            else:
-                raise ValueError(f"Nombre de grilles non supporté: {len(outputs)}")
-        return compute_grid_loss(outputs, targets)
+        # outputs = (B, H, W, 1)
+        # targets = (B, H, W, 1)
+        return compute_segmentation_loss(outputs, targets)
+        
         
     def compute_metrics(self, outputs, targets):
         # En détection, nous n'avons pas d'Accuracy simple à calculer tensoriellement.
@@ -187,30 +183,29 @@ class DetectionStrategy(TaskStrategy):
         return 0.0
         
     def generate_reports(self, val_ds, final_state, model, config):
-        from reporting import DetectionReporter
+        import cv2
         import numpy as np
-        reporter = DetectionReporter(
-            image_size=config["image_size"],
-            grid_size=config.get("grid_size", 7)
-        )
         try:
-            for vis_imgs, vis_boxes in val_ds.take(1).as_numpy_iterator():
+            for vis_imgs, vis_masks in val_ds.take(1).as_numpy_iterator():
                 vars = {'params': final_state.params, 'batch_stats': final_state.batch_stats}
-                pred_grid = final_state.apply_fn(vars, vis_imgs, training=False)
+                pred_masks = final_state.apply_fn(vars, vis_imgs, training=False)
                 
-                if isinstance(pred_grid, (tuple, list)):
-                    formatted_preds = [np.array(p) for p in pred_grid]
-                else:
-                    formatted_preds = np.array(pred_grid)
-                    
-                reporter.visualize_batch(
-                    images=np.array(vis_imgs),
-                    predictions=formatted_preds,
-                    targets=np.array(vis_boxes),
-                    save_path="final_detection_vis.png",
-                    conf_threshold=0.5
-                )
+                # Sauvegarder juste un batch visuel pour debug
+                # Image 0
+                img0 = (vis_imgs[0] * 255).astype(np.uint8)
+                true0 = (vis_masks[0] * 255).astype(np.uint8)
+                pred0 = (pred_masks[0] * 255).astype(np.uint8)
+                
+                heatmap = cv2.applyColorMap(pred0, cv2.COLORMAP_JET)
+                
+                # Conversion grayscale -> RGB si nécessaire pour la concatenation
+                if img0.shape[-1] == 1:
+                    img0 = cv2.cvtColor(img0, cv2.COLOR_GRAY2BGR)
+                true0 = cv2.cvtColor(true0, cv2.COLOR_GRAY2BGR)
+                
+                composite = cv2.hconcat([img0, true0, heatmap])
+                cv2.imwrite("final_detection_vis.png", composite)
                 break
-            print("✅ Visualisation de détection finale générée avec succès!")
+            print("✅ Visualisation de détection sémantique générée (final_detection_vis.png)")
         except Exception as e:
-            print(f"❌ Erreur lors de la visualisation: {e}")
+            print(f"❌ Erreur lors de la visualisation sémantique: {e}")

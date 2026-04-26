@@ -21,8 +21,8 @@ def rename_category_in_json_files(directory, origin, target):
                     print(f"Mis à jour : {filepath} ({origin} → {target})")
 
 # Exemple d'utilisation
-directory = "/home/aobled/Downloads/Aircraft_DATASET/tmp_a_traiter/jas39"
-origin = "jas39"
-target = "gripen"
+directory = "/home/aobled/Downloads/Aircraft_DATASET/test/tmp_a_valider/e2"
+origin = "e2"
+target = "hawkeye"
 
 rename_category_in_json_files(directory, origin, target)

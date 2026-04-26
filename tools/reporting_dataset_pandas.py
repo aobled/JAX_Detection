@@ -123,23 +123,22 @@ def reporting_boxes_on_wrong_directory(df):
 
 
 #  images avec une seule box classe TRAGET_CLASS et taille TARGET_SIZE
-def reporting_single_boxes_target_class_size(df, target_class, target_size):
+def reporting_single_boxes_target_class_size(df, class_list, target_size):
     COLUMNS = ['base_image_name', 'box_class', 'directory', 'split']
-    TRAGET_CLASS = target_class
     TARGET_SIZE = target_size
     
     # 1. Filtrer les images avec exactement une boxe (quel que soit le type)
     single_box_images = df.groupby('base_image_name').filter(lambda x: len(x) == 1)
     
     # 2. Parmi ces images, ne garder que celles où la boxe est de classe TRAGET_CLASS
-    single_box_target = single_box_images[(single_box_images['box_class'] == TRAGET_CLASS) &
+    single_box_target = single_box_images[(single_box_images['box_class'].isin(class_list)) &
         ((single_box_images['box_l'] > TARGET_SIZE) &
         (single_box_images['box_h'] > TARGET_SIZE))
        ]
     
     # 3. Exporter le résultat
     print(single_box_target[COLUMNS])
-    single_box_target[COLUMNS].to_csv("search_single_class_"+target_class+".csv", index=False)
+    single_box_target[COLUMNS].to_csv("search_single_class.csv", index=False)
 
 
 #  specific classe images with size > 16px
@@ -159,15 +158,15 @@ def reporting_single_classe_images(df, target_class='b52', min_size=16):
     # 1. Filtrer les images avec au moins une boxe 
     hawkeye_images = df[df['box_class'] == TARGET_CLASS]['base_image_name'].unique()
     # 2. Pour chaque image, vérifier qu'elle n'a AUCUNE autre boxe d'une autre classe
-    unique_hawkeye_images = []
+    unique_images_list = []
     for image in hawkeye_images:
         boxes_in_image = df[df['base_image_name'] == image]
         if len(boxes_in_image) == 1 and boxes_in_image['box_class'].iloc[0] == TARGET_CLASS:
-            unique_hawkeye_images.append(image)
+            unique_images_list.append(image)
     
     # 3. Filtrer ces images et appliquer la condition de taille
     single_box_filtered = df[
-        (df['base_image_name'].isin(unique_hawkeye_images)) &
+        (df['base_image_name'].isin(unique_images_list)) &
         ((df['box_l'] > TARGET_SIZE) &
         (df['box_h'] > TARGET_SIZE))
     ]
@@ -228,7 +227,10 @@ df = load_dataset_to_dataframe(DATASET_PATH)
 #reporting_groupby_class_and_split(df)
 reporting_groupby_box_count(df)
 #reporting_boxes_on_wrong_directory(df)
-#reporting_single_boxes_target_class_size(df, target_class='a4', target_size=2)
+
+#reporting_single_boxes_target_class_size(df, class_list=['f15', 'f14'], target_size=2)
+#reporting_single_boxes_target_class_size(df, class_list=CLASS_NAMES, target_size=2)
+
 #reporting_single_classe_images(df, target_class='b52', min_size=16)
 #reporting_all_images_in_class_list(df, class_list=['sr71'])
 #reporting_small_boxes(df, min_size=16)

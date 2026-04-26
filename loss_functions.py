@@ -405,3 +405,15 @@ def compute_v7_loss(pred_grids, gt_boxes, lambda_coord=5.0, lambda_noobj=0.5):
     
     total_loss = (loss_28 + loss_14 + loss_7) / batch_size
     return total_loss
+
+def compute_segmentation_loss(pred_mask, true_mask):
+    """
+    Calcule la loss pour la Segmentation Sémantique (U-Net).
+    MSE fonctionne extrêmement bien pour régresser des Heatmaps continues.
+    """
+    # pred_mask: (Batch, H, W, 1) après Sigmoid (valeurs 0.0 à 1.0)
+    # true_mask: (Batch, H, W, 1) binaire 0.0 ou 1.0
+    
+    # Mean Squared Error
+    loss = jnp.mean((pred_mask - true_mask)**2)
+    return loss

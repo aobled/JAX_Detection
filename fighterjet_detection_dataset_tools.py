@@ -5,13 +5,14 @@ import numpy as np
 from PIL import Image, ImageOps
 import tqdm
 from typing import List, Tuple, Dict
+import cv2
 
 def process_detection_dataset(
     root_dir: str,
     output_dir: str,
     split_name: str = "train",
     target_size: Tuple[int, int] = (224, 224),  # ✅ Valeur par défaut changée à 224x224
-    max_boxes: int = 30,
+    max_boxes: int = 20,
     chunk_size: int = 2000,
     grayscale: bool = False  # 🎨 Support grayscale (3× moins de mémoire)
 ):
@@ -77,7 +78,7 @@ def process_detection_dataset(
     chunk_idx = 0
     
     current_chunk_images = []
-    current_chunk_boxes = [] # Boxes paddées [MAX_BOXES, 5] (class_id=0 pour avion)
+    current_chunk_masks = [] # Masques de segmentation [H, W, 1]
     
     os.makedirs(output_dir, exist_ok=True)
     
@@ -103,45 +104,31 @@ def process_detection_dataset(
                 if grayscale and img_array.ndim == 2:
                     img_array = np.expand_dims(img_array, axis=-1)
                 
-                # Traitement des boxes
-                # Avec le stretching, les coordonnées relatives (0.0-1.0) restant les mêmes !
-                # On a juste besoin de normaliser par les dimensions ORIGINALES.
-                normalized_boxes = []
+                # Traitement des boxes -> Création du Masque (Segmentation)
+                mask_array = np.zeros(target_size[::-1] + (1,), dtype=np.float32) # (224, 224, 1)
                 
                 for box in raw_boxes:
                     bx, by, bw, bh = box
                     
-                    # Centre de la box (cx, cy)
-                    cx = bx + bw / 2
-                    cy = by + bh / 2
+                    # Convertir les coordonnées originales en coordonnées target_size
+                    x1 = int((bx / orig_w) * target_size[0])
+                    y1 = int((by / orig_h) * target_size[1])
+                    x2 = int(((bx + bw) / orig_w) * target_size[0])
+                    y2 = int(((by + bh) / orig_h) * target_size[1])
                     
-                    # Normaliser par la taille ORIGINALE
-                    # (Le ratio est préservé en relatif quand on stretch tout)
-                    norm_cx = cx / orig_w
-                    norm_cy = cy / orig_h
-                    norm_w = bw / orig_w
-                    norm_h = bh / orig_h
-                    
-                    # Ajouter à la liste: [class_id, cx, cy, w, h]
-                    normalized_boxes.append([1.0, norm_cx, norm_cy, norm_w, norm_h])
-                
-                # Padding des boxes pour avoir une taille fixe (nécessaire pour JAX/Numpy batching)
-                padded_boxes = np.zeros((max_boxes, 5), dtype=np.float32)
-                num_param_boxes = min(len(normalized_boxes), max_boxes)
-                
-                if num_param_boxes > 0:
-                    padded_boxes[:num_param_boxes] = normalized_boxes[:num_param_boxes]
+                    # Dessiner un rectangle blanc (1.0) plein sur le masque
+                    cv2.rectangle(mask_array, (x1, y1), (x2, y2), 1.0, -1)
                 
                 current_chunk_images.append(img_array)
-                current_chunk_boxes.append(padded_boxes)
+                current_chunk_masks.append(mask_array)
                 processed_count += 1
                 
                 # Sauvegarder si chunk plein
                 if len(current_chunk_images) >= chunk_size:
-                    _save_chunk(output_dir, split_name, chunk_idx, current_chunk_images, current_chunk_boxes)
+                    _save_chunk(output_dir, split_name, chunk_idx, current_chunk_images, current_chunk_masks)
                     chunk_idx += 1
                     current_chunk_images = []
-                    current_chunk_boxes = []
+                    current_chunk_masks = []
                     
         except Exception as e:
             print(f"Error processing {img_path}: {e}")
@@ -149,22 +136,29 @@ def process_detection_dataset(
 
     # Sauvegarder le dernier chunk partiel
     if len(current_chunk_images) > 0:
-        _save_chunk(output_dir, split_name, chunk_idx, current_chunk_images, current_chunk_boxes)
+        _save_chunk(output_dir, split_name, chunk_idx, current_chunk_images, current_chunk_masks)
 
-def _save_chunk(output_dir, split_name, chunk_idx, images, boxes):
-    images_np = np.array(images, dtype=np.float32) # (N, H, W, C) où C=1 (grayscale) ou 3 (RGB)
-    boxes_np = np.array(boxes, dtype=np.float32)   # (N, 30, 5)
+def _save_chunk(output_dir, split_name, chunk_idx, images, masks):
+    images_np = np.array(images, dtype=np.float32) # (N, H, W, C)
+    masks_np = np.array(masks, dtype=np.float32)   # (N, H, W, 1)
     
     out_path = os.path.join(output_dir, f"dataset_detection_{split_name}_chunk{chunk_idx}.npz")
-    np.savez_compressed(out_path, images=images_np, boxes=boxes_np)
+    np.savez_compressed(out_path, images=images_np, masks=masks_np)
     print(f"💾 Chunk {chunk_idx} saved: {len(images)} images")
 
 
 if __name__ == "__main__":
+    import sys
+    sys.path.append(os.path.dirname(__file__))
+    from dataset_configs import get_dataset_config
+    
+    # Charger la configuration
+    config = get_dataset_config("FIGHTERJET_DETECTION")
+    
     # Configuration des chemins
     TRAIN_DIR = "/home/aobled/Downloads/Aircraft_DATASET/detection/train"
     VAL_DIR = "/home/aobled/Downloads/Aircraft_DATASET/detection/val"
-    OUTPUT_DIR = "./data/chunks/detection"
+    OUTPUT_DIR = os.path.dirname(config["output_prefix"])
     
     print("🚀 Démarrage de la préparation des données de DÉTECTION...")
     
@@ -190,9 +184,10 @@ if __name__ == "__main__":
             TRAIN_DIR, 
             OUTPUT_DIR, 
             split_name="train", 
-            target_size=(224, 224),  # ✅ Changé à 224x224 (meilleure précision)
-            chunk_size=15000,  # ✅ Réduit chunk_size (224x224 est plus lourd)
-            grayscale=USE_GRAYSCALE  # 🎨 Grayscale pour économiser la mémoire
+            target_size=config.get("image_size", (224, 224)),
+            max_boxes=config.get("max_boxes", 20),
+            chunk_size=18000,
+            grayscale=config.get("grayscale", True)
         )
     else:
         print(f"❌ Dossier train non trouvé: {TRAIN_DIR}")
@@ -203,9 +198,10 @@ if __name__ == "__main__":
             VAL_DIR, 
             OUTPUT_DIR, 
             split_name="val", 
-            target_size=(224, 224),  # ✅ Changé à 224x224 (meilleure précision)
-            chunk_size=15000,  # ✅ Réduit chunk_size (224x224 est plus lourd)
-            grayscale=USE_GRAYSCALE  # 🎨 Grayscale pour économiser la mémoire
+            target_size=config.get("image_size", (224, 224)),
+            max_boxes=config.get("max_boxes", 20),
+            chunk_size=18000,
+            grayscale=config.get("grayscale", True)
         )
     else:
         print(f"❌ Dossier val non trouvé: {VAL_DIR}")

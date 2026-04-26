@@ -302,6 +302,7 @@ DATASET_CONFIGS = {
         "output_prefix": "./data/chunks/detection/dataset_detection",
         "image_size": (224, 224),
         "grayscale": True,
+        "max_boxes": 30,  # 🔥 Images avec plus de 20 boxes seront ignorées (évite padding excessif et faux négatifs)
         
         # === Augmentation de Données ===
         "augmentation_params": {
@@ -315,8 +316,8 @@ DATASET_CONFIGS = {
         },
         
         # === Modèle ---
-        "model_name": "aircraft_detector_v7_advanced",
-        "grid_size": 14,      # 224 / 16 = 14
+        "model_name": "aircraft_detector_unet",
+        "grid_size": 224,      # Segmentation sémantique (output size = input size)
         
         # === Hyperparamètres TPU ===
         "tpu": {

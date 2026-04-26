@@ -28,6 +28,11 @@ CHECKPOINT_PATH = "best_model.pkl"      # Chemin vers le modèle de CLASSIFICATI
 DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl" # Chemin vers le modèle de DÉTECTION
 DETECTION_IMAGE_SIZE = (224, 224)       # Taille d'entrée du modèle de détection
 
+# 3. Configuration de la zone de détection
+ELLIPSE_MARGIN_PERCENT = 5
+ELLIPSE_ITERATIONS = 3
+BOX_AERA_MIN = 900
+
 # PRIORITÉ AU DOSSIER PARENT
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -35,21 +40,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ==========================================================
 # Detection CONFIGURATION
 # ==========================================================
-VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
+VIDEO_PATH = "/home/aobled/Downloads/maverick0.mp4"
 OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 
 FRAME_STRIDE = 1  # 1 = toutes les frames
 #CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
-DETECTION_CONF_THRESHOLD = 0.3          # Seuil pour considérer une détection valide (objectness + class) best 0.7
-NMS_THRESHOLD = 0.5                     # Seuil IoU pour NMS best 0.4
+DETECTION_CONF_THRESHOLD = 0.85          # Seuil pour considérer une détection valide (objectness + class) best 0.7
+NMS_THRESHOLD = 0.3                     # Seuil IoU pour NMS best 0.4
 DEFAULT_CLASSE = "unknown"
-TARGET_CLASS_LIST = ["b2", "b52", "b1b", "f15", "f22", "a10", "f16"]
+TARGET_CLASS_LIST = ["su57", "f14", "f18"]
 
-# Paramètres de Lissage Temporel (Anti-Flickering / Tracking)
-SMOOTHING_ENABLED = True
-SMOOTHING_ALPHA = 0.6              # Ratio de lissage (ex: 0.7 = 70% de la détection actuelle + 30% d'historique)
-SMOOTHING_MAX_MISSING_FRAMES = 1   # Nombre de frames passées mémorisées (pour pallier un raté de détection)
-SMOOTHING_IOU_THRESHOLD = 0.7      # Seuil IoU pour associer la boîte frame T avec frame T-1
+# Paramètres de Lissage Temporel Centré (Sliding Window Tracking)
+SMOOTHING_ENABLED = False
+SMOOTHING_N_FRAMES = 3             # N frames dans le passé et N frames dans le futur (Ex: 3 = fenêtre de 7 frames)
+SMOOTHING_IOU_THRESHOLD = 0.5      # Seuil IoU pour associer une détection à une track existante
 
 
 # 3. Chargement de la config dataset
@@ -256,189 +260,157 @@ def get_iou(box1, box2):
     return intersection / union if union > 0 else 0
 
 
-class TemporalSmoother:
-    """Traque et lisse temporellement les bounding boxes (EMA Tracking basique)."""
-    def __init__(self, alpha=0.7, max_missing_frames=5, iou_threshold=0.3):
-        self.alpha = alpha
-        self.max_missing_frames = max_missing_frames
+class CenteredTemporalSmoother:
+    """Traque et lisse temporellement les bounding boxes avec une fenêtre [T-N, T+N]."""
+    def __init__(self, n_frames=3, iou_threshold=0.3):
+        self.N = n_frames
         self.iou_threshold = iou_threshold
-        self.trackers = {} # {id: {'box': [x1, y1, x2, y2], 'missing_count': 0, 'score': score}}
+        self.tracks = {} # id -> {frame_idx: [x1, y1, x2, y2, score]}
         self.next_id = 0
+        self.frame_buffer = [] # list of (frame_idx, original_frame)
+        self.current_frame_idx = 0
 
-    def update(self, detections):
+    def update_and_get_frame(self, original_frame, detections, heatmap):
         """
-        Met à jour les trajectoires et retourne les boîtes lissées.
-        detections: list de tuples (x1, y1, x2, y2, score)
+        Incorpore la nouvelle frame et ses détections au buffer.
+        Retourne la frame centrale prête à être dessinée, ou None si le buffer n'est pas encore assez plein.
         """
-        smoothed_detections = []
+        # 1. Mise à jour des tracks avec les détections courantes
         matched_tracker_ids = set()
-
+        
         for det in detections:
-            x1, y1, x2, y2, score = det
             best_iou = 0
             best_id = -1
             
-            # 1. Associer la nouvelle détection avec une trajectoire existante
-            for t_id, t_info in self.trackers.items():
-                if t_id in matched_tracker_ids:
-                     continue
-                iou = get_iou(det[:4], t_info['box'])
+            # Trouver la track la plus proche basée sur sa DERNIÈRE position connue
+            for t_id, t_info in self.tracks.items():
+                if t_id in matched_tracker_ids: 
+                    continue
+                
+                last_frame = max(t_info.keys())
+                # Ne matcher que si l'objet a été vu récemment (ex: max N+2 frames de trou)
+                if self.current_frame_idx - last_frame > self.N + 2:
+                    continue
+                    
+                last_box = t_info[last_frame][:4]
+                iou = get_iou(det[:4], last_box)
                 if iou > best_iou:
                     best_iou = iou
                     best_id = t_id
             
             if best_iou >= self.iou_threshold:
-                # 2a. Si ça correspond au même avion -> Lissage temporel (alpha)
-                old_box = self.trackers[best_id]['box']
-                nx1 = int(self.alpha * x1 + (1 - self.alpha) * old_box[0])
-                ny1 = int(self.alpha * y1 + (1 - self.alpha) * old_box[1])
-                nx2 = int(self.alpha * x2 + (1 - self.alpha) * old_box[2])
-                ny2 = int(self.alpha * y2 + (1 - self.alpha) * old_box[3])
-                
-                self.trackers[best_id]['box'] = [nx1, ny1, nx2, ny2]
-                self.trackers[best_id]['missing_count'] = 0
-                self.trackers[best_id]['score'] = score
+                self.tracks[best_id][self.current_frame_idx] = det
                 matched_tracker_ids.add(best_id)
-                smoothed_detections.append((nx1, ny1, nx2, ny2, score))
             else:
-                # 2b. Nouvel avion détecté
-                self.trackers[self.next_id] = {
-                    'box': [x1, y1, x2, y2],
-                    'missing_count': 0,
-                    'score': score
-                }
+                self.tracks[self.next_id] = {self.current_frame_idx: det}
                 matched_tracker_ids.add(self.next_id)
-                smoothed_detections.append((x1, y1, x2, y2, score))
                 self.next_id += 1
                 
-        # 3. Récupérer les "fantômes" (avions non détectés sur CETTE frame mais dans le passé récent)
-        for t_id in list(self.trackers.keys()):
-            if t_id not in matched_tracker_ids:
-                self.trackers[t_id]['missing_count'] += 1
-                if self.trackers[t_id]['missing_count'] > self.max_missing_frames:
-                    # Vraiment disparu de l'écran -> on oublie
-                    del self.trackers[t_id]
-                else:
-                    # Toujours censé être là -> on rend sa dernière position connue
-                    box = self.trackers[t_id]['box']
-                    score = self.trackers[t_id]['score']
-                    smoothed_detections.append((box[0], box[1], box[2], box[3], score))
-
-        return smoothed_detections
-
-
-def non_max_suppression(boxes, scores, iou_threshold):
-    """Applique NMS sur les boxes filtrées"""
-    indices = np.argsort(scores)[::-1]
-    keep = []
-    
-    while indices.size > 0:
-        i = indices[0]
-        keep.append(i)
+        # 2. Ajout au buffer d'images
+        self.frame_buffer.append((self.current_frame_idx, original_frame, heatmap))
         
-        if indices.size == 1:
-            break
+        # Nettoyage mémoire des vieilles tracks abandonnées
+        min_frame_needed = self.current_frame_idx - self.N - 5
+        for t_id in list(self.tracks.keys()):
+            max_frame = max(self.tracks[t_id].keys())
+            if max_frame < min_frame_needed:
+                del self.tracks[t_id]
+        
+        self.current_frame_idx += 1
+        
+        # 3. Vérifier si on a accumulé assez de frames "futures" pour générer la frame centrale
+        if len(self.frame_buffer) > self.N:
+            return self._pop_and_smooth()
             
-        ious = np.array([get_iou(boxes[i], boxes[j]) for j in indices[1:]])
-        indices = indices[1:][ious < iou_threshold]
-        
-    return keep
+        return None
 
-def decode_grid_and_detect(img_bgr, model, variables, config_model, conf_threshold=0.5, nms_threshold=0.4):
+    def _pop_and_smooth(self):
+        """Récupère la frame la plus ancienne du buffer et calcule ses boîtes lissées."""
+        target_idx, target_frame, heatmap = self.frame_buffer.pop(0)
+        smoothed_detections = []
+        
+        for t_id, t_info in self.tracks.items():
+            # Collecter toutes les observations de cet avion dans [target_idx - N, target_idx + N]
+            window_boxes = []
+            for f_idx in range(target_idx - self.N, target_idx + self.N + 1):
+                if f_idx in t_info:
+                    window_boxes.append(t_info[f_idx])
+                    
+            if len(window_boxes) > 0:
+                # Moyenne exacte de la position de l'avion dans cette fenêtre de temps
+                mean_box = np.mean([b[:4] for b in window_boxes], axis=0)
+                mean_score = np.mean([b[4] for b in window_boxes])
+                smoothed_detections.append((int(mean_box[0]), int(mean_box[1]), int(mean_box[2]), int(mean_box[3]), mean_score))
+                
+        return target_idx, target_frame, smoothed_detections, heatmap
+
+    def get_remaining_frames(self):
+        """Vide le buffer à la fin de la vidéo."""
+        results = []
+        while len(self.frame_buffer) > 0:
+            results.append(self._pop_and_smooth())
+        return results
+
+
+def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf_threshold=0.3, box_aera_min=225):
     """
-    Exécute la détection sur une image.
-    Retourne une liste de boxes [x1, y1, x2, y2, score] (coordonnées absolues).
+    Exécute la détection par Segmentation Sémantique (U-Net).
+    Retourne une liste de boxes [x1, y1, x2, y2, score].
     """
     h_orig, w_orig = img_bgr.shape[:2]
     
     # 1. Prétraitement
     target_size = config_model.get("image_size", DETECTION_IMAGE_SIZE)
-    grayscale = config_model.get("grayscale", True) # Par défaut détection en grayscale
+    grayscale = config_model.get("grayscale", True)
     
     img_resized = cv2.resize(img_bgr, target_size)
     
     if grayscale:
         img_input = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
         img_input = img_input.astype(np.float32) / 255.0
-        # (H, W) -> (1, H, W, 1)
         img_jax = img_input[np.newaxis, :, :, np.newaxis]
     else:
         img_input = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
         img_input = img_input.astype(np.float32) / 255.0
-        # (H, W, 3) -> (1, H, W, 3)
         img_jax = img_input[np.newaxis, :, :, :]
     
-    # 2. Inférence
-    # Note: On suppose que le modèle de détection rend une grille (ex: 14x14x5) ou un tuple de grilles
-    # avec pour chaque cellule: [conf, x, y, w, h] * B_boxes
+    # 2. Inférence U-Net
     preds = model.apply(variables, jnp.array(img_jax), training=False)
+    # preds est (1, 224, 224, 1)
     
-    if isinstance(preds, (tuple, list)):
-        preds_list = [np.array(p[0]) for p in preds] # Extraire l'élément du batch = 0
-    else:
-        preds_list = [np.array(preds[0])]
+    pred_mask = np.array(preds[0, :, :, 0]) # (224, 224)
     
-    boxes = []
-    scores = []
+    # 3. Redimensionnement à la taille de l'image originale
+    mask_resized = cv2.resize(pred_mask, (w_orig, h_orig), interpolation=cv2.INTER_CUBIC)
     
-    # 3. Décodage des grilles
-    for pred_grid in preds_list:
-        S = pred_grid.shape[0] # Taille de grille 
-        C_pred = pred_grid.shape[-1]
-        B_boxes = C_pred // 5
-        
-        pred_grid = pred_grid.reshape((S, S, B_boxes, 5))
-        
-        for row in range(S):
-            for col in range(S):
-                for b in range(B_boxes):
-                    cell = pred_grid[row, col, b]
-                    conf = cell[0]
-                    
-                    if conf > conf_threshold:
-                        # Coordonnées relatives à la cellule (0-1) -> relatives à l'image (0-1)
-                        bx = (col + cell[1]) / S
-                        by = (row + cell[2]) / S
-                        bw = cell[3]
-                        bh = cell[4]
-                        
-                        # Conversion en pixels absolus sur l'image ORIGINALE
-                        # x,y sont le centre de la boite
-                        center_x = bx * w_orig
-                        center_y = by * h_orig
-                        width = bw * w_orig
-                        height = bh * h_orig
-                        
-                        x1 = int(center_x - width / 2)
-                        y1 = int(center_y - height / 2)
-                        x2 = int(center_x + width / 2)
-                        y2 = int(center_y + height / 2)
-                        
-                        # Clipper
-                        x1 = max(0, min(x1, w_orig))
-                        y1 = max(0, min(y1, h_orig))
-                        x2 = max(0, min(x2, w_orig))
-                        y2 = max(0, min(y2, h_orig))
-                        
-                        boxes.append([x1, y1, x2, y2])
-                        scores.append(float(conf))
-                
-    if not boxes:
-        return []
-        
-    # 4. NMS
-    boxes_np = np.array(boxes)
-    scores_np = np.array(scores)
+    # 4. Binarisation
+    binary_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
     
-    keep_indices = non_max_suppression(boxes_np, scores_np, nms_threshold)
+    # --- DILATATION MORPHOLOGIQUE ---
+    # On gonfle organiquement la tache blanche pour inclure du contexte autour de l'avion
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ELLIPSE_MARGIN_PERCENT, ELLIPSE_MARGIN_PERCENT)) # 15x15 donne une belle marge sur du 1080p
+    # Si la marge semble trop grande ou trop petite, il suffit de jouer avec le paramètre iterations (ex: iterations=1 pour moins de marge, iterations=3 pour plus de contexte).
+    binary_mask = cv2.dilate(binary_mask, kernel, iterations=ELLIPSE_ITERATIONS)
+    
+    # 5. Extraction des Contours
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     final_detections = []
-    for i in keep_indices:
-        x1, y1, x2, y2 = boxes_np[i]
-        score = scores_np[i]
-        final_detections.append((int(x1), int(y1), int(x2), int(y2), score))
+    
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < box_aera_min: # Ignorer le bruit microscopique
+            continue
+            
+        x, y, w, h = cv2.boundingRect(contour)
         
-    return final_detections
+        # Le "score" peut être la valeur moyenne ou max de probabilité dans la box
+        sub_mask = mask_resized[y:y+h, x:x+w]
+        score = float(np.max(sub_mask)) if sub_mask.size > 0 else 1.0
+        
+        final_detections.append((x, y, x+w, y+h, score))
+        
+    return final_detections, mask_resized
 
 # =================================================================================================
 # MAIN
@@ -460,6 +432,75 @@ def decode_grid_and_detect(img_bgr, model, variables, config_model, conf_thresho
 # ==========================================================
 # MAIN
 # ==========================================================
+def build_quadrant_canvas(target_frame, target_heatmap, target_detections, clf_model, clf_vars, dataset_mean, dataset_std, config):
+    canvas = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    
+    # 1. Top-Left: Original
+    tl_img = cv2.resize(target_frame, (960, 540))
+    canvas[0:540, 0:960] = tl_img
+    
+    # 2. Bottom-Left: Heatmap
+    hm_vis = (target_heatmap * 255).astype(np.uint8)
+    hm_color = cv2.applyColorMap(hm_vis, cv2.COLORMAP_JET)
+    bl_img = cv2.resize(hm_color, (960, 540))
+    canvas[540:1080, 0:960] = bl_img
+    
+    # 3. Top-Right: Annotated
+    draw_frame = target_frame.copy()
+    
+    # 4. Bottom-Right: Classification Crops
+    br_canvas = np.zeros((540, 960, 3), dtype=np.uint8)
+    crop_idx = 0
+    grid_cols = 7
+    grid_rows = 4
+    cell_w = 128
+    cell_h = 128
+    
+    for (x1, y1, x2, y2, det_score) in target_detections:
+        crop = target_frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            continue
+
+        predicted_class, confidence = predict_crop(crop, clf_model, clf_vars, dataset_mean, dataset_std, config)
+
+        # Draw Top-Right
+        color = (0, 255, 0) if predicted_class in TARGET_CLASS_LIST else (0, 0, 255)
+        label = f"{predicted_class} ({confidence:.2f})"
+        cv2.rectangle(draw_frame, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(draw_frame, label, (x1, max(y1 - 10, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        
+        # Draw Bottom-Right
+        if crop_idx < grid_cols * grid_rows:
+            col = crop_idx % grid_cols
+            row = crop_idx // grid_cols
+            
+            crop_resized = cv2.resize(crop, (cell_w, cell_h))
+            if config.get("grayscale", False):
+                crop_gray = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2GRAY)
+                crop_disp = cv2.cvtColor(crop_gray, cv2.COLOR_GRAY2BGR)
+            else:
+                crop_disp = crop_resized
+                
+            # Background pour le texte
+            cv2.rectangle(crop_disp, (0, 0), (cell_w, 20), (0,0,0), -1)
+            cv2.putText(crop_disp, predicted_class, (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            
+            x_start = col * cell_w + 10 + (col * 5)
+            y_start = row * cell_h + 10 + (row * 5)
+            
+            if x_start + cell_w <= 960 and y_start + cell_h <= 540:
+                br_canvas[y_start:y_start+cell_h, x_start:x_start+cell_w] = crop_disp
+            crop_idx += 1
+            
+    # Place Top-Right on canvas
+    tr_img = cv2.resize(draw_frame, (960, 540))
+    canvas[0:540, 960:1920] = tr_img
+    
+    # Place Bottom-Right on canvas
+    canvas[540:1080, 960:1920] = br_canvas
+    
+    return canvas
+
 if __name__ == "__main__":
 
     print("🏗️ Chargement des modèles...")
@@ -488,9 +529,8 @@ if __name__ == "__main__":
     frame_id = 0
     saved_count = 0
 
-    smoother = TemporalSmoother(
-        alpha=SMOOTHING_ALPHA,
-        max_missing_frames=SMOOTHING_MAX_MISSING_FRAMES,
+    smoother = CenteredTemporalSmoother(
+        n_frames=SMOOTHING_N_FRAMES,
         iou_threshold=SMOOTHING_IOU_THRESHOLD
     ) if SMOOTHING_ENABLED else None
 
@@ -512,68 +552,65 @@ if __name__ == "__main__":
             # ==================================================
             # DÉTECTION
             # ==================================================
-            detections = decode_grid_and_detect(
-                frame,
-                det_model,
-                det_vars,
-                det_config,
+            # Inférence
+            detections, heatmap = decode_segmentation_and_detect(
+                original_frame, 
+                det_model, det_vars, det_config, 
                 conf_threshold=DETECTION_CONF_THRESHOLD,
-                nms_threshold=NMS_THRESHOLD
+                box_aera_min=BOX_AERA_MIN
             )
 
+            # ==================================================
+            # GESTION DU SMOOTHER (Buffering)
+            # ==================================================
             if SMOOTHING_ENABLED and smoother is not None:
-                detections = smoother.update(detections)
-
-            # ==================================================
-            # CLASSIFICATION + DRAW
-            # ==================================================
-            for (x1, y1, x2, y2, det_score) in detections:
-
-                crop = original_frame[y1:y2, x1:x2]
-                if crop.size == 0:
+                process_result = smoother.update_and_get_frame(original_frame, detections, heatmap)
+                if process_result is None:
+                    # Buffer pas encore plein (on accumule des images du futur)
+                    frame_id += 1
+                    pbar.update(1)
                     continue
-
-                predicted_class, confidence = predict_crop(
-                    crop,
-                    clf_model,
-                    clf_vars,
-                    dataset_mean,
-                    dataset_std,
-                    config
-                )
-
-                # if (confidence < CONFIDENCE_THRESHOLD):
-                #if (predicted_class not in TARGET_CLASS_LIST):
-                #    predicted_class = DEFAULT_CLASSE
-
-                # Couleur selon confiance
-                #color = (0, 255, 0) if confidence >= CONFIDENCE_THRESHOLD else (0, 0, 255)
+                else:
+                    target_idx, target_frame, target_detections, target_heatmap = process_result
+            else:
+                # Mode temps réel normal (pas de smoothing)
+                target_idx = frame_id
+                target_frame = original_frame
+                target_detections = detections
+                target_heatmap = heatmap
                 
-                # Couleur selon classe OK/KO
-                color = (0, 255, 0) if predicted_class in (TARGET_CLASS_LIST) else (0, 0, 255)
-
-                label = f"{predicted_class} ({confidence:.2f})"
-
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(
-                    frame,
-                    label,
-                    (x1, max(y1 - 10, 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    color,
-                    2
-                )
+            # ==================================================
+            # CONSTRUCTION DU CANVAS 4-QUARTS
+            # ==================================================
+            canvas = build_quadrant_canvas(
+                target_frame, target_heatmap, target_detections, 
+                clf_model, clf_vars, dataset_mean, dataset_std, config
+            )
 
             # ==================================================
             # SAUVEGARDE IMAGE
             # ==================================================
-            output_path = os.path.join(OUTPUT_DIR, f"frame_{frame_id:06d}.jpg")
-            cv2.imwrite(output_path, frame)
+            output_path = os.path.join(OUTPUT_DIR, f"frame_{target_idx:06d}.jpg")
+            cv2.imwrite(output_path, canvas)
             saved_count += 1
 
             frame_id += 1
             pbar.update(1)
+
+    # ==================================================
+    # VIDAGE DU BUFFER RESTANT A LA FIN DE LA VIDEO
+    # ==================================================
+    if SMOOTHING_ENABLED and smoother is not None:
+        print("\n⏳ Vidage des frames restantes en mémoire...")
+        remaining = smoother.get_remaining_frames()
+        for target_idx, target_frame, target_detections, target_heatmap in remaining:
+            canvas = build_quadrant_canvas(
+                target_frame, target_heatmap, target_detections, 
+                clf_model, clf_vars, dataset_mean, dataset_std, config
+            )
+            output_path = os.path.join(OUTPUT_DIR, f"frame_{target_idx:06d}.jpg")
+            cv2.imwrite(output_path, canvas)
+            saved_count += 1
 
     cap.release()
 

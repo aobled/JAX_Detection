@@ -237,17 +237,17 @@ class DetectionDataset:
         def gen():
             for chunk_path in chunks:
                 with np.load(chunk_path) as data:
-                    images = data['images'] # (N, H, W, C) où H,W = image_size, C=1 (grayscale) ou 3 (RGB)
-                    boxes = data['boxes']   # (N, 30, 5)
+                    images = data['images'] # (N, H, W, C)
+                    masks = data['masks']   # (N, H, W, 1)
                     
-                    for img, box in zip(images, boxes):
-                        yield img, box
+                    for img, mask in zip(images, masks):
+                        yield img, mask
 
         # 🎨 Adapter le nombre de canaux selon grayscale ou RGB
         num_channels = 1 if self.grayscale else 3
         output_signature = (
             tf.TensorSpec(shape=self.image_size + (num_channels,), dtype=tf.float32),
-            tf.TensorSpec(shape=(None, 5), dtype=tf.float32) # (30, 5) variable in creation but fixed here
+            tf.TensorSpec(shape=self.image_size + (1,), dtype=tf.float32) # Masque binaire
         )
         
         ds = tf.data.Dataset.from_generator(gen, output_signature=output_signature)
@@ -257,26 +257,19 @@ class DetectionDataset:
             # Todo: Augmentation complexe pour detection (flip boxes...)
             # Pour l'instant on fait simple : Flip horizontal uniquement
             
-            def augment_fn(img, boxes):
-                # boxes: (N, 5) -> [has, cx, cy, w, h]
-                has_obj = boxes[:, 0:1]
-                cx = boxes[:, 1:2]
-                cy = boxes[:, 2:3]
-                w = boxes[:, 3:4]
-                h = boxes[:, 4:5]
-                
+            def augment_fn(img, mask):
                 # --- 1. Flips (Vertical & Horizontal) ---
                 flip_v_enabled = self.augmentation_params.get("flip_v", False)
                 if flip_v_enabled:
                     do_flip_v = tf.random.uniform([]) > 0.5
                     img = tf.cond(do_flip_v, lambda: tf.image.flip_up_down(img), lambda: img)
-                    cy = tf.where(do_flip_v, 1.0 - cy, cy)
+                    mask = tf.cond(do_flip_v, lambda: tf.image.flip_up_down(mask), lambda: mask)
                 
                 flip_h_enabled = self.augmentation_params.get("flip_h", False)
                 if flip_h_enabled:
                     do_flip_h = tf.random.uniform([]) > 0.5
                     img = tf.cond(do_flip_h, lambda: tf.image.flip_left_right(img), lambda: img)
-                    cx = tf.where(do_flip_h, 1.0 - cx, cx)
+                    mask = tf.cond(do_flip_h, lambda: tf.image.flip_left_right(mask), lambda: mask)
                 
                 # --- 2. Translation (Shift) ---
                 trans_factor = self.augmentation_params.get("translation_factor", 0.0)
@@ -292,23 +285,29 @@ class DetectionDataset:
                         px = tf.cast(sx * tf.cast(img_w, tf.float32), tf.int32)
                         py = tf.cast(sy * tf.cast(img_h, tf.float32), tf.int32)
                         
-                        pad_h = tf.cast(0.20 * tf.cast(img_h, tf.float32), tf.int32)  # pad plus grand que shift max
+                        pad_h = tf.cast(0.20 * tf.cast(img_h, tf.float32), tf.int32)
                         pad_w = tf.cast(0.20 * tf.cast(img_w, tf.float32), tf.int32)
                         
                         padded_img = tf.pad(i, paddings=[[pad_h, pad_h], [pad_w, pad_w], [0, 0]], mode='REFLECT')
-                        
                         start_y = pad_h - py
                         start_x = pad_w - px
+                        return tf.image.crop_to_bounding_box(padded_img, start_y, start_x, img_h, img_w)
+                    
+                    img = tf.cond(do_translate, lambda: apply_translation(img, shift_x, shift_y), lambda: img)
+                    # Translation identique sur le masque avec fond noir (mode CONSTANT)
+                    def apply_translation_mask(m, sx, sy):
+                        px = tf.cast(sx * tf.cast(img_w, tf.float32), tf.int32)
+                        py = tf.cast(sy * tf.cast(img_h, tf.float32), tf.int32)
                         
-                        shifted_img = tf.image.crop_to_bounding_box(padded_img, start_y, start_x, img_h, img_w)
-                        return shifted_img
-                    
-                    img = tf.cond(do_translate, 
-                                  lambda: apply_translation(img, shift_x, shift_y), 
-                                  lambda: img)
-                    
-                    cx = tf.where(do_translate, cx + shift_x, cx)
-                    cy = tf.where(do_translate, cy + shift_y, cy)
+                        pad_h = tf.cast(0.20 * tf.cast(img_h, tf.float32), tf.int32)
+                        pad_w = tf.cast(0.20 * tf.cast(img_w, tf.float32), tf.int32)
+                        
+                        padded_mask = tf.pad(m, paddings=[[pad_h, pad_h], [pad_w, pad_w], [0, 0]], mode='CONSTANT')
+                        start_y = pad_h - py
+                        start_x = pad_w - px
+                        return tf.image.crop_to_bounding_box(padded_mask, start_y, start_x, img_h, img_w)
+
+                    mask = tf.cond(do_translate, lambda: apply_translation_mask(mask, shift_x, shift_y), lambda: mask)
                 
                 # --- 3. Zoom (Scale) ---
                 zoom_factor = self.augmentation_params.get("zoom_factor", 0.0)
@@ -326,32 +325,9 @@ class DetectionDataset:
                         return tf.image.resize(i_cropped, target_shape)
                     
                     img = tf.cond(do_zoom, lambda: apply_zoom(img, scale), lambda: img)
-                    
-                    cx_dist = cx - 0.5
-                    cy_dist = cy - 0.5
-                    
-                    new_cx = 0.5 + (cx_dist * scale)
-                    new_cy = 0.5 + (cy_dist * scale)
-                    new_w = w * scale
-                    new_h = h * scale
-                    
-                    cx = tf.where(do_zoom, new_cx, cx)
-                    cy = tf.where(do_zoom, new_cy, cy)
-                    w = tf.where(do_zoom, new_w, w)
-                    h = tf.where(do_zoom, new_h, h)
+                    mask = tf.cond(do_zoom, lambda: apply_zoom(mask, scale), lambda: mask)
                 
-                # --- Séparation des boxes invalides ---
-                is_invalid = (cx < 0.0) | (cx > 1.0) | (cy < 0.0) | (cy > 1.0)
-                has_obj = tf.where(is_invalid, tf.zeros_like(has_obj), has_obj)
-                
-                cx = tf.clip_by_value(cx, 0.0, 1.0)
-                cy = tf.clip_by_value(cy, 0.0, 1.0)
-                w = tf.clip_by_value(w, 0.0, 1.0)
-                h = tf.clip_by_value(h, 0.0, 1.0)
-                
-                boxes = tf.concat([has_obj, cx, cy, w, h], axis=-1)
-                
-                # --- 4. Augmentation couleur ---
+                # --- 4. Augmentation couleur (uniquement sur l'image) ---
                 bright_delta = self.augmentation_params.get("brightness_delta", 0.0)
                 if bright_delta > 0.0:
                     img = tf.image.random_brightness(img, bright_delta)
@@ -363,7 +339,10 @@ class DetectionDataset:
                     upper_cont = 1.0 + cont_factor
                     img = tf.image.random_contrast(img, lower_cont, upper_cont)
                 
-                return img, boxes
+                # S'assurer que le masque reste strictement binaire ou borné après resize
+                mask = tf.clip_by_value(mask, 0.0, 1.0)
+                
+                return img, mask
 
                 
             ds = ds.map(augment_fn)
