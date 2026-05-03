@@ -397,7 +397,7 @@ def calculate_normalization_stats(root_dir, sample_size=None, grayscale=False, s
 
 # 🎨 GÉNÉRATION DU DATASET
 TARGET_SIZE = 128
-#CLASSES_NAMES = ['a10', 'a400m', 'alphajet', 'b1b', 'b2', 'c130', 'c17', 'f4', 'f14', 'f15', 'f16', 'f18', 'f22', 'f35', 'f117', 'flanker', 'gripen', 'harrier', 'hawk', 'hawkeye', 'jaguar', 'mig29', 'mirage2000', 'rafale', 'su57', 'tornado', 'typhoon']
+
 #------------------------------
 #--- Configuration download ---
 #------------------------------
@@ -422,14 +422,14 @@ CHUNK_SIZE = config.get("chunk_size", 27000)
 GRAYSCALE = config.get("grayscale", True)
 
 print("\n🚀 [1/3] RESIZING ET ETALEMENT DES IMAGES")
-process_dataset_stretched(
+"""process_dataset_stretched(
     root_dir=DATASET_PATH, 
     output_dir=OUTPUT_DIR_STRETCHED, 
     target_size=IMAGE_SIZE[0], 
     grayscale=GRAYSCALE, 
     overlap_threshold=0.15, 
     categories=CLASS_NAMES
-)
+)"""
 
 print("\n🚀 [2/3] CALCUL DU MEAN ET STD")
 os.makedirs(os.path.dirname(OUTPUT_PREFIX), exist_ok=True)

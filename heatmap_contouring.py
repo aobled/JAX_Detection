@@ -7,10 +7,10 @@ import jax.numpy as jnp
 import pickle
 
 # Configuration:
-IMAGE_PATH = "/home/aobled/Downloads/8aab6779b09a496c.jpg" # Remplacer par l'image de test avec les gros et petits avions
+IMAGE_PATH = "/home/aobled/Downloads/test_image.png" # Remplacer par l'image de test avec les gros et petits avions
 OUTPUT_PATH = "/home/aobled/Downloads/heatmap_contouring_output.jpg"
 DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl"
-HEATMAP_THRESHOLD = 0.01 # 30% de confiance minimum pour binariser la chaleur
+HEATMAP_THRESHOLD = 0.7 # 30% de confiance minimum pour binariser la chaleur
 
 # Ajouter le répertoire racine
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

@@ -29,9 +29,8 @@ DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl" # Chemin vers le modèle 
 DETECTION_IMAGE_SIZE = (224, 224)       # Taille d'entrée du modèle de détection
 
 # 3. Configuration de la zone de détection
-ELLIPSE_MARGIN_PERCENT = 5
-ELLIPSE_ITERATIONS = 3
-BOX_AERA_MIN = 900
+CROP_MARGIN_PERCENT = 15  # Ajoute 15% de marge autour de la détection pour le classifieur
+BOX_AERA_MIN = 1225
 
 # PRIORITÉ AU DOSSIER PARENT
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,20 +39,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ==========================================================
 # Detection CONFIGURATION
 # ==========================================================
-VIDEO_PATH = "/home/aobled/Downloads/maverick0.mp4"
+VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
 OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 
 FRAME_STRIDE = 1  # 1 = toutes les frames
 #CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
-DETECTION_CONF_THRESHOLD = 0.85          # Seuil pour considérer une détection valide (objectness + class) best 0.7
+DETECTION_CONF_THRESHOLD = 0.8          # Seuil pour considérer une détection valide (objectness + class) best 0.7
 NMS_THRESHOLD = 0.3                     # Seuil IoU pour NMS best 0.4
 DEFAULT_CLASSE = "unknown"
-TARGET_CLASS_LIST = ["su57", "f14", "f18"]
+TARGET_CLASS_LIST = ["f16", "a10", "b52", "b2", "b1b", "f15", "f22"]
 
 # Paramètres de Lissage Temporel Centré (Sliding Window Tracking)
-SMOOTHING_ENABLED = False
+SMOOTHING_ENABLED = True
 SMOOTHING_N_FRAMES = 3             # N frames dans le passé et N frames dans le futur (Ex: 3 = fenêtre de 7 frames)
-SMOOTHING_IOU_THRESHOLD = 0.5      # Seuil IoU pour associer une détection à une track existante
+SMOOTHING_IOU_THRESHOLD = 0.4      # Seuil IoU pour associer une détection à une track existante
 
 
 # 3. Chargement de la config dataset
@@ -386,11 +385,9 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
     # 4. Binarisation
     binary_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
     
-    # --- DILATATION MORPHOLOGIQUE ---
-    # On gonfle organiquement la tache blanche pour inclure du contexte autour de l'avion
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ELLIPSE_MARGIN_PERCENT, ELLIPSE_MARGIN_PERCENT)) # 15x15 donne une belle marge sur du 1080p
-    # Si la marge semble trop grande ou trop petite, il suffit de jouer avec le paramètre iterations (ex: iterations=1 pour moins de marge, iterations=3 pour plus de contexte).
-    binary_mask = cv2.dilate(binary_mask, kernel, iterations=ELLIPSE_ITERATIONS)
+    # --- EXTRACTION ET MARGE PROPORTIONNELLE ---
+    # On a supprimé cv2.dilate car l'effet en pixels absolus était trop faible sur du 1080p.
+    # Il est bien plus performant et juste d'appliquer une marge en pourcentage sur la bounding box finale.
     
     # 5. Extraction des Contours
     contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -404,11 +401,20 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
             
         x, y, w, h = cv2.boundingRect(contour)
         
-        # Le "score" peut être la valeur moyenne ou max de probabilité dans la box
+        # Le "score" peut être la valeur moyenne ou max de probabilité dans la box STRICTE
         sub_mask = mask_resized[y:y+h, x:x+w]
         score = float(np.max(sub_mask)) if sub_mask.size > 0 else 1.0
         
-        final_detections.append((x, y, x+w, y+h, score))
+        # Application de la marge proportionnelle (ex: 15% de la taille de l'avion)
+        margin_x = int(w * (CROP_MARGIN_PERCENT / 100.0))
+        margin_y = int(h * (CROP_MARGIN_PERCENT / 100.0))
+        
+        x1 = max(0, x - margin_x)
+        y1 = max(0, y - margin_y)
+        x2 = min(w_orig, x + w + margin_x)
+        y2 = min(h_orig, y + h + margin_y)
+        
+        final_detections.append((x1, y1, x2, y2, score))
         
     return final_detections, mask_resized
 
@@ -481,15 +487,15 @@ def build_quadrant_canvas(target_frame, target_heatmap, target_detections, clf_m
             else:
                 crop_disp = crop_resized
                 
-            # Background pour le texte
-            cv2.rectangle(crop_disp, (0, 0), (cell_w, 20), (0,0,0), -1)
-            cv2.putText(crop_disp, predicted_class, (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            # On ne dessine PLUS sur crop_disp pour ne pas mordre sur l'image !
             
             x_start = col * cell_w + 10 + (col * 5)
-            y_start = row * cell_h + 10 + (row * 5)
+            y_start = row * (cell_h + 20) + 20 + (row * 5) # +20 pour laisser de la place au texte au-dessus
             
             if x_start + cell_w <= 960 and y_start + cell_h <= 540:
                 br_canvas[y_start:y_start+cell_h, x_start:x_start+cell_w] = crop_disp
+                # Dessiner le texte sur le canvas noir, juste au-dessus de l'image
+                cv2.putText(br_canvas, predicted_class, (x_start, y_start - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             crop_idx += 1
             
     # Place Top-Right on canvas
@@ -502,7 +508,8 @@ def build_quadrant_canvas(target_frame, target_heatmap, target_detections, clf_m
     return canvas
 
 if __name__ == "__main__":
-
+    
+    
     print("🏗️ Chargement des modèles...")
 
     config = get_dataset_config(DATASET_NAME)
@@ -626,12 +633,22 @@ if __name__ == "__main__":
     print("\n🎬 Reconstruction de la vidéo finale...")
     
     cap_original = cv2.VideoCapture(VIDEO_PATH)
-    
     fps = cap_original.get(cv2.CAP_PROP_FPS)
-    width = int(cap_original.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap_original.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
     cap_original.release()
+    
+    # Récupérer les dimensions à partir de la première image générée
+    # (car le canvas des 4 quadrants force le 1920x1080)
+    image_files = sorted([
+        f for f in os.listdir(OUTPUT_DIR)
+        if f.endswith(".jpg")
+    ])
+    
+    if len(image_files) == 0:
+        print("❌ Aucune image générée pour la reconstruction.")
+        sys.exit(1)
+        
+    first_frame = cv2.imread(os.path.join(OUTPUT_DIR, image_files[0]))
+    height, width = first_frame.shape[:2]
     
     # Codec robuste
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -649,10 +666,7 @@ if __name__ == "__main__":
         print("❌ ERREUR : Impossible d'ouvrir VideoWriter.")
         exit()
     
-    image_files = sorted([
-        f for f in os.listdir(OUTPUT_DIR)
-        if f.endswith(".jpg")
-    ])
+    # image_files est déjà chargé plus haut
     
     for img_name in tqdm(image_files, desc="Assemblage vidéo"):
         img_path = os.path.join(OUTPUT_DIR, img_name)
