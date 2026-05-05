@@ -116,8 +116,11 @@ def process_detection_dataset(
                     x2 = int(((bx + bw) / orig_w) * target_size[0])
                     y2 = int(((by + bh) / orig_h) * target_size[1])
                     
-                    # Dessiner un rectangle blanc (1.0) plein sur le masque
-                    cv2.rectangle(mask_array, (x1, y1), (x2, y2), 1.0, -1)
+                    # Dessiner une ellipse (1.0) pleine sur le masque au lieu d'un rectangle
+                    # Cela permet de couper les coins et d'éviter la fusion des masques pour des objets proches
+                    center = ((x1 + x2) // 2, (y1 + y2) // 2)
+                    axes = ((x2 - x1) // 2, (y2 - y1) // 2)
+                    cv2.ellipse(mask_array, center, axes, 0, 0, 360, 1.0, -1)
                 
                 current_chunk_images.append(img_array)
                 current_chunk_masks.append(mask_array)
@@ -186,7 +189,7 @@ if __name__ == "__main__":
             split_name="train", 
             target_size=config.get("image_size", (224, 224)),
             max_boxes=config.get("max_boxes", 20),
-            chunk_size=18000,
+            chunk_size=19000,
             grayscale=config.get("grayscale", True)
         )
     else:
@@ -200,7 +203,7 @@ if __name__ == "__main__":
             split_name="val", 
             target_size=config.get("image_size", (224, 224)),
             max_boxes=config.get("max_boxes", 20),
-            chunk_size=18000,
+            chunk_size=19000,
             grayscale=config.get("grayscale", True)
         )
     else:

@@ -422,14 +422,14 @@ CHUNK_SIZE = config.get("chunk_size", 27000)
 GRAYSCALE = config.get("grayscale", True)
 
 print("\n🚀 [1/3] RESIZING ET ETALEMENT DES IMAGES")
-"""process_dataset_stretched(
+process_dataset_stretched(
     root_dir=DATASET_PATH, 
     output_dir=OUTPUT_DIR_STRETCHED, 
     target_size=IMAGE_SIZE[0], 
     grayscale=GRAYSCALE, 
     overlap_threshold=0.15, 
     categories=CLASS_NAMES
-)"""
+)
 
 print("\n🚀 [2/3] CALCUL DU MEAN ET STD")
 os.makedirs(os.path.dirname(OUTPUT_PREFIX), exist_ok=True)

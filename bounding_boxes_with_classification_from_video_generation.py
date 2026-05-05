@@ -29,7 +29,7 @@ DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl" # Chemin vers le modèle 
 DETECTION_IMAGE_SIZE = (224, 224)       # Taille d'entrée du modèle de détection
 
 # 3. Configuration de la zone de détection
-CROP_MARGIN_PERCENT = 15  # Ajoute 15% de marge autour de la détection pour le classifieur
+CROP_MARGIN_PERCENT = 5  # 15 = Ajoute 15% de marge autour de la détection pour le classifieur
 BOX_AERA_MIN = 1225
 
 # PRIORITÉ AU DOSSIER PARENT
@@ -39,21 +39,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ==========================================================
 # Detection CONFIGURATION
 # ==========================================================
-VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
+VIDEO_PATH = "/media/aobled/Elements/Python/videos/A-10, P-51, F-35, F-22 Oshkosh 2019 - short.mp4"
 OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 
 FRAME_STRIDE = 1  # 1 = toutes les frames
 #CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
-DETECTION_CONF_THRESHOLD = 0.8          # Seuil pour considérer une détection valide (objectness + class) best 0.7
-NMS_THRESHOLD = 0.3                     # Seuil IoU pour NMS best 0.4
-DEFAULT_CLASSE = "unknown"
-TARGET_CLASS_LIST = ["f16", "a10", "b52", "b2", "b1b", "f15", "f22"]
-
-# Paramètres de Lissage Temporel Centré (Sliding Window Tracking)
-SMOOTHING_ENABLED = True
-SMOOTHING_N_FRAMES = 3             # N frames dans le passé et N frames dans le futur (Ex: 3 = fenêtre de 7 frames)
-SMOOTHING_IOU_THRESHOLD = 0.4      # Seuil IoU pour associer une détection à une track existante
-
+DETECTION_CONF_THRESHOLD = 0.6          # Seuil pour considérer une détection valide (objectness + class) target 0.6
+#TARGET_CLASS_LIST = ["f16", "a10", "b52", "b1b", "b2", "f22", "f15"]
+TARGET_CLASS_LIST = ["a10","mustang", "f35", "f22", "c130"]
 
 # 3. Chargement de la config dataset
 try:
@@ -258,97 +251,31 @@ def get_iou(box1, box2):
     union = area1 + area2 - intersection
     return intersection / union if union > 0 else 0
 
-
-class CenteredTemporalSmoother:
-    """Traque et lisse temporellement les bounding boxes avec une fenêtre [T-N, T+N]."""
-    def __init__(self, n_frames=3, iou_threshold=0.3):
-        self.N = n_frames
-        self.iou_threshold = iou_threshold
-        self.tracks = {} # id -> {frame_idx: [x1, y1, x2, y2, score]}
-        self.next_id = 0
-        self.frame_buffer = [] # list of (frame_idx, original_frame)
-        self.current_frame_idx = 0
-
-    def update_and_get_frame(self, original_frame, detections, heatmap):
-        """
-        Incorpore la nouvelle frame et ses détections au buffer.
-        Retourne la frame centrale prête à être dessinée, ou None si le buffer n'est pas encore assez plein.
-        """
-        # 1. Mise à jour des tracks avec les détections courantes
-        matched_tracker_ids = set()
-        
-        for det in detections:
-            best_iou = 0
-            best_id = -1
+def non_max_suppression(boxes, iou_threshold):
+    """
+    Applique le Non-Maximum Suppression (NMS) pour supprimer les boîtes superposées.
+    boxes: liste de [x1, y1, x2, y2, score]
+    """
+    if not boxes:
+        return []
+    
+    # Trier les boîtes par score (le dernier élément) décroissant
+    boxes = sorted(boxes, key=lambda x: x[4], reverse=True)
+    kept_boxes = []
+    
+    for current_box in boxes:
+        overlap = False
+        for kept_box in kept_boxes:
+            iou = get_iou(current_box[:4], kept_box[:4])
+            if iou > iou_threshold:
+                overlap = True
+                break
+        if not overlap:
+            kept_boxes.append(current_box)
             
-            # Trouver la track la plus proche basée sur sa DERNIÈRE position connue
-            for t_id, t_info in self.tracks.items():
-                if t_id in matched_tracker_ids: 
-                    continue
-                
-                last_frame = max(t_info.keys())
-                # Ne matcher que si l'objet a été vu récemment (ex: max N+2 frames de trou)
-                if self.current_frame_idx - last_frame > self.N + 2:
-                    continue
-                    
-                last_box = t_info[last_frame][:4]
-                iou = get_iou(det[:4], last_box)
-                if iou > best_iou:
-                    best_iou = iou
-                    best_id = t_id
-            
-            if best_iou >= self.iou_threshold:
-                self.tracks[best_id][self.current_frame_idx] = det
-                matched_tracker_ids.add(best_id)
-            else:
-                self.tracks[self.next_id] = {self.current_frame_idx: det}
-                matched_tracker_ids.add(self.next_id)
-                self.next_id += 1
-                
-        # 2. Ajout au buffer d'images
-        self.frame_buffer.append((self.current_frame_idx, original_frame, heatmap))
-        
-        # Nettoyage mémoire des vieilles tracks abandonnées
-        min_frame_needed = self.current_frame_idx - self.N - 5
-        for t_id in list(self.tracks.keys()):
-            max_frame = max(self.tracks[t_id].keys())
-            if max_frame < min_frame_needed:
-                del self.tracks[t_id]
-        
-        self.current_frame_idx += 1
-        
-        # 3. Vérifier si on a accumulé assez de frames "futures" pour générer la frame centrale
-        if len(self.frame_buffer) > self.N:
-            return self._pop_and_smooth()
-            
-        return None
+    return kept_boxes
 
-    def _pop_and_smooth(self):
-        """Récupère la frame la plus ancienne du buffer et calcule ses boîtes lissées."""
-        target_idx, target_frame, heatmap = self.frame_buffer.pop(0)
-        smoothed_detections = []
-        
-        for t_id, t_info in self.tracks.items():
-            # Collecter toutes les observations de cet avion dans [target_idx - N, target_idx + N]
-            window_boxes = []
-            for f_idx in range(target_idx - self.N, target_idx + self.N + 1):
-                if f_idx in t_info:
-                    window_boxes.append(t_info[f_idx])
-                    
-            if len(window_boxes) > 0:
-                # Moyenne exacte de la position de l'avion dans cette fenêtre de temps
-                mean_box = np.mean([b[:4] for b in window_boxes], axis=0)
-                mean_score = np.mean([b[4] for b in window_boxes])
-                smoothed_detections.append((int(mean_box[0]), int(mean_box[1]), int(mean_box[2]), int(mean_box[3]), mean_score))
-                
-        return target_idx, target_frame, smoothed_detections, heatmap
 
-    def get_remaining_frames(self):
-        """Vide le buffer à la fin de la vidéo."""
-        results = []
-        while len(self.frame_buffer) > 0:
-            results.append(self._pop_and_smooth())
-        return results
 
 
 def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf_threshold=0.3, box_aera_min=225):
@@ -384,6 +311,11 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
     
     # 4. Binarisation
     binary_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
+    
+    # --- SÉPARATION DES OBJETS PROCHES (ÉROSION) ---
+    # Érosion légère pour "casser" les ponts (glu) entre les avions très proches
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    binary_mask = cv2.erode(binary_mask, kernel, iterations=1)
     
     # --- EXTRACTION ET MARGE PROPORTIONNELLE ---
     # On a supprimé cv2.dilate car l'effet en pixels absolus était trop faible sur du 1080p.
@@ -536,11 +468,6 @@ if __name__ == "__main__":
     frame_id = 0
     saved_count = 0
 
-    smoother = CenteredTemporalSmoother(
-        n_frames=SMOOTHING_N_FRAMES,
-        iou_threshold=SMOOTHING_IOU_THRESHOLD
-    ) if SMOOTHING_ENABLED else None
-
     with tqdm(total=total_frames, desc="Traitement vidéo") as pbar:
 
         while True:
@@ -567,24 +494,10 @@ if __name__ == "__main__":
                 box_aera_min=BOX_AERA_MIN
             )
 
-            # ==================================================
-            # GESTION DU SMOOTHER (Buffering)
-            # ==================================================
-            if SMOOTHING_ENABLED and smoother is not None:
-                process_result = smoother.update_and_get_frame(original_frame, detections, heatmap)
-                if process_result is None:
-                    # Buffer pas encore plein (on accumule des images du futur)
-                    frame_id += 1
-                    pbar.update(1)
-                    continue
-                else:
-                    target_idx, target_frame, target_detections, target_heatmap = process_result
-            else:
-                # Mode temps réel normal (pas de smoothing)
-                target_idx = frame_id
-                target_frame = original_frame
-                target_detections = detections
-                target_heatmap = heatmap
+            target_idx = frame_id
+            target_frame = original_frame
+            target_detections = detections
+            target_heatmap = heatmap
                 
             # ==================================================
             # CONSTRUCTION DU CANVAS 4-QUARTS
@@ -603,21 +516,6 @@ if __name__ == "__main__":
 
             frame_id += 1
             pbar.update(1)
-
-    # ==================================================
-    # VIDAGE DU BUFFER RESTANT A LA FIN DE LA VIDEO
-    # ==================================================
-    if SMOOTHING_ENABLED and smoother is not None:
-        print("\n⏳ Vidage des frames restantes en mémoire...")
-        remaining = smoother.get_remaining_frames()
-        for target_idx, target_frame, target_detections, target_heatmap in remaining:
-            canvas = build_quadrant_canvas(
-                target_frame, target_heatmap, target_detections, 
-                clf_model, clf_vars, dataset_mean, dataset_std, config
-            )
-            output_path = os.path.join(OUTPUT_DIR, f"frame_{target_idx:06d}.jpg")
-            cv2.imwrite(output_path, canvas)
-            saved_count += 1
 
     cap.release()
 
