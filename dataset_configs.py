@@ -325,6 +325,66 @@ DATASET_CONFIGS = {
             "accum_steps": 2,          # Accumulation pour simuler 64
             "learning_rate": 4e-4,     # LR légèrement remonté
             "weight_decay": 5e-5,
+            "dropout_rate": 0.2,
+        },
+        
+        # === Hyperparamètres GPU ===
+        "gpu": {
+            "micro_batch_size": 16,
+            "accum_steps": 2,
+            "learning_rate": 2e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.05,
+        },
+        
+        # === Entraînement ===
+        "epochs": 30,
+        "patience": 5,
+        "warmup_steps": 2000,          # Préchauffage lent sur ~4 epochs
+        "decay_steps": 10000,          # 🔥 CORRIGÉ : Le LR chutera maintenant vers zéro autour de l'epoch 25 (au lieu de 200)
+        
+        # === Évaluation/Visualization ===
+        "eval_batch_size": 16,
+        "vis_freq": 5,
+        
+        # === Sauvegarde ===
+        "checkpoint_path": "./checkpoints_detection",
+        "save_dir": "./checkpoints_detection",
+    },
+    
+    "FIGHTERJET_DETECTION_SOPHISTICATED": {
+        # === CONFIG DETECTION D'AVIONS (SOPHISTICATED) ===
+        "task_type": "detection",
+        
+        # === Données ===
+        "num_classes": 1,  # Single Class Object Detection
+        "class_names": ['aircraft'],
+        "output_prefix": "./data/chunks/detection/dataset_detection",
+        "image_size": (224, 224),
+        "grayscale": True,
+        "max_boxes": 30,  # 🔥 Images avec plus de 20 boxes seront ignorées (évite padding excessif et faux négatifs)
+        
+        # === Augmentation de Données ===
+        "augmentation_params": {
+            "flip_h": True,
+            "flip_v": True,
+            "rotation_factor": 0.0,
+            "zoom_factor": 0.25,          # ±25% (était 20%) : Pour apprendre le multi-échelles
+            "translation_factor": 0.15,   # Shifting ±15% (était 10%) : Désaxer les cibles
+            "brightness_delta": 0.30,     # Beaucoup plus agressif (casser la dominante ciel gris clair)
+            "contrast_factor": 0.30       # Très agressif (simule contre-jour et nuages sombres)
+        },
+        
+        # === Modèle ---
+        "model_name": "aircraft_detector_sophisticated_unet",
+        "grid_size": 224,      # Segmentation sémantique (output size = input size)
+        
+        # === Hyperparamètres TPU ===
+        "tpu": {
+            "micro_batch_size": 32,    # Batch ramené à 32 pour plus de stochasticité (YOLO)
+            "accum_steps": 2,          # Accumulation pour simuler 64
+            "learning_rate": 4e-4,     # LR légèrement remonté
+            "weight_decay": 5e-5,
             "dropout_rate": 0.05,
         },
         

@@ -404,8 +404,10 @@ class Trainer:
             print(f"Train | Loss={train_loss:.4f} | {self.strategy.primary_metric_name}={train_acc:.4f} | Time={train_time:.1f}s")
             
             # Évaluation
+            start_time = time.time()
             val_loss, val_acc = self.evaluate(val_dataset)
-            print(f"Val   | Loss={val_loss:.4f} | {self.strategy.primary_metric_name}={val_acc:.4f}")
+            val_time = time.time() - start_time
+            print(f"Val   | Loss={val_loss:.4f} | {self.strategy.primary_metric_name}={val_acc:.4f} | Time={val_time:.1f}s")
             
             # Extraire le learning rate actuel depuis le schedule
             current_step = int(self.state.step)

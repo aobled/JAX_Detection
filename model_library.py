@@ -128,6 +128,50 @@ class CBAMBlock(nn.Module):
         return x
 
 
+class ASPPBlock(nn.Module):
+    """Atrous Spatial Pyramid Pooling (ASPP) Block"""
+    features: int
+
+    @nn.compact
+    def __call__(self, x, training=True):
+        # 1x1 conv
+        conv1 = nn.Conv(self.features, (1, 1), padding="SAME", use_bias=False)(x)
+        conv1 = nn.BatchNorm(use_running_average=not training)(conv1)
+        conv1 = nn.silu(conv1)
+        
+        # Dilated 3x3 at rate 6
+        conv6 = nn.Conv(self.features, (3, 3), kernel_dilation=(6, 6), padding="SAME", use_bias=False)(x)
+        conv6 = nn.BatchNorm(use_running_average=not training)(conv6)
+        conv6 = nn.silu(conv6)
+        
+        # Dilated 3x3 at rate 12
+        conv12 = nn.Conv(self.features, (3, 3), kernel_dilation=(12, 12), padding="SAME", use_bias=False)(x)
+        conv12 = nn.BatchNorm(use_running_average=not training)(conv12)
+        conv12 = nn.silu(conv12)
+        
+        # Dilated 3x3 at rate 18
+        conv18 = nn.Conv(self.features, (3, 3), kernel_dilation=(18, 18), padding="SAME", use_bias=False)(x)
+        conv18 = nn.BatchNorm(use_running_average=not training)(conv18)
+        conv18 = nn.silu(conv18)
+        
+        # Global Average Pooling branch
+        gap = jnp.mean(x, axis=(1, 2), keepdims=True)
+        gap = nn.Conv(self.features, (1, 1), padding="SAME", use_bias=False)(gap)
+        gap = nn.BatchNorm(use_running_average=not training)(gap)
+        gap = nn.silu(gap)
+        # Resize GAP to match x's spatial dimensions
+        gap = jax.image.resize(gap, shape=(x.shape[0], x.shape[1], x.shape[2], self.features), method='bilinear')
+        
+        # Concatenate all branches
+        out = jnp.concatenate([conv1, conv6, conv12, conv18, gap], axis=-1)
+        
+        # Final 1x1 conv to reduce dimensions back to self.features
+        out = nn.Conv(self.features, (1, 1), padding="SAME", use_bias=False)(out)
+        out = nn.BatchNorm(use_running_average=not training)(out)
+        out = nn.silu(out)
+        return out
+
+
 class SophisticatedCNN(nn.Module):
     """Modèle CNN sophistiqué avec convolutions séparables, SE et attention spatiale - VERSION ORIGINALE"""
     num_classes: int = 2
@@ -1988,6 +2032,9 @@ class AircraftDetectorUNet(nn.Module):
         b = nn.BatchNorm(use_running_average=not training)(b)
         b = nn.silu(b)
         
+        # Application du Dropout au bottleneck (le seul endroit où il est vraiment efficace sur un U-Net)
+        b = nn.Dropout(self.dropout_rate, deterministic=not training)(b)
+        
         # --- DECODER ---
         # Up 1 (28x28 -> 56x56)
         u1 = jax.image.resize(b, shape=(b.shape[0], x3.shape[1], x3.shape[2], b.shape[3]), method='bilinear')
@@ -2027,9 +2074,106 @@ class AircraftDetectorUNet(nn.Module):
         out = nn.Conv(1, (1, 1), padding="SAME")(u3)
         return nn.sigmoid(out)
 
+class AircraftDetectorSophisticatedUNet(nn.Module):
+    """
+    Détecteur d'avions par Segmentation Sémantique avec architecture Sophistiquée.
+    Intègre SeparableConv, SEBlock, SpatialAttention, et ASPP.
+    Input: (B, 224, 224, C)
+    Output: (B, 224, 224, 1) Mask de probabilités (0 à 1)
+    """
+    dropout_rate: float = 0.2
+
+    @nn.compact
+    def __call__(self, x, training=True):
+        # --- ENCODER ---
+        # Block 1 (224x224 -> 112x112)
+        x1 = SeparableConv(32, (3, 3))(x, training)
+        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.silu(x1)
+        x1 = SeparableConv(32, (3, 3))(x1, training)
+        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.silu(x1)
+        x1 = SEBlock(reduction=8)(x1, training)
+        x1 = SpatialAttention()(x1, training)
+        p1 = nn.max_pool(x1, window_shape=(2, 2), strides=(2, 2)) # 112x112
+        
+        # Block 2 (112x112 -> 56x56)
+        x2 = SeparableConv(64, (3, 3))(p1, training)
+        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.silu(x2)
+        x2 = SeparableConv(64, (3, 3))(x2, training)
+        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.silu(x2)
+        x2 = SEBlock(reduction=16)(x2, training)
+        x2 = SpatialAttention()(x2, training)
+        p2 = nn.max_pool(x2, window_shape=(2, 2), strides=(2, 2)) # 56x56
+        
+        # Block 3 (56x56 -> 28x28)
+        x3 = SeparableConv(128, (3, 3))(p2, training)
+        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.silu(x3)
+        x3 = SeparableConv(128, (3, 3))(x3, training)
+        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.silu(x3)
+        x3 = SEBlock(reduction=16)(x3, training)
+        x3 = SpatialAttention()(x3, training)
+        p3 = nn.max_pool(x3, window_shape=(2, 2), strides=(2, 2)) # 28x28
+        
+        # --- BOTTLENECK ---
+        # 28x28
+        # ASPP Block remplace les 2 convolutions centrales
+        b = ASPPBlock(features=256)(p3, training)
+        b = nn.Dropout(self.dropout_rate, deterministic=not training)(b)
+        
+        # --- DECODER ---
+        # Up 1 (28x28 -> 56x56)
+        u1 = jax.image.resize(b, shape=(b.shape[0], x3.shape[1], x3.shape[2], b.shape[3]), method='bilinear')
+        u1 = SeparableConv(128, (2, 2))(u1, training)
+        u1 = jnp.concatenate([u1, x3], axis=-1)
+        u1 = SeparableConv(128, (3, 3))(u1, training)
+        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.silu(u1)
+        u1 = SeparableConv(128, (3, 3))(u1, training)
+        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.silu(u1)
+        u1 = SEBlock(reduction=16)(u1, training)
+        
+        # Up 2 (56x56 -> 112x112)
+        u2 = jax.image.resize(u1, shape=(u1.shape[0], x2.shape[1], x2.shape[2], u1.shape[3]), method='bilinear')
+        u2 = SeparableConv(64, (2, 2))(u2, training)
+        u2 = jnp.concatenate([u2, x2], axis=-1)
+        u2 = SeparableConv(64, (3, 3))(u2, training)
+        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.silu(u2)
+        u2 = SeparableConv(64, (3, 3))(u2, training)
+        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.silu(u2)
+        u2 = SEBlock(reduction=16)(u2, training)
+        
+        # Up 3 (112x112 -> 224x224)
+        u3 = jax.image.resize(u2, shape=(u2.shape[0], x1.shape[1], x1.shape[2], u2.shape[3]), method='bilinear')
+        u3 = SeparableConv(32, (2, 2))(u3, training)
+        u3 = jnp.concatenate([u3, x1], axis=-1)
+        u3 = SeparableConv(32, (3, 3))(u3, training)
+        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.silu(u3)
+        u3 = SeparableConv(32, (3, 3))(u3, training)
+        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.silu(u3)
+        u3 = SEBlock(reduction=16)(u3, training)
+        
+        # --- OUTPUT ---
+        # Mask 224x224x1
+        out = nn.Conv(1, (1, 1), padding="SAME")(u3)
+        return nn.sigmoid(out)
+
 def create_aircraft_detector_unet(dropout_rate=0.2, **kwargs):
     """Factory for UNet Detector"""
     return AircraftDetectorUNet(dropout_rate=dropout_rate)
+
+def create_aircraft_detector_sophisticated_unet(dropout_rate=0.2, **kwargs):
+    """Factory for Sophisticated UNet Detector"""
+    return AircraftDetectorSophisticatedUNet(dropout_rate=dropout_rate)
 
 
 # ... (Previous MODELS dict)
@@ -2043,6 +2187,7 @@ MODELS = {
     'aircraft_detector_v6_multilevel': create_aircraft_detector_v6_multilevel, # 🚀 V6 Dual-Scale (14x14, 7x7)
     'aircraft_detector_v7_advanced': create_aircraft_detector_v7_advanced, # 🚀 V7 Tri-Scale Anchor-Free
     'aircraft_detector_unet': create_aircraft_detector_unet, # 🚀 Semantic Segmentation U-Net
+    'aircraft_detector_sophisticated_unet': create_aircraft_detector_sophisticated_unet, # 🚀 Semantic Segmentation Sophisticated U-Net
     'sophisticated_cnn': create_sophisticated_cnn,
     'sophisticated_cnn_droped_out': create_sophisticated_cnn_droped_out,
     'sophisticated_cnn_128': create_sophisticated_cnn_128,
@@ -2090,6 +2235,20 @@ def get_model_info(model_name):
         Dict avec les informations du modèle
     """
     model_info = {
+        'aircraft_detector_unet': {
+            'name': 'AircraftDetectorUNet',
+            'description': 'U-Net pour la détection par Segmentation Sémantique',
+            'params': '~1.5M',
+            'size': '~6MB',
+            'best_for': 'Détection pixel-perfect, ignore la gestion des ancres.'
+        },
+        'aircraft_detector_sophisticated_unet': {
+            'name': 'AircraftDetectorSophisticatedUNet',
+            'description': 'U-Net ultra-optimisé (SeparableConv, SEBlock, ASPP) pour une précision chirurgicale à faible coût de calcul.',
+            'params': '~2.0M',
+            'size': '~8MB',
+            'best_for': 'Segmentation sémantique vidéo, haute séparation des petits objets.'
+        },
         'sophisticated_cnn': {
             'name': 'SophisticatedCNN',
             'description': 'CNN sophistiqué avec convolutions séparables, SE et attention spatiale',

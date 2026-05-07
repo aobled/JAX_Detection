@@ -30,7 +30,7 @@ DETECTION_IMAGE_SIZE = (224, 224)       # Taille d'entrée du modèle de détect
 
 # 3. Configuration de la zone de détection
 CROP_MARGIN_PERCENT = 5  # 15 = Ajoute 15% de marge autour de la détection pour le classifieur
-BOX_AERA_MIN = 1225
+BOX_AERA_MIN = 60
 
 # PRIORITÉ AU DOSSIER PARENT
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -39,14 +39,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ==========================================================
 # Detection CONFIGURATION
 # ==========================================================
-VIDEO_PATH = "/media/aobled/Elements/Python/videos/A-10, P-51, F-35, F-22 Oshkosh 2019 - short.mp4"
+VIDEO_PATH = "/media/aobled/Elements/Python/videos/F-22 in the Mach - loop.mp4"
 OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 
 FRAME_STRIDE = 1  # 1 = toutes les frames
 #CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
-DETECTION_CONF_THRESHOLD = 0.6          # Seuil pour considérer une détection valide (objectness + class) target 0.6
-#TARGET_CLASS_LIST = ["f16", "a10", "b52", "b1b", "b2", "f22", "f15"]
-TARGET_CLASS_LIST = ["a10","mustang", "f35", "f22", "c130"]
+DETECTION_CONF_THRESHOLD = 0.8          # Seuil pour considérer une détection valide (objectness + class) target 0.6
+#TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
+TARGET_CLASS_LIST = ["f15", "f22"]
 
 # 3. Chargement de la config dataset
 try:
@@ -348,7 +348,7 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
         
         final_detections.append((x1, y1, x2, y2, score))
         
-    return final_detections, mask_resized
+    return final_detections, mask_resized, binary_mask
 
 # =================================================================================================
 # MAIN
@@ -370,7 +370,15 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
 # ==========================================================
 # MAIN
 # ==========================================================
-def build_quadrant_canvas(target_frame, target_heatmap, target_detections, clf_model, clf_vars, dataset_mean, dataset_std, config):
+def build_quadrant_canvas(target_frame,
+                          target_heatmap,
+                          target_binary_mask,
+                          target_detections,
+                          clf_model,
+                          clf_vars,
+                          dataset_mean,
+                          dataset_std,
+                          config):
     canvas = np.zeros((1080, 1920, 3), dtype=np.uint8)
     
     # 1. Top-Left: Original
@@ -383,8 +391,52 @@ def build_quadrant_canvas(target_frame, target_heatmap, target_detections, clf_m
     bl_img = cv2.resize(hm_color, (960, 540))
     canvas[540:1080, 0:960] = bl_img
     
-    # 3. Top-Right: Annotated
-    draw_frame = target_frame.copy()
+    # 3. Top-Right: Annotated + Transparent Heatmap Overlay    
+    # --- Construction de la heatmap couleur ---
+    heatmap_uint8 = np.clip(target_heatmap * 255, 0, 255).astype(np.uint8)
+    
+    heatmap_color = cv2.applyColorMap(
+        heatmap_uint8,
+        cv2.COLORMAP_JET
+    )
+    
+    # Supprime les faibles activations visuellement
+    mask = heatmap_uint8 > 40
+    
+    heatmap_color[~mask] = 0
+
+    # --- Overlay transparent ---
+    alpha = 0.45  # transparence heatmap
+    
+    draw_frame = cv2.addWeighted(
+        target_frame,
+        1.0,
+        heatmap_color,
+        alpha,
+        0
+    )
+    
+    
+    # =====================================================
+    # Dessin des contours du binary mask
+    # =====================================================
+    
+    binary_mask_uint8 = target_binary_mask.astype(np.uint8)
+    
+    contours, _ = cv2.findContours(
+        binary_mask_uint8,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+    
+    cv2.drawContours(
+        draw_frame,
+        contours,
+        -1,
+        (255, 255, 255),  # blanc
+        1
+    )
+    
     
     # 4. Bottom-Right: Classification Crops
     br_canvas = np.zeros((540, 960, 3), dtype=np.uint8)
@@ -487,13 +539,14 @@ if __name__ == "__main__":
             # DÉTECTION
             # ==================================================
             # Inférence
-            detections, heatmap = decode_segmentation_and_detect(
+            detections, heatmap, binary_mask = decode_segmentation_and_detect(
                 original_frame, 
                 det_model, det_vars, det_config, 
                 conf_threshold=DETECTION_CONF_THRESHOLD,
                 box_aera_min=BOX_AERA_MIN
             )
-
+            
+            target_binary_mask = binary_mask
             target_idx = frame_id
             target_frame = original_frame
             target_detections = detections
@@ -503,8 +556,15 @@ if __name__ == "__main__":
             # CONSTRUCTION DU CANVAS 4-QUARTS
             # ==================================================
             canvas = build_quadrant_canvas(
-                target_frame, target_heatmap, target_detections, 
-                clf_model, clf_vars, dataset_mean, dataset_std, config
+                target_frame,
+                target_heatmap,
+                target_binary_mask,
+                target_detections,
+                clf_model,
+                clf_vars,
+                dataset_mean,
+                dataset_std,
+                config
             )
 
             # ==================================================
