@@ -39,15 +39,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ==========================================================
 # Detection CONFIGURATION
 # ==========================================================
-VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
-#VIDEO_PATH = "/media/aobled/Elements/Python/videos/F-22 in the Mach - loop.mp4"
+#VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
+VIDEO_PATH = "/media/aobled/Elements/Python/videos/F-22 in the Mach - loop.mp4"
 OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 
 FRAME_STRIDE = 1  # 1 = toutes les frames
-#CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
-DETECTION_CONF_THRESHOLD = 0.5          # Seuil pour considérer une détection valide (objectness + class) target 0.6
-TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
-#TARGET_CLASS_LIST = ["f15", "f22"]
+DETECTION_CONF_THRESHOLD = 0.6          # Seuil pour considérer une détection valide (objectness + class) target 0.6
+#TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
+TARGET_CLASS_LIST = ["f15", "f22"]
 
 # 3. Chargement de la config dataset
 try:
@@ -380,6 +379,12 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
         y2 = min(h_orig, y + h + margin_y)
         
         final_detections.append((x1, y1, x2, y2, score))
+    
+    # stabilité visuelle : haut → bas puis gauche → droite
+    final_detections = sorted(
+        final_detections,
+        key=lambda b: (b[1], b[0])  # y puis x
+    )
         
     return final_detections, mask_resized, binary_mask
 
