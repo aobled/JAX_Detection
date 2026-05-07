@@ -29,7 +29,7 @@ DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl" # Chemin vers le modèle 
 DETECTION_IMAGE_SIZE = (224, 224)       # Taille d'entrée du modèle de détection
 
 # 3. Configuration de la zone de détection
-CROP_MARGIN_PERCENT = 5  # 15 = Ajoute 15% de marge autour de la détection pour le classifieur
+CROP_MARGIN_PERCENT = 0  # 15 = Ajoute 15% de marge autour de la détection pour le classifieur
 BOX_AERA_MIN = 60
 
 # PRIORITÉ AU DOSSIER PARENT
@@ -39,14 +39,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ==========================================================
 # Detection CONFIGURATION
 # ==========================================================
-VIDEO_PATH = "/media/aobled/Elements/Python/videos/F-22 in the Mach - loop.mp4"
+VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
+#VIDEO_PATH = "/media/aobled/Elements/Python/videos/F-22 in the Mach - loop.mp4"
 OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 
 FRAME_STRIDE = 1  # 1 = toutes les frames
 #CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION bet 0.96
-DETECTION_CONF_THRESHOLD = 0.8          # Seuil pour considérer une détection valide (objectness + class) target 0.6
-#TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
-TARGET_CLASS_LIST = ["f15", "f22"]
+DETECTION_CONF_THRESHOLD = 0.5          # Seuil pour considérer une détection valide (objectness + class) target 0.6
+TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
+#TARGET_CLASS_LIST = ["f15", "f22"]
 
 # 3. Chargement de la config dataset
 try:
@@ -310,12 +311,43 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
     mask_resized = cv2.resize(pred_mask, (w_orig, h_orig), interpolation=cv2.INTER_CUBIC)
     
     # 4. Binarisation
-    binary_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
+    #binary_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
+    # Zones ultra fiables
+    strong_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
     
-    # --- SÉPARATION DES OBJETS PROCHES (ÉROSION) ---
-    # Érosion légère pour "casser" les ponts (glu) entre les avions très proches
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    binary_mask = cv2.erode(binary_mask, kernel, iterations=1)
+    # Zones faibles autorisées
+    weak_mask = (mask_resized > (conf_threshold * 0.4)).astype(np.uint8) * 255
+    
+    # Dilatation légère des zones fortes
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    
+    expanded_strong = cv2.dilate(
+        strong_mask,
+        kernel,
+        iterations=1
+    )
+    
+    # Intersection avec weak_mask
+    binary_mask = cv2.bitwise_and(
+        expanded_strong,
+        weak_mask
+    )
+    
+    # =====================================================
+    # Dilatation pour récupérer les zones faibles autour
+    # =====================================================
+    
+    dilate_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (11, 11)
+    )
+    
+    binary_mask = cv2.dilate(
+        binary_mask,
+        dilate_kernel,
+        iterations=1
+    )    
+    
     
     # --- EXTRACTION ET MARGE PROPORTIONNELLE ---
     # On a supprimé cv2.dilate car l'effet en pixels absolus était trop faible sur du 1080p.
@@ -336,6 +368,7 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
         # Le "score" peut être la valeur moyenne ou max de probabilité dans la box STRICTE
         sub_mask = mask_resized[y:y+h, x:x+w]
         score = float(np.max(sub_mask)) if sub_mask.size > 0 else 1.0
+        #score = np.mean(sub_mask)
         
         # Application de la marge proportionnelle (ex: 15% de la taille de l'avion)
         margin_x = int(w * (CROP_MARGIN_PERCENT / 100.0))
