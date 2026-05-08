@@ -39,14 +39,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ==========================================================
 # Detection CONFIGURATION
 # ==========================================================
-#VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
-VIDEO_PATH = "/media/aobled/Elements/Python/videos/F-22 in the Mach - loop.mp4"
 OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
-
 FRAME_STRIDE = 1  # 1 = toutes les frames
-DETECTION_CONF_THRESHOLD = 0.6          # Seuil pour considérer une détection valide (objectness + class) target 0.6
+DETECTION_CONF_THRESHOLD = 0.7          # Seuil pour considérer une détection valide (objectness + class) target 0.6
+
+#VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4
+VIDEO_PATH = "/media/aobled/Elements/Python/videos/low_level_f16.mp4"
 #TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
-TARGET_CLASS_LIST = ["f15", "f22"]
+TARGET_CLASS_LIST = ["f16"]
 
 # 3. Chargement de la config dataset
 try:
@@ -333,6 +333,24 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
     )
     
     # =====================================================
+    # MORPHOLOGICAL CLOSING
+    # Petit kernel (5,5) : petits trous bouchés, peu agressif
+    # Moyen (9,9) ou (11,11) : excellent compromis
+    # Gros kernel (21,21) : fusion de plusieurs avions proches
+    # =====================================================
+    closing_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (21, 21)
+    )
+    
+    binary_mask = cv2.morphologyEx(
+        binary_mask,
+        cv2.MORPH_CLOSE,
+        closing_kernel,
+        iterations=1
+    )
+    
+    # =====================================================
     # Dilatation pour récupérer les zones faibles autour
     # =====================================================
     
@@ -493,7 +511,7 @@ def build_quadrant_canvas(target_frame,
 
         # Draw Top-Right
         color = (0, 255, 0) if predicted_class in TARGET_CLASS_LIST else (0, 0, 255)
-        label = f"{predicted_class} ({confidence:.2f})"
+        label = f"{predicted_class}"
         cv2.rectangle(draw_frame, (x1, y1), (x2, y2), color, 2)
         cv2.putText(draw_frame, label, (x1, max(y1 - 10, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
@@ -517,7 +535,8 @@ def build_quadrant_canvas(target_frame,
             if x_start + cell_w <= 960 and y_start + cell_h <= 540:
                 br_canvas[y_start:y_start+cell_h, x_start:x_start+cell_w] = crop_disp
                 # Dessiner le texte sur le canvas noir, juste au-dessus de l'image
-                cv2.putText(br_canvas, predicted_class, (x_start, y_start - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                label = f"{predicted_class} ({100*confidence:.1f}%)"
+                cv2.putText(br_canvas, label, (x_start, y_start - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             crop_idx += 1
             
     # Place Top-Right on canvas
