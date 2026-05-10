@@ -37,22 +37,22 @@ Pendant cette extraction, la méthode identifie de manière autonome comment com
 
 ---
 
-## 3. La Stratégie de Détection
+## 3. La Stratégie de Détection (Segmentation Sémantique U-Net)
 
-**Acteur responsable :** `DetectionStrategy` (dans `task_strategies.py`) faisant appel à `loss_functions.py`.
+**Acteur responsable :** `DetectionStrategy` (dans `task_strategies.py`) faisant appel à `loss_functions.py` (`compute_segmentation_loss`).
 
-### La Mathématique : La Grille YOLO (You Only Look Once)
-C'est le sommet mathématique de ce framework. Le modèle ne sort pas un simple chiffre, mais une grille en 3 dimensions (une map spatiale locale, type `7x7x5` pour 49 cases et 5 variables : `x, y, w, h, confiance`).
+### La Mathématique : La Hybrid Loss (BCE + Dice)
+L'architecture a évolué d'une grille YOLO vers un réseau de Segmentation Sémantique (U-Net). Le modèle génère une "Heatmap" (carte de chaleur) de la même taille que l'image d'entrée, où chaque pixel contient la probabilité d'appartenir à un avion.
 
-La méthode `compute_grid_loss(outputs, targets)` décompose l'erreur du réseau en **trois gradients distincts** pour le punir intelligemment sur 3 axes :
+Le défi majeur de cette approche est le **déséquilibre de classe extrême** : 99% de l'image est du ciel (classe 0), et 1% est un avion (classe 1). Si l'on utilisait une simple Erreur Quadratique Moyenne (MSE), le modèle pourrait obtenir un score artificiellement excellent en prédisant un écran entièrement noir. 
 
-1. **La Vérité Géométrique (`loss_coord`)**  
-   Basée sur l'Erreur Quadratique Moyenne (MSE) pour l'étalonnage. Elle punit un Centre `x,y` de la boîte si ce dernier est décalé par rapport à l'avion cible. Pour la hauteur et la largeur de la boîte `w,h`, l'équation emploie intentionnellement des **racines carrées**. *Pourquoi ?* Car une erreur de 20 pixels sur un immense porteur A400M n'a pas d'importance, mais une erreur de 20 pixels sur un minuscule chasseur Rafale au loin détruit la boîte englobante.
-2. **La Vérité Absolue (`loss_obj`)**  
-   Pour la cellule de la grille (parmi les 49 cases) qui a la chance de "posséder" le centre de gravité de l'avion ciblé, le réseau est puni si son score de certitude ("je vois un objet !") est inférieur à 100%. 
-3. **Le Ciel Vide (`loss_noobj`)**  
-   La plus compliquée statistiquement à gérer. Le ciel est vaste. Pour les 48 cases qui ne contiennent rien, le système est intensément corrigé (via le coefficient pondérateur empirique standardisé `lambda_noobj = 0.5`) si son attention grimpe > 0%.
+Pour contrer cela, la fonction de perte combine deux stratégies complémentaires :
 
----
+1. **Binary Cross Entropy (BCE)**  
+   Évalue pixel par pixel la certitude du réseau. Le BCE pénalise lourdement le modèle s'il est "très sûr de lui mais qu'il a tort". Cela force les contours de la zone de chaleur à être nets et tranchés (les probabilités convergent vers 0.0 ou 1.0) plutôt que de générer un halo flou.
 
-La flexibilité de la librairie et l'introduction du design pattern *Stratégie* fait de ce fichier un point de départ fantastique. S'il fallait rajouter un troisième point d'entrée pour la Segmentation d'instance U-NET, il suffirait de greffer une nouvelle classe de Stratégie (`SegmentationStrategy`) utilisant la perte *Dice Loss* ou *BCE*, et le Trainer la compilerait sur le champ !
+2. **Dice Loss (Sørensen–Dice coefficient)**  
+   C'est la pièce maîtresse pour détecter les objets minuscules. Le coefficient de Dice calcule le taux de recouvrement global (similaire à l'IoU) entre la Heatmap prédite et le masque réel, *indépendamment de la taille de l'objet*. Mathématiquement : `2 * Intersection / Union`.
+   Grâce au Dice Loss, rater un avion minuscule de 3 pixels pénalise le réseau avec la même intensité que rater un bombardier massif de 300 pixels. C'est ce qui force l'architecture à traquer les plus petites cibles.
+
+La combinaison de ces deux pertes (`bce_weight=0.5` + `dice_weight=0.5`) garantit des Heatmaps d'une précision chirurgicale, résistantes au bruit de fond, et capables de capter des objets lointains.

@@ -406,14 +406,34 @@ def compute_v7_loss(pred_grids, gt_boxes, lambda_coord=5.0, lambda_noobj=0.5):
     total_loss = (loss_28 + loss_14 + loss_7) / batch_size
     return total_loss
 
-def compute_segmentation_loss(pred_mask, true_mask):
+def compute_segmentation_loss(pred_mask, true_mask, bce_weight=0.5, dice_weight=0.5):
     """
     Calcule la loss pour la Segmentation Sémantique (U-Net).
-    MSE fonctionne extrêmement bien pour régresser des Heatmaps continues.
+    Utilise une combinaison hybride de BCE (pour la netteté des pixels) 
+    et de Dice Loss (pour la résistance au déséquilibre de classe/petits objets).
     """
     # pred_mask: (Batch, H, W, 1) après Sigmoid (valeurs 0.0 à 1.0)
     # true_mask: (Batch, H, W, 1) binaire 0.0 ou 1.0
     
-    # Mean Squared Error
-    loss = jnp.mean((pred_mask - true_mask)**2)
+    # 1. Binary Cross Entropy (BCE)
+    # Epsilon pour éviter log(0)
+    epsilon = 1e-7
+    pred_safe = jnp.clip(pred_mask, epsilon, 1.0 - epsilon)
+    bce_loss = -jnp.mean(true_mask * jnp.log(pred_safe) + (1.0 - true_mask) * jnp.log(1.0 - pred_safe))
+    
+    # 2. Dice Loss
+    # Aplatir les tenseurs pour le calcul (Batch, H*W)
+    pred_flat = pred_mask.reshape((pred_mask.shape[0], -1))
+    true_flat = true_mask.reshape((true_mask.shape[0], -1))
+    
+    intersection = jnp.sum(pred_flat * true_flat, axis=-1)
+    union = jnp.sum(pred_flat, axis=-1) + jnp.sum(true_flat, axis=-1)
+    
+    # Epsilon au dénominateur pour éviter la division par zéro (ex: ciel vide)
+    dice_score = (2.0 * intersection + epsilon) / (union + epsilon)
+    dice_loss = jnp.mean(1.0 - dice_score)
+    
+    # 3. Hybrid Loss
+    loss = (bce_weight * bce_loss) + (dice_weight * dice_loss)
+    
     return loss

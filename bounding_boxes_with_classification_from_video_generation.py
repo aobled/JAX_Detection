@@ -30,7 +30,7 @@ DETECTION_IMAGE_SIZE = (224, 224)       # Taille d'entrée du modèle de détect
 
 # 3. Configuration de la zone de détection
 CROP_MARGIN_PERCENT = 0  # 15 = Ajoute 15% de marge autour de la détection pour le classifieur
-BOX_AERA_MIN = 60
+BOX_AERA_MIN = 225
 
 # PRIORITÉ AU DOSSIER PARENT
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -44,9 +44,9 @@ FRAME_STRIDE = 1  # 1 = toutes les frames
 DETECTION_CONF_THRESHOLD = 0.7          # Seuil pour considérer une détection valide (objectness + class) target 0.6
 
 #VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4
-VIDEO_PATH = "/media/aobled/Elements/Python/videos/maverick3.mp4"
+VIDEO_PATH = "/media/aobled/Elements/Python/videos/maverick1.mp4"
 #TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
-TARGET_CLASS_LIST = ["f18", "su57", "hawkeye"]
+TARGET_CLASS_LIST = ["f18", "su57", "f14"]
 
 # 3. Chargement de la config dataset
 try:
@@ -309,38 +309,18 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
     # 3. Redimensionnement à la taille de l'image originale
     mask_resized = cv2.resize(pred_mask, (w_orig, h_orig), interpolation=cv2.INTER_CUBIC)
     
-    # 4. Binarisation
-    #binary_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
-    # Zones ultra fiables
-    strong_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
-    
-    # Zones faibles autorisées
-    weak_mask = (mask_resized > (conf_threshold * 0.4)).astype(np.uint8) * 255
-    
-    # Dilatation légère des zones fortes
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    
-    expanded_strong = cv2.dilate(
-        strong_mask,
-        kernel,
-        iterations=1
-    )
-    
-    # Intersection avec weak_mask
-    binary_mask = cv2.bitwise_and(
-        expanded_strong,
-        weak_mask
-    )
+    # 4. Binarisation Directe
+    # Le modèle BCE+Dice produit des Heatmaps très franches
+    binary_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
     
     # =====================================================
-    # MORPHOLOGICAL CLOSING
-    # Petit kernel (5,5) : petits trous bouchés, peu agressif
-    # Moyen (9,9) ou (11,11) : excellent compromis
-    # Gros kernel (21,21) : fusion de plusieurs avions proches
+    # MORPHOLOGICAL CLOSING DOUX
+    # Kernel (9,9) : Bouche les petits défauts de la prédiction
+    # sans risquer de fusionner deux avions proches.
     # =====================================================
     closing_kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
-        (21, 21)
+        (9, 9)
     )
     
     binary_mask = cv2.morphologyEx(
@@ -351,14 +331,12 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
     )
     
     # =====================================================
-    # Dilatation pour récupérer les zones faibles autour
+    # Dilatation légère pour capturer un peu de contexte
     # =====================================================
-    
     dilate_kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
-        (11, 11)
+        (5, 5) # Réduit de 11 à 5 pour coller au plus près de la silhouette
     )
-    
     binary_mask = cv2.dilate(
         binary_mask,
         dilate_kernel,
