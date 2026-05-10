@@ -37,8 +37,8 @@ DETECTION_IMAGE_SIZE = (224, 224)       # Taille d'entrée du modèle de détect
 DETECTION_CONF_THRESHOLD = 0.7          # Seuil pour considérer une détection valide (objectness + class) best 0.5
 
 # 3. Configuration de la zone de détection
-ELLIPSE_MARGIN_PERCENT = 5
-ELLIPSE_ITERATIONS = 3
+BOX_AERA_MIN = 60
+NMS_THRESHOLD = 0.4
 
 DEFAULT_CLASSE = "unknown"
 
@@ -242,7 +242,31 @@ def get_iou(box1, box2):
     union = area1 + area2 - intersection
     return intersection / union if union > 0 else 0
 
-def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf_threshold=0.3):
+def non_max_suppression(boxes, iou_threshold):
+    """
+    Applique le Non-Maximum Suppression (NMS) pour supprimer les boîtes superposées.
+    boxes: liste de [x1, y1, x2, y2, score]
+    """
+    if not boxes:
+        return []
+    
+    # Trier les boîtes par score (le dernier élément) décroissant
+    boxes = sorted(boxes, key=lambda x: x[4], reverse=True)
+    kept_boxes = []
+    
+    for current_box in boxes:
+        overlap = False
+        for kept_box in kept_boxes:
+            iou = get_iou(current_box[:4], kept_box[:4])
+            if iou > iou_threshold:
+                overlap = True
+                break
+        if not overlap:
+            kept_boxes.append(current_box)
+            
+    return kept_boxes
+
+def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf_threshold=0.3, box_aera_min=225):
     """
     Exécute la détection par Segmentation Sémantique (U-Net).
     Retourne une liste de boxes [x1, y1, x2, y2, score].
@@ -274,12 +298,55 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
     mask_resized = cv2.resize(pred_mask, (w_orig, h_orig), interpolation=cv2.INTER_CUBIC)
     
     # 4. Binarisation
-    binary_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
+    # Zones ultra fiables
+    strong_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
     
-    # --- DILATATION MORPHOLOGIQUE ---
-    # On gonfle organiquement la tache blanche pour inclure du contexte autour de l'avion
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ELLIPSE_MARGIN_PERCENT, ELLIPSE_MARGIN_PERCENT))
-    binary_mask = cv2.dilate(binary_mask, kernel, iterations=ELLIPSE_ITERATIONS)
+    # Zones faibles autorisées
+    weak_mask = (mask_resized > (conf_threshold * 0.4)).astype(np.uint8) * 255
+    
+    # Dilatation légère des zones fortes
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    
+    expanded_strong = cv2.dilate(
+        strong_mask,
+        kernel,
+        iterations=1
+    )
+    
+    # Intersection avec weak_mask
+    binary_mask = cv2.bitwise_and(
+        expanded_strong,
+        weak_mask
+    )
+    
+    # =====================================================
+    # MORPHOLOGICAL CLOSING
+    # Gros kernel (21,21) : fusion de plusieurs îles proches (fuselage coupé)
+    # =====================================================
+    closing_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (21, 21)
+    )
+    
+    binary_mask = cv2.morphologyEx(
+        binary_mask,
+        cv2.MORPH_CLOSE,
+        closing_kernel,
+        iterations=1
+    )
+    
+    # =====================================================
+    # Dilatation pour récupérer les zones faibles autour
+    # =====================================================
+    dilate_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (11, 11)
+    )
+    binary_mask = cv2.dilate(
+        binary_mask,
+        dilate_kernel,
+        iterations=1
+    )
     
     # 5. Extraction des Contours
     contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -288,16 +355,15 @@ def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf
     
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area < 50: # Ignorer le bruit microscopique
+        if area < box_aera_min: # Filtrage paramétrable
             continue
             
         x, y, w, h = cv2.boundingRect(contour)
         
-        # Le "score" peut être la valeur moyenne ou max de probabilité dans la box
         sub_mask = mask_resized[y:y+h, x:x+w]
         score = float(np.max(sub_mask)) if sub_mask.size > 0 else 1.0
         
-        final_detections.append((x, y, x+w, y+h, score))
+        final_detections.append([x, y, x+w, y+h, score])
         
     return final_detections
 
@@ -361,8 +427,12 @@ if __name__ == "__main__":
         # --- DÉTECTION CUSTOM ---
         detections = decode_segmentation_and_detect(
             img, det_model, det_vars, det_config, 
-            conf_threshold=DETECTION_CONF_THRESHOLD
+            conf_threshold=DETECTION_CONF_THRESHOLD,
+            box_aera_min=BOX_AERA_MIN
         )
+        
+        # --- NMS ---
+        detections = non_max_suppression(detections, iou_threshold=NMS_THRESHOLD)
         
         json_files_created = []
         detected_classes = set()

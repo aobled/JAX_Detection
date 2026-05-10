@@ -44,9 +44,9 @@ FRAME_STRIDE = 1  # 1 = toutes les frames
 DETECTION_CONF_THRESHOLD = 0.7          # Seuil pour considérer une détection valide (objectness + class) target 0.6
 
 #VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4
-VIDEO_PATH = "/media/aobled/Elements/Python/videos/low_level_f16.mp4"
+VIDEO_PATH = "/media/aobled/Elements/Python/videos/maverick3.mp4"
 #TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
-TARGET_CLASS_LIST = ["f16"]
+TARGET_CLASS_LIST = ["f18", "su57", "hawkeye"]
 
 # 3. Chargement de la config dataset
 try:
