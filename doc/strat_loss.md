@@ -48,8 +48,10 @@ Le défi majeur de cette approche est le **déséquilibre de classe extrême** :
 
 Pour contrer cela, la fonction de perte combine deux stratégies complémentaires :
 
-1. **Binary Cross Entropy (BCE)**  
-   Évalue pixel par pixel la certitude du réseau. Le BCE pénalise lourdement le modèle s'il est "très sûr de lui mais qu'il a tort". Cela force les contours de la zone de chaleur à être nets et tranchés (les probabilités convergent vers 0.0 ou 1.0) plutôt que de générer un halo flou.
+1. **Weighted Binary Cross Entropy (BCE)**  
+   Évalue pixel par pixel la certitude du réseau. Le fonctionnement naturel du BCE s'appuie sur la courbe de la fonction **Logarithme**. 
+   - Plus le réseau se trompe en étant sûr de lui, plus l'erreur tend vers l'infini (ex: prédire `0.99` sur un pixel vide génère une erreur de `-log(0.01) = 4.6`). Le BCE pénalise l'arrogance !
+   - **Pénalité des Faux Positifs (`false_positive_penalty`)** : Pour lutter contre les "fausses alarmes" (le réseau détecte un avion dans un nuage vide), nous avons introduit un multiplicateur mathématique. Si le réseau invente un avion, l'erreur logarithmique est multipliée par ce paramètre (par défaut `2.0`). Cela force le réseau à être conservateur et à préférer le doute plutôt que la fausse détection.
 
 2. **Dice Loss (Sørensen–Dice coefficient)**  
    C'est la pièce maîtresse pour détecter les objets minuscules. Le coefficient de Dice calcule le taux de recouvrement global (similaire à l'IoU) entre la Heatmap prédite et le masque réel, *indépendamment de la taille de l'objet*. Mathématiquement : `2 * Intersection / Union`.

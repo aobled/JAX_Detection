@@ -406,7 +406,7 @@ def compute_v7_loss(pred_grids, gt_boxes, lambda_coord=5.0, lambda_noobj=0.5):
     total_loss = (loss_28 + loss_14 + loss_7) / batch_size
     return total_loss
 
-def compute_segmentation_loss(pred_mask, true_mask, bce_weight=0.5, dice_weight=0.5):
+def compute_segmentation_loss(pred_mask, true_mask, bce_weight=0.5, dice_weight=0.5, false_positive_penalty=2.0):
     """
     Calcule la loss pour la Segmentation Sémantique (U-Net).
     Utilise une combinaison hybride de BCE (pour la netteté des pixels) 
@@ -415,11 +415,20 @@ def compute_segmentation_loss(pred_mask, true_mask, bce_weight=0.5, dice_weight=
     # pred_mask: (Batch, H, W, 1) après Sigmoid (valeurs 0.0 à 1.0)
     # true_mask: (Batch, H, W, 1) binaire 0.0 ou 1.0
     
-    # 1. Binary Cross Entropy (BCE)
+    # 1. Weighted Binary Cross Entropy (BCE)
     # Epsilon pour éviter log(0)
     epsilon = 1e-7
     pred_safe = jnp.clip(pred_mask, epsilon, 1.0 - epsilon)
-    bce_loss = -jnp.mean(true_mask * jnp.log(pred_safe) + (1.0 - true_mask) * jnp.log(1.0 - pred_safe))
+    
+    # Séparation des deux composantes de l'équation
+    # loss_pos : Pénalité si on rate un avion (Faux Négatif)
+    loss_pos = true_mask * jnp.log(pred_safe)
+    
+    # loss_neg : Pénalité si on invente un avion dans le ciel (Faux Positif)
+    # On applique ici le multiplicateur false_positive_penalty
+    loss_neg = (1.0 - true_mask) * jnp.log(1.0 - pred_safe) * false_positive_penalty
+    
+    bce_loss = -jnp.mean(loss_pos + loss_neg)
     
     # 2. Dice Loss
     # Aplatir les tenseurs pour le calcul (Batch, H*W)
