@@ -8,6 +8,9 @@ import os
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 # os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+# Sans serveur X11 : OpenCV (plugins Qt embarqués) + matplotlib évite xcb / crash
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 import jax
 import jax.numpy as jnp
@@ -102,6 +105,7 @@ def main(dataset_name="FIGHTERJET_9CLASSES"):
     
     # 4. INSTANCIATION DE LA STRATEGIE (Injection de dépendance)
     task_type = config.get("task_type", "classification")
+    print(">>>>>>>>>>>>> ", task_type)
     if task_type == "classification":
         print("🎯 Application de la logique d'entraînement : CLASSIFICATION")
         strategy = ClassificationStrategy(
@@ -109,9 +113,15 @@ def main(dataset_name="FIGHTERJET_9CLASSES"):
             label_smoothing=config.get("label_smoothing", 0.0),
             mixup_alpha=config.get("mixup_alpha", 0.0)
         )
-    else:
+    elif task_type == "detection":
         print("🎯 Application de la logique d'entraînement : DETECTION")
         strategy = DetectionStrategy()
+    elif task_type == "kepler":
+        print("🎯 Application de la logique d'entraînement : KEPLER 1D")
+        from task_strategies import KeplerStrategy
+        strategy = KeplerStrategy(num_classes=num_classes)
+    else:
+        raise ValueError(f"task_type '{task_type}' non reconnu.")
 
     # 5. INITIALISATION DU TRAINER
     print("\n🎯 CRÉATION DU TRAINER")

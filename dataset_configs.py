@@ -406,11 +406,71 @@ DATASET_CONFIGS = {
         # === Évaluation/Visualization ===
         "eval_batch_size": 16,
         "vis_freq": 5,
+        # === Sauvegarde ===
+        "checkpoint_path": "./checkpoints_detection_sophisticated",
+        "save_dir": "./checkpoints_detection_sophisticated",
+    },
+    
+    "JAX_KEPLER": {
+        # === CONFIG CLASSIFICATION EXOPLANETES (1D) ===
+        "task_type": "kepler",
+        
+        # === Données ===
+        "num_classes": 2,
+        "class_names": ['no_exoplanet', 'exoplanet'],
+        "output_prefix": "./data/chunks/kepler/dataset_kepler",
+        # (longueur, 1) : format (H,W) attendu par la validation et ChunkManager → tenseurs (L, 1, C)
+        "image_size": (3197, 1),
+        "grayscale": True,       # Force data_management à ne pas chercher de RGB
+        
+        # === Augmentation de Données ===
+        # Pas d'augmentation spatiale (flip_h n'a pas de sens physique direct ici)
+        "augmentation_params": {
+            "flip_h": False,
+            "flip_v": False,
+            "rotation_factor": 0.0,
+            "zoom_factor": 0.0,
+            "translation_factor": 0.0,
+            "brightness_delta": 0.0,
+            "contrast_factor": 0.0
+        },
+        
+        # === Modèle ===
+        "model_name": "kepler_1d_cnn",
+        
+        # === Hyperparamètres TPU ===
+        "tpu": {
+            "micro_batch_size": 128,
+            "accum_steps": 1,
+            "learning_rate": 1e-4,
+            "weight_decay": 1e-4,
+            "dropout_rate": 0.3,
+            "label_smoothing": 0.0,
+            "mixup_alpha": 0.0
+        },
+        
+        # === Hyperparamètres GPU ===
+        "gpu": {
+            "micro_batch_size": 32,
+            "accum_steps": 4,
+            "learning_rate": 1e-4,
+            "weight_decay": 1e-4,
+            "dropout_rate": 0.3,
+            "label_smoothing": 0.0,
+            "mixup_alpha": 0.0
+        },
+        
+        # === Entraînement ===
+        "epochs": 30,
+        "patience": 5,
+        "warmup_steps": 500,
+        
+        "eval_use_subset": False, # On évalue sur tout
         
         # === Sauvegarde ===
-        "checkpoint_path": "./checkpoints_detection",
-        "save_dir": "./checkpoints_detection",
-    },
+        "checkpoint_path": "best_model_kepler.pkl",
+        "confusion_matrix_path": "confusion_matrix_kepler.png",
+    }
 }
 
 

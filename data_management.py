@@ -90,16 +90,20 @@ class ChunkManager:
             mean = meanstd['mean'].astype(np.float32)
             std = meanstd['std'].astype(np.float32)
             
+            num_channels = 1 if self.grayscale else 3
+            
             def gen():
                 for file_path in chunk_files:
                     with np.load(file_path) as data:
                         images = data["image"].astype(np.float32)
                         labels = data["label"].astype(np.int32)
                         for img, lab in zip(images, labels):
+                            # Kepler / grayscale 2D dans le NPZ : (H, W) → (H, W, C)
+                            if tuple(img.shape) == self.image_size:
+                                img = np.expand_dims(img, axis=-1)
                             yield img, lab
             
             # 🎨 Adapter la signature selon RGB ou Grayscale
-            num_channels = 1 if self.grayscale else 3
             output_signature = (
                 tf.TensorSpec(shape=self.image_size + (num_channels,), dtype=tf.float32),
                 tf.TensorSpec(shape=(), dtype=tf.int32),
@@ -141,20 +145,29 @@ class ChunkManager:
                 if cont_factor > 0.0:
                     aug_layers.append(layers.RandomContrast(cont_factor))
                 
-                data_augmentation = tf.keras.Sequential(aug_layers)
-                
-                def aug_norm_fn(img, lab):
-                    img = tf.expand_dims(img, axis=0)
-                    img = data_augmentation(img)
-                    img = tf.squeeze(img, axis=0)
-                    img = tf.clip_by_value(img, 0.0, 1.0)
-                    # ✅ CORRECTION: Convertir mean et std en Tensors TensorFlow
-                    mean_tensor = tf.constant(mean, dtype=tf.float32)
-                    std_tensor = tf.constant(std, dtype=tf.float32)
-                    img = (img - mean_tensor) / std_tensor
-                    return img, lab
-                
-                dataset = dataset.map(aug_norm_fn, num_parallel_calls=tf.data.AUTOTUNE)
+                if len(aug_layers) > 0:
+                    data_augmentation = tf.keras.Sequential(aug_layers)
+                    
+                    def aug_norm_fn(img, lab):
+                        img = tf.expand_dims(img, axis=0)
+                        img = data_augmentation(img)
+                        img = tf.squeeze(img, axis=0)
+                        img = tf.clip_by_value(img, 0.0, 1.0)
+                        # ✅ CORRECTION: Convertir mean et std en Tensors TensorFlow
+                        mean_tensor = tf.constant(mean, dtype=tf.float32)
+                        std_tensor = tf.constant(std, dtype=tf.float32)
+                        img = (img - mean_tensor) / std_tensor
+                        return img, lab
+                    
+                    dataset = dataset.map(aug_norm_fn, num_parallel_calls=tf.data.AUTOTUNE)
+                else:
+                    def norm_fn_train(img, lab):
+                        mean_tensor = tf.constant(mean, dtype=tf.float32)
+                        std_tensor = tf.constant(std, dtype=tf.float32)
+                        img = (img - mean_tensor) / std_tensor
+                        return img, lab
+                    
+                    dataset = dataset.map(norm_fn_train, num_parallel_calls=tf.data.AUTOTUNE)
             else:
                 def norm_fn(img, lab):
                     # ✅ CORRECTION: Convertir mean et std en Tensors TensorFlow
@@ -178,10 +191,15 @@ class ChunkManager:
         Point d'entrée principal : vérifie que les chunks existent et crée les TF Datasets
         """
         if not self.train_chunks or not self.val_chunks:
+            hint = (
+                "python tools/kepler_dataset_tools.py"
+                if "kepler" in self.output_prefix.lower()
+                else "python fighterjet_classification_dataset_tools.py"
+            )
             error_msg = (
                 f"\n❌ ERREUR: Chunks introuvables pour la classification !\n"
                 f"   Je m'attendais à trouver {self.output_prefix}_[train|val]_chunk*.npz\n"
-                f"💡 LANCEZ D'ABORD : python fighterjet_classification_dataset_tools.py"
+                f"💡 Vérifiez output_prefix dans dataset_configs.py, ou lancez : {hint}"
             )
             print(error_msg)
             exit(1)
@@ -371,7 +389,7 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
     
     aug_params = config.get("augmentation_params", {})
     
-    if task_type == "classification":
+    if task_type in ["classification", "kepler"]:
         chunk_manager = ChunkManager(
             output_prefix=config["output_prefix"],
             image_size=config["image_size"],

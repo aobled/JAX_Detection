@@ -107,8 +107,11 @@ class Trainer:
             TrainStateWithBatchStats
         """
         image_size = self.config["image_size"]
-        # 🎨 Dummy input adaptatif : 1 canal (grayscale) ou 3 canaux (RGB)
-        dummy_input = jnp.ones((1, image_size[0], image_size[1], self.num_channels), jnp.float32)
+        # Kepler 1D : (B, longueur, canaux) ; images 2D : (B, H, W, C)
+        if self.config.get("task_type") == "kepler":
+            dummy_input = jnp.ones((1, image_size[0], self.num_channels), jnp.float32)
+        else:
+            dummy_input = jnp.ones((1, image_size[0], image_size[1], self.num_channels), jnp.float32)
         
         # Initialiser le modèle
         variables = self.model.init(rng, dummy_input, training=True)

@@ -2175,6 +2175,52 @@ def create_aircraft_detector_sophisticated_unet(dropout_rate=0.2, **kwargs):
     """Factory for Sophisticated UNet Detector"""
     return AircraftDetectorSophisticatedUNet(dropout_rate=dropout_rate)
 
+class Kepler1DConvNet(nn.Module):
+    """
+    Réseau de Neurones Convolutif 1D pour l'analyse de Séries Temporelles.
+    Spécialement conçu pour détecter les creux de luminosité (transit) dans les données Kepler.
+    """
+    num_classes: int = 2
+    dropout_rate: float = 0.3
+
+    @nn.compact
+    def __call__(self, x, training: bool):
+        # x est de shape (Batch, SequenceLength, 1) -> ex: (B, 3197, 1)
+        
+        # Bloc 1 (Détection de motifs locaux)
+        x = nn.Conv(features=32, kernel_size=(11,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.max_pool(x, window_shape=(2,), strides=(2,))
+        
+        # Bloc 2 (Extraction de features temporelles)
+        x = nn.Conv(features=64, kernel_size=(5,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.max_pool(x, window_shape=(2,), strides=(2,))
+        
+        # Bloc 3
+        x = nn.Conv(features=128, kernel_size=(5,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.max_pool(x, window_shape=(2,), strides=(2,))
+        
+        # Bloc 4
+        x = nn.Conv(features=256, kernel_size=(3,), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.max_pool(x, window_shape=(2,), strides=(2,))
+        
+        # Global Average Pooling 1D (On moyenne sur le temps restant)
+        x = jnp.mean(x, axis=1) # (Batch, 256)
+        
+        # Classification Head
+        x = nn.Dense(features=64)(x)
+        x = nn.relu(x)
+        x = nn.Dropout(self.dropout_rate, deterministic=not training)(x)
+        x = nn.Dense(features=self.num_classes)(x)
+        
+        return x
+
+def create_kepler_1d_cnn(**kwargs):
+    return Kepler1DConvNet(**kwargs)
+
 
 # ... (Previous MODELS dict)
 
@@ -2199,6 +2245,7 @@ MODELS = {
     'tiny_vit_plus_balanced': create_tiny_vit_plus_balanced,
     'tiny_vit_plus_ultimate': create_tiny_vit_plus_ultimate,
     'hybrid_tiny_vit': create_hybrid_tiny_vit,
+    'kepler_1d_cnn': create_kepler_1d_cnn,
 }
 
 
@@ -2311,6 +2358,13 @@ def get_model_info(model_name):
             'params': '~1.5-2M',
             'size': '~6-8MB',
             'best_for': 'Petits datasets (<100K images), images 128×128, meilleur compromis CNN/ViT (objectif: 60-75%)'
+        },
+        'kepler_1d_cnn': {
+            'name': 'Kepler1DConvNet',
+            'description': 'Réseau Convolutif 1D profond pour détecter les motifs de baisse de lumière dans les séries temporelles stellaires.',
+            'params': '~150K',
+            'size': '~1MB',
+            'best_for': 'Données astronomiques (séries temporelles 1D) pour la recherche d\'exoplanètes.'
         }
     }
     

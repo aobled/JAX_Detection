@@ -140,6 +140,18 @@ def reporting_single_boxes_target_class_size(df, class_list, target_size):
     print(single_box_target[COLUMNS])
     single_box_target[COLUMNS].to_csv("search_single_class.csv", index=False)
 
+def reporting_at_least_one_box_not_in_class_list(df, class_list):
+    COLUMNS = ['base_image_name', 'box_class', 'directory', 'split']
+
+    # 1. Grouper par image et vérifier si AU MOINS UNE boîte n'est pas dans class_list
+    images_with_non_target = (
+        df.groupby('base_image_name')
+        .filter(lambda group: ~group['box_class'].isin(class_list).all())
+    )
+
+    # 2. Exporter le résultat
+    print(images_with_non_target[COLUMNS])
+    images_with_non_target[COLUMNS].to_csv("at_least_one_box_not_in_class_list.csv", index=False)
 
 #  specific classe images with size > 16px
 def reporting_single_classe_images(df, target_class='b52', min_size=16):
@@ -210,7 +222,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataset_configs import get_dataset_config
 
-DATASET_PATH = '/home/aobled/Downloads/Aircraft_DATASET/detection'
+DATASET_PATH = '/home/aobled/Downloads/Aircraft_DATASET/classification'
 DATASET_NAME = "FIGHTERJET_CLASSIFICATION"     # Nom de la config dans dataset_configs.py
 try:
     config = get_dataset_config(DATASET_NAME)
@@ -224,12 +236,13 @@ except Exception as e:
 # Charger les données
 df = load_dataset_to_dataframe(DATASET_PATH)
 
-#reporting_groupby_class_and_split(df)
-reporting_groupby_box_count(df)
+reporting_groupby_class_and_split(df)
+#reporting_groupby_box_count(df)
 #reporting_boxes_on_wrong_directory(df)
 
-#reporting_single_boxes_target_class_size(df, class_list=['sr71'], target_size=2)
+#reporting_single_boxes_target_class_size(df, class_list=['unknown'], target_size=2)
 #reporting_single_boxes_target_class_size(df, class_list=CLASS_NAMES, target_size=2)
+#reporting_at_least_one_box_not_in_class_list(df, class_list=CLASS_NAMES)
 
 #reporting_single_classe_images(df, target_class='b52', min_size=16)
 #reporting_all_images_in_class_list(df, class_list=['unknown'])

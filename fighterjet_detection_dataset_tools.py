@@ -189,7 +189,7 @@ if __name__ == "__main__":
             split_name="train", 
             target_size=config.get("image_size", (224, 224)),
             max_boxes=config.get("max_boxes", 20),
-            chunk_size=19000,
+            chunk_size=20000,
             grayscale=config.get("grayscale", True)
         )
     else:
@@ -203,7 +203,7 @@ if __name__ == "__main__":
             split_name="val", 
             target_size=config.get("image_size", (224, 224)),
             max_boxes=config.get("max_boxes", 20),
-            chunk_size=19000,
+            chunk_size=20000,
             grayscale=config.get("grayscale", True)
         )
     else:

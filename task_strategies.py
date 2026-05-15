@@ -209,3 +209,91 @@ class DetectionStrategy(TaskStrategy):
             print("✅ Visualisation de détection sémantique générée (final_detection_vis.png)")
         except Exception as e:
             print(f"❌ Erreur lors de la visualisation sémantique: {e}")
+
+class KeplerStrategy(TaskStrategy):
+    def __init__(self, num_classes: int):
+        self.num_classes = num_classes
+
+    @property
+    def primary_metric_name(self) -> str:
+        return "Accuracy"
+        
+    @property
+    def optimization_mode(self) -> str:
+        return "max"
+        
+    def _get_export_path(self, config) -> str:
+        return config.get("checkpoint_path", "best_model_kepler.pkl")
+
+    def get_training_state_path(self, config) -> str:
+        return "best_model_training_state_kepler.pkl"
+
+    def preprocess_batch(self, images, targets, is_training, rng=None):
+        # Pour Kepler, on ne fait pas d'augmentation temporelle complexe pour le moment.
+        images = jnp.array(images, dtype=jnp.float32)
+        # Chunks (B, L, 1, C) depuis ChunkManager → Conv1D attend (B, L, C)
+        if images.ndim == 4 and images.shape[2] == 1:
+            images = images[..., 0, :]
+        use_onehot = False
+        return images, targets, use_onehot
+
+    def compute_loss(self, outputs, targets, use_onehot_labels=False):
+        # Identique à la classification, c'est un problème binaire (Exoplanet ou non)
+        if use_onehot_labels:
+            loss = jnp.mean(optax.softmax_cross_entropy(logits=outputs, labels=targets))
+        else:
+            loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits=outputs, labels=targets))
+        return loss
+
+    def compute_metrics(self, outputs, targets):
+        predicted_classes = jnp.argmax(outputs, axis=-1)
+        accuracy = jnp.mean(predicted_classes == targets)
+        return accuracy
+
+    def generate_reports(self, val_ds, final_state, model, config):
+        print("   [📈] Génération des rapports Kepler (Courbes de lumière)...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import os
+            import numpy as np
+            
+            # Prendre un seul batch de validation
+            batch = next(val_ds.as_numpy_iterator())
+            images = batch['images']
+            labels = batch['labels']
+            
+            # Prédiction
+            outputs, _ = final_state.apply_fn(
+                {'params': final_state.params, 'batch_stats': final_state.batch_stats},
+                images,
+                training=False
+            )
+            predictions = np.argmax(outputs, axis=-1)
+            
+            # Tracer 4 exemples (2 exoplanètes, 2 non-exoplanètes si possible)
+            fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+            axes = axes.flatten()
+            
+            for i in range(min(4, len(images))):
+                ax = axes[i]
+                flux = images[i].squeeze() # Enlever la dimension channel
+                true_label = labels[i]
+                pred_label = predictions[i]
+                
+                # Couleur selon succès
+                color = 'green' if true_label == pred_label else 'red'
+                
+                ax.plot(flux, color='black', alpha=0.7, linewidth=0.5)
+                ax.set_title(f"True: {'Exoplanet' if true_label==1 else 'No'} | Pred: {'Exoplanet' if pred_label==1 else 'No'}", color=color)
+                ax.set_xlabel("Time step")
+                ax.set_ylabel("Normalized Flux")
+                
+            plt.tight_layout()
+            report_path = config.get("confusion_matrix_path", "kepler_lightcurves_report.png")
+            plt.savefig(report_path)
+            plt.close()
+            print(f"   [🖼️] Rapport généré : {report_path}")
+            
+        except Exception as e:
+            print(f"   [⚠️] Erreur lors de la génération du rapport Matplotlib: {e}")

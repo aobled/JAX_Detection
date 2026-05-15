@@ -4,6 +4,9 @@ Adapté pour l'architecture JAX actuelle
 """
 
 import numpy as np
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import LogLocator
 from scipy.integrate import simpson
