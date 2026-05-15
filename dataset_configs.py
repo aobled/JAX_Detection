@@ -316,7 +316,8 @@ DATASET_CONFIGS = {
         },
         
         # === Modèle ---
-        "model_name": "aircraft_detector_unet",
+        #"model_name": "aircraft_detector_unet",
+        "model_name": "aircraft_detector_unet_token",
         "grid_size": 224,      # Segmentation sémantique (output size = input size)
         
         # === Hyperparamètres TPU ===

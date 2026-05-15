@@ -2074,6 +2074,158 @@ class AircraftDetectorUNet(nn.Module):
         out = nn.Conv(1, (1, 1), padding="SAME")(u3)
         return nn.sigmoid(out)
 
+
+class UNetTokenBottleneck(nn.Module):
+    """
+    Couche de tokens entre l'encodeur et le décodeur U-Net.
+    Paramètres regroupés sous le scope Flax `token_bottleneck` pour permettre
+    un fine-tuning / des perturbations ciblées sans toucher encodeur/décodeur.
+    """
+    num_tokens: int = 16
+    num_heads: int = 4
+    dropout_rate: float = 0.2
+    num_layers: int = 1
+    feature_dim: int = 256
+
+    @nn.compact
+    def __call__(self, spatial_features, training=True):
+        # spatial_features: (B, 28, 28, feature_dim)
+        batch_size, height, width, channels = spatial_features.shape
+        spatial_flat = spatial_features.reshape(batch_size, height * width, channels)
+
+        query_tokens = self.param(
+            'query_tokens',
+            nn.initializers.normal(stddev=0.02),
+            (1, self.num_tokens, self.feature_dim),
+        )
+        tokens = jnp.tile(query_tokens, (batch_size, 1, 1))
+
+        for layer_idx in range(self.num_layers):
+            tokens_norm = nn.LayerNorm(name=f'ln_cross_tokens_{layer_idx}')(tokens)
+            spatial_norm = nn.LayerNorm(name=f'ln_cross_spatial_{layer_idx}')(spatial_flat)
+            tokens = tokens + nn.MultiHeadDotProductAttention(
+                num_heads=self.num_heads,
+                dropout_rate=self.dropout_rate,
+                deterministic=not training,
+                name=f'cross_attn_{layer_idx}',
+            )(tokens_norm, spatial_norm)
+
+            tokens_norm = nn.LayerNorm(name=f'ln_self_{layer_idx}')(tokens)
+            tokens = tokens + nn.MultiHeadDotProductAttention(
+                num_heads=self.num_heads,
+                dropout_rate=self.dropout_rate,
+                deterministic=not training,
+                name=f'self_attn_{layer_idx}',
+            )(tokens_norm, tokens_norm)
+
+            tokens_norm = nn.LayerNorm(name=f'ln_mlp_{layer_idx}')(tokens)
+            mlp_hidden = nn.Dense(self.feature_dim * 4, name=f'mlp_dense1_{layer_idx}')(tokens_norm)
+            mlp_hidden = nn.silu(mlp_hidden)
+            mlp_hidden = nn.Dropout(self.dropout_rate, deterministic=not training)(mlp_hidden)
+            tokens = tokens + nn.Dense(self.feature_dim, name=f'mlp_dense2_{layer_idx}')(mlp_hidden)
+
+        spatial_norm = nn.LayerNorm(name='ln_spatial_out')(spatial_flat)
+        tokens_norm = nn.LayerNorm(name='ln_tokens_out')(tokens)
+        spatial_flat = spatial_flat + nn.MultiHeadDotProductAttention(
+            num_heads=self.num_heads,
+            dropout_rate=self.dropout_rate,
+            deterministic=not training,
+            name='spatial_token_attn',
+        )(spatial_norm, tokens_norm)
+
+        return spatial_flat.reshape(batch_size, height, width, channels)
+
+
+class AircraftDetectorUNetToken(nn.Module):
+    """
+    U-Net + bottleneck Transformer à tokens (style TransUNet léger).
+    Même entrée/sortie que AircraftDetectorUNet : (B, 224, 224, C) -> (B, 224, 224, 1).
+    """
+    dropout_rate: float = 0.2
+    num_tokens: int = 16
+    num_heads: int = 4
+    token_layers: int = 1
+
+    @nn.compact
+    def __call__(self, x, training=True):
+        # --- ENCODER (identique à AircraftDetectorUNet) ---
+        x1 = nn.Conv(32, (3, 3), padding="SAME")(x)
+        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.silu(x1)
+        x1 = nn.Conv(32, (3, 3), padding="SAME")(x1)
+        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.silu(x1)
+        p1 = nn.max_pool(x1, window_shape=(2, 2), strides=(2, 2))
+
+        x2 = nn.Conv(64, (3, 3), padding="SAME")(p1)
+        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.silu(x2)
+        x2 = nn.Conv(64, (3, 3), padding="SAME")(x2)
+        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.silu(x2)
+        p2 = nn.max_pool(x2, window_shape=(2, 2), strides=(2, 2))
+
+        x3 = nn.Conv(128, (3, 3), padding="SAME")(p2)
+        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.silu(x3)
+        x3 = nn.Conv(128, (3, 3), padding="SAME")(x3)
+        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.silu(x3)
+        p3 = nn.max_pool(x3, window_shape=(2, 2), strides=(2, 2))
+
+        # --- BOTTLENECK CNN (identique à AircraftDetectorUNet) ---
+        b = nn.Conv(256, (3, 3), padding="SAME")(p3)
+        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.silu(b)
+        b = nn.Conv(256, (3, 3), padding="SAME")(b)
+        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.silu(b)
+        b = nn.Dropout(self.dropout_rate, deterministic=not training)(b)
+
+        # --- BOTTLENECK TOKENS (scope isolé pour fine-tuning partiel) ---
+        b = UNetTokenBottleneck(
+            num_tokens=self.num_tokens,
+            num_heads=self.num_heads,
+            dropout_rate=self.dropout_rate,
+            num_layers=self.token_layers,
+            name='token_bottleneck',
+        )(b, training)
+
+        # --- DECODER (identique à AircraftDetectorUNet) ---
+        u1 = jax.image.resize(b, shape=(b.shape[0], x3.shape[1], x3.shape[2], b.shape[3]), method='bilinear')
+        u1 = nn.Conv(128, (2, 2), padding="SAME")(u1)
+        u1 = jnp.concatenate([u1, x3], axis=-1)
+        u1 = nn.Conv(128, (3, 3), padding="SAME")(u1)
+        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.silu(u1)
+        u1 = nn.Conv(128, (3, 3), padding="SAME")(u1)
+        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.silu(u1)
+
+        u2 = jax.image.resize(u1, shape=(u1.shape[0], x2.shape[1], x2.shape[2], u1.shape[3]), method='bilinear')
+        u2 = nn.Conv(64, (2, 2), padding="SAME")(u2)
+        u2 = jnp.concatenate([u2, x2], axis=-1)
+        u2 = nn.Conv(64, (3, 3), padding="SAME")(u2)
+        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.silu(u2)
+        u2 = nn.Conv(64, (3, 3), padding="SAME")(u2)
+        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.silu(u2)
+
+        u3 = jax.image.resize(u2, shape=(u2.shape[0], x1.shape[1], x1.shape[2], u2.shape[3]), method='bilinear')
+        u3 = nn.Conv(32, (2, 2), padding="SAME")(u3)
+        u3 = jnp.concatenate([u3, x1], axis=-1)
+        u3 = nn.Conv(32, (3, 3), padding="SAME")(u3)
+        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.silu(u3)
+        u3 = nn.Conv(32, (3, 3), padding="SAME")(u3)
+        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.silu(u3)
+
+        out = nn.Conv(1, (1, 1), padding="SAME")(u3)
+        return nn.sigmoid(out)
+
+
 class AircraftDetectorSophisticatedUNet(nn.Module):
     """
     Détecteur d'avions par Segmentation Sémantique avec architecture Sophistiquée.
@@ -2171,6 +2323,23 @@ def create_aircraft_detector_unet(dropout_rate=0.2, **kwargs):
     """Factory for UNet Detector"""
     return AircraftDetectorUNet(dropout_rate=dropout_rate)
 
+
+def create_aircraft_detector_unet_token(
+    dropout_rate=0.2,
+    num_tokens=16,
+    num_heads=4,
+    token_layers=1,
+    **kwargs,
+):
+    """Factory for U-Net + token bottleneck (fine-tuning partiel possible sur token_bottleneck)."""
+    return AircraftDetectorUNetToken(
+        dropout_rate=dropout_rate,
+        num_tokens=num_tokens,
+        num_heads=num_heads,
+        token_layers=token_layers,
+    )
+
+
 def create_aircraft_detector_sophisticated_unet(dropout_rate=0.2, **kwargs):
     """Factory for Sophisticated UNet Detector"""
     return AircraftDetectorSophisticatedUNet(dropout_rate=dropout_rate)
@@ -2233,6 +2402,7 @@ MODELS = {
     'aircraft_detector_v6_multilevel': create_aircraft_detector_v6_multilevel, # 🚀 V6 Dual-Scale (14x14, 7x7)
     'aircraft_detector_v7_advanced': create_aircraft_detector_v7_advanced, # 🚀 V7 Tri-Scale Anchor-Free
     'aircraft_detector_unet': create_aircraft_detector_unet, # 🚀 Semantic Segmentation U-Net
+    'aircraft_detector_unet_token': create_aircraft_detector_unet_token, # 🚀 U-Net + bottleneck tokens
     'aircraft_detector_sophisticated_unet': create_aircraft_detector_sophisticated_unet, # 🚀 Semantic Segmentation Sophisticated U-Net
     'sophisticated_cnn': create_sophisticated_cnn,
     'sophisticated_cnn_droped_out': create_sophisticated_cnn_droped_out,
@@ -2288,6 +2458,13 @@ def get_model_info(model_name):
             'params': '~1.5M',
             'size': '~6MB',
             'best_for': 'Détection pixel-perfect, ignore la gestion des ancres.'
+        },
+        'aircraft_detector_unet_token': {
+            'name': 'AircraftDetectorUNetToken',
+            'description': 'U-Net + bottleneck Transformer (tokens) entre encodeur et décodeur',
+            'params': '~2.0M',
+            'size': '~8MB',
+            'best_for': 'Même pipeline masque que U-Net ; params token_bottleneck isolés pour fine-tuning ciblé.'
         },
         'aircraft_detector_sophisticated_unet': {
             'name': 'AircraftDetectorSophisticatedUNet',

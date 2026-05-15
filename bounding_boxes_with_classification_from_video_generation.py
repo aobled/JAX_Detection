@@ -43,10 +43,10 @@ OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 FRAME_STRIDE = 1  # 1 = toutes les frames
 DETECTION_CONF_THRESHOLD = 0.7          # Seuil pour considérer une détection valide (objectness + class) target 0.6
 
-VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
-#VIDEO_PATH = "/media/aobled/Elements/Python/videos/Watch Mach Loop Flybys  Fast Jets 4K.mp4"
-TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
-#TARGET_CLASS_LIST = ["f35", "typhoon","hawk", "f15", "a400m"]
+#VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
+VIDEO_PATH = "/media/aobled/Elements/Python/videos/chevaliers2.mp4"
+#TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
+TARGET_CLASS_LIST = ["alphajet"]
 
 # 3. Chargement de la config dataset
 try:
