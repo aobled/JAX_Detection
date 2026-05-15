@@ -134,45 +134,52 @@ def load_jax_model(checkpoint_path, config):
 
     return model, variables, mean, std
 
+
+def _preprocess_crop_to_hwc(crop_img, mean, std, config):
+    """Prépare un crop BGR en tenseur (H, W, C) float32, identique à l'ancien predict_crop."""
+    target_size = config["image_size"]
+    grayscale = config.get("grayscale", False)
+    crop_resized = cv2.resize(crop_img, target_size)
+    if grayscale:
+        img_input = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2GRAY)
+        img_input = img_input.astype(np.float32) / 255.0
+        img_normalized = (img_input - mean) / std
+        return img_normalized[:, :, np.newaxis]
+    img_input = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2RGB)
+    img_input = img_input.astype(np.float32) / 255.0
+    img_normalized = (img_input - mean) / std
+    return img_normalized
+
+
+def predict_crops_batch(crop_imgs, model, variables, mean, std, config):
+    """
+    Classifie plusieurs crops en un seul forward JAX.
+    Retourne une liste de (nom_classe, confiance), une entrée par élément de crop_imgs
+    (même ordre, pas de moyenne entre crops).
+    """
+    if not crop_imgs:
+        return []
+    batch_np = np.stack(
+        [_preprocess_crop_to_hwc(c, mean, std, config) for c in crop_imgs],
+        axis=0,
+    )
+    logits = model.apply(variables, jnp.array(batch_np), training=False)
+    probs = jax.nn.softmax(logits, axis=-1)
+    pred_indices = jnp.argmax(probs, axis=-1)
+    names = config["class_names"]
+    n = len(crop_imgs)
+    return [
+        (names[int(pred_indices[i])], float(probs[i, int(pred_indices[i])]))
+        for i in range(n)
+    ]
+
+
 def predict_crop(crop_img, model, variables, mean, std, config):
     """
     Prédit la classe d'un crop (image OpenCV BGR).
     Retourne: (nom_classe, confiance)
     """
-    # 1. Prétraitement
-    target_size = config["image_size"]  # (128, 128)
-    grayscale = config.get("grayscale", False)
-    
-    # Resize
-    crop_resized = cv2.resize(crop_img, target_size)
-    
-    # Conversion couleur et normalisation
-    if grayscale:
-        # BGR -> Gray
-        img_input = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2GRAY)
-        img_input = img_input.astype(np.float32) / 255.0
-        # Normalisation
-        img_normalized = (img_input - mean) / std
-        # Ajout dimensions: (H, W) -> (1, H, W, 1)
-        img_jax = img_normalized[np.newaxis, :, :, np.newaxis]
-    else:
-        # BGR -> RGB
-        img_input = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2RGB)
-        img_input = img_input.astype(np.float32) / 255.0
-        # Normalisation
-        img_normalized = (img_input - mean) / std
-        # Ajout dimensions: (H, W, 3) -> (1, H, W, 3)
-        img_jax = img_normalized[np.newaxis, :, :, :]
-
-    # 2. Inférence JAX
-    logits = model.apply(variables, jnp.array(img_jax), training=False)
-    probs = jax.nn.softmax(logits, axis=-1)
-    
-    # 3. Résultat
-    pred_idx = int(jnp.argmax(probs))
-    confidence = float(probs[0, pred_idx])
-    
-    return config["class_names"][pred_idx], confidence
+    return predict_crops_batch([crop_img], model, variables, mean, std, config)[0]
 
 
 # =================================================================================================
@@ -479,13 +486,26 @@ def build_quadrant_canvas(target_frame,
     grid_rows = 4
     cell_w = 128
     cell_h = 128
-    
+
+    valid_boxes_crops = []
     for (x1, y1, x2, y2, det_score) in target_detections:
         crop = target_frame[y1:y2, x1:x2]
         if crop.size == 0:
             continue
+        valid_boxes_crops.append(((x1, y1, x2, y2, det_score), crop))
 
-        predicted_class, confidence = predict_crop(crop, clf_model, clf_vars, dataset_mean, dataset_std, config)
+    batch_preds = predict_crops_batch(
+        [c for _, c in valid_boxes_crops],
+        clf_model,
+        clf_vars,
+        dataset_mean,
+        dataset_std,
+        config,
+    )
+
+    for ((x1, y1, x2, y2, det_score), crop), (predicted_class, confidence) in zip(
+        valid_boxes_crops, batch_preds
+    ):
 
         # Draw Top-Right
         color = (0, 255, 0) if predicted_class in TARGET_CLASS_LIST else (0, 0, 255)
