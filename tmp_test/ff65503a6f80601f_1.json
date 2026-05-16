@@ -1,0 +1,20 @@
+{
+    "image": {
+        "file_name": "ff65503a6f80601f.jpg",
+        "width": 753,
+        "height": 500
+    },
+    "annotation": {
+        "file_name": "ff65503a6f80601f.jpg",
+        "bbox": [
+            81.0,
+            209.0,
+            609.0,
+            151.0
+        ],
+        "category_name": "f22",
+        "bbox_id": 1,
+        "detection_score": 0.734261691570282,
+        "classification_score": 0.9994997978210449
+    }
+}
