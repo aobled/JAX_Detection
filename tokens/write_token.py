@@ -67,6 +67,7 @@ print(f"Nouveau fichier : {token_file_updated}")
 
 
 # 3. Mettre à jour le checkpoint
+#loaded_tokens = np.load("/home/aobled/Desktop/Development/JAX_Detection/tokens/population/gen_0007/tokens_1085b3aab8f078f46c8c3edd9689540e6b1a29ac25607d71f6844c76a26a1adf.npy")
 checkpoint['params']['token_bottleneck']['query_tokens'] = loaded_tokens # Reconstruire la structure
 new_pkl = "../best_model_detectionv2.pkl"
 with open(new_pkl, "wb") as f:

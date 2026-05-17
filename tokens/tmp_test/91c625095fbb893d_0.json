@@ -1,0 +1,20 @@
+{
+    "image": {
+        "file_name": "91c625095fbb893d.jpg",
+        "width": 750,
+        "height": 500
+    },
+    "annotation": {
+        "file_name": "91c625095fbb893d.jpg",
+        "bbox": [
+            502.0,
+            348.0,
+            226.0,
+            35.0
+        ],
+        "category_name": "b2b",
+        "bbox_id": 0,
+        "detection_score": 0.8460230827331543,
+        "classification_score": 0.7417021989822388
+    }
+}

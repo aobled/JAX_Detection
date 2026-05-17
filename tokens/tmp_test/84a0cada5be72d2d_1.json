@@ -1,0 +1,20 @@
+{
+    "image": {
+        "file_name": "84a0cada5be72d2d.jpg",
+        "width": 948,
+        "height": 632
+    },
+    "annotation": {
+        "file_name": "84a0cada5be72d2d.jpg",
+        "bbox": [
+            80.0,
+            341.0,
+            77.0,
+            71.0
+        ],
+        "category_name": "mirage2000",
+        "bbox_id": 1,
+        "detection_score": 0.8368226885795593,
+        "classification_score": 0.6838204264640808
+    }
+}

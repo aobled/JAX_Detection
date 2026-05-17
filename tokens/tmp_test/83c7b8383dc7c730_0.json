@@ -1,0 +1,20 @@
+{
+    "image": {
+        "file_name": "83c7b8383dc7c730.jpg",
+        "width": 1440,
+        "height": 1087
+    },
+    "annotation": {
+        "file_name": "83c7b8383dc7c730.jpg",
+        "bbox": [
+            354.0,
+            303.0,
+            327.0,
+            166.0
+        ],
+        "category_name": "unknown",
+        "bbox_id": 0,
+        "detection_score": 0.9916141033172607,
+        "classification_score": 0.9245196580886841
+    }
+}

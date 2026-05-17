@@ -1,0 +1,20 @@
+{
+    "image": {
+        "file_name": "8a72cb9466ca31af.jpg",
+        "width": 600,
+        "height": 400
+    },
+    "annotation": {
+        "file_name": "8a72cb9466ca31af.jpg",
+        "bbox": [
+            331.4410199783476,
+            155.4882039956695,
+            78.01685143475783,
+            33.48820399566955
+        ],
+        "category_name": "flanker",
+        "bbox_id": 6,
+        "detection_score": 0.7092419862747192,
+        "classification_score": 0.46319323778152466
+    }
+}

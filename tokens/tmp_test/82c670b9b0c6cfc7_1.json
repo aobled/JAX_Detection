@@ -1,0 +1,18 @@
+{
+    "image": {
+        "file_name": "82c670b9b0c6cfc7.jpg",
+        "width": 1200,
+        "height": 675
+    },
+    "annotation": {
+        "file_name": "82c670b9b0c6cfc7.jpg",
+        "bbox": [
+            581.0,
+            414.0,
+            129.0,
+            62.0
+        ],
+        "category_name": "gripen",
+        "bbox_id": 1
+    }
+}

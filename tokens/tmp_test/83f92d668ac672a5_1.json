@@ -1,0 +1,20 @@
+{
+    "image": {
+        "file_name": "83f92d668ac672a5.jpg",
+        "width": 948,
+        "height": 632
+    },
+    "annotation": {
+        "file_name": "83f92d668ac672a5.jpg",
+        "bbox": [
+            32.0,
+            151.0,
+            185.0,
+            96.0
+        ],
+        "category_name": "rafale",
+        "bbox_id": 1,
+        "detection_score": 0.9274849891662598,
+        "classification_score": 0.8922374844551086
+    }
+}

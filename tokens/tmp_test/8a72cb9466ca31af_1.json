@@ -1,0 +1,20 @@
+{
+    "image": {
+        "file_name": "8a72cb9466ca31af.jpg",
+        "width": 600,
+        "height": 400
+    },
+    "annotation": {
+        "file_name": "8a72cb9466ca31af.jpg",
+        "bbox": [
+            171.04381373037037,
+            190.5117960043305,
+            57.59605317811966,
+            25.016851434757797
+        ],
+        "category_name": "mig29",
+        "bbox_id": 1,
+        "detection_score": 0.9233240485191345,
+        "classification_score": 0.9994180798530579
+    }
+}

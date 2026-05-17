@@ -1,0 +1,18 @@
+{
+    "image": {
+        "file_name": "80e790b33cd3ed91.jpg",
+        "width": 2560,
+        "height": 1920
+    },
+    "annotation": {
+        "file_name": "80e790b33cd3ed91.jpg",
+        "bbox": [
+            1488.0,
+            947.9999999999999,
+            140.0,
+            57.0
+        ],
+        "category_name": "typhoon",
+        "bbox_id": 1
+    }
+}

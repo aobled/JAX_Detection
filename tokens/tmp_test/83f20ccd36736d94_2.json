@@ -1,0 +1,20 @@
+{
+    "image": {
+        "file_name": "83f20ccd36736d94.jpg",
+        "width": 3540,
+        "height": 2360
+    },
+    "annotation": {
+        "file_name": "83f20ccd36736d94.jpg",
+        "bbox": [
+            1324.3333333333335,
+            668.6666666666666,
+            519.9999999999998,
+            262.3333333333335
+        ],
+        "category_name": "gripen",
+        "bbox_id": 2,
+        "detection_score": 0.9724616408348083,
+        "classification_score": 0.9486157298088074
+    }
+}

@@ -1,0 +1,20 @@
+{
+    "image": {
+        "file_name": "91f9c4a73ba0c61b.jpg",
+        "width": 753,
+        "height": 500
+    },
+    "annotation": {
+        "file_name": "91f9c4a73ba0c61b.jpg",
+        "bbox": [
+            194.0,
+            279.0,
+            369.0,
+            88.0
+        ],
+        "category_name": "f22",
+        "bbox_id": 1,
+        "detection_score": 0.7001863718032837,
+        "classification_score": 0.9830439686775208
+    }
+}

@@ -1,0 +1,18 @@
+{
+    "image": {
+        "file_name": "80fec5487f80935f.jpg",
+        "width": 750,
+        "height": 500
+    },
+    "annotation": {
+        "file_name": "80fec5487f80935f.jpg",
+        "bbox": [
+            8.0,
+            225.0,
+            145.0,
+            64.0
+        ],
+        "category_name": "f16",
+        "bbox_id": 1
+    }
+}

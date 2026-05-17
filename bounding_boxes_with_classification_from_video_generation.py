@@ -25,7 +25,7 @@ DATASET_NAME = "FIGHTERJET_CLASSIFICATION"     # Nom de la config dans dataset_c
 CHECKPOINT_PATH = "best_model.pkl"      # Chemin vers le modèle de CLASSIFICATION
 
 # 2. Configuration du modèle de détection
-DETECTION_CHECKPOINT_PATH = "best_model_detectionv2.pkl" # Chemin vers le modèle de DÉTECTION
+DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl" # Chemin vers le modèle de DÉTECTION
 DETECTION_IMAGE_SIZE = (224, 224)       # Taille d'entrée du modèle de détection
 
 # 3. Configuration de la zone de détection
@@ -43,10 +43,10 @@ OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 FRAME_STRIDE = 1  # 1 = toutes les frames
 DETECTION_CONF_THRESHOLD = 0.7          # Seuil pour considérer une détection valide (objectness + class) target 0.6
 
-VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
-#VIDEO_PATH = "/media/aobled/Elements/Python/videos/chevaliers2.mp4"
-TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
-#TARGET_CLASS_LIST = ["alphajet"]
+#VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
+VIDEO_PATH = "/media/aobled/Elements/Python/videos/chevaliers2.mp4"
+#TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
+TARGET_CLASS_LIST = ["alphajet", "mirage2000"]
 
 # 3. Chargement de la config dataset
 try:
