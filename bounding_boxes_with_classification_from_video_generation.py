@@ -42,11 +42,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUTPUT_DIR = "/home/aobled/Downloads/video_frames_annotated"
 FRAME_STRIDE = 1  # 1 = toutes les frames
 DETECTION_CONF_THRESHOLD = 0.7          # Seuil pour considérer une détection valide (objectness + class) target 0.6
+BATCH_SIZE = 32                         # Taille du batch d'images pour la détection
 
-#VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
-VIDEO_PATH = "/media/aobled/Elements/Python/videos/chevaliers2.mp4"
-#TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
-TARGET_CLASS_LIST = ["alphajet", "mirage2000"]
+VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
+#VIDEO_PATH = "/media/aobled/Elements/Python/videos/low_level_f117.mp4"
+TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
+#TARGET_CLASS_LIST = ["f117"]
 
 # 3. Chargement de la config dataset
 try:
@@ -151,7 +152,7 @@ def _preprocess_crop_to_hwc(crop_img, mean, std, config):
     return img_normalized
 
 
-def predict_crops_batch(crop_imgs, model, variables, mean, std, config):
+def predict_crops_batch(crop_imgs, predict_fn, mean, std, config):
     """
     Classifie plusieurs crops en un seul forward JAX.
     Retourne une liste de (nom_classe, confiance), une entrée par élément de crop_imgs
@@ -163,7 +164,7 @@ def predict_crops_batch(crop_imgs, model, variables, mean, std, config):
         [_preprocess_crop_to_hwc(c, mean, std, config) for c in crop_imgs],
         axis=0,
     )
-    logits = model.apply(variables, jnp.array(batch_np), training=False)
+    logits = predict_fn(jnp.array(batch_np))
     probs = jax.nn.softmax(logits, axis=-1)
     pred_indices = jnp.argmax(probs, axis=-1)
     names = config["class_names"]
@@ -174,12 +175,12 @@ def predict_crops_batch(crop_imgs, model, variables, mean, std, config):
     ]
 
 
-def predict_crop(crop_img, model, variables, mean, std, config):
+def predict_crop(crop_img, predict_fn, mean, std, config):
     """
     Prédit la classe d'un crop (image OpenCV BGR).
     Retourne: (nom_classe, confiance)
     """
-    return predict_crops_batch([crop_img], model, variables, mean, std, config)[0]
+    return predict_crops_batch([crop_img], predict_fn, mean, std, config)[0]
 
 
 # =================================================================================================
@@ -285,111 +286,90 @@ def non_max_suppression(boxes, iou_threshold):
 
 
 
-def decode_segmentation_and_detect(img_bgr, model, variables, config_model, conf_threshold=0.3, box_aera_min=225):
+def decode_segmentation_and_detect_batch(frames_bgr, predict_fn, config_model, conf_threshold=0.3, box_aera_min=225):
     """
-    Exécute la détection par Segmentation Sémantique (U-Net).
-    Retourne une liste de boxes [x1, y1, x2, y2, score].
+    Exécute la détection par Segmentation Sémantique (U-Net) sur un batch d'images.
+    Retourne une liste de tuples (final_detections, mask_resized, binary_mask).
     """
-    h_orig, w_orig = img_bgr.shape[:2]
-    
-    # 1. Prétraitement
+    if not frames_bgr:
+        return []
+        
+    # 1. Prétraitement de tout le batch
     target_size = config_model.get("image_size", DETECTION_IMAGE_SIZE)
     grayscale = config_model.get("grayscale", True)
     
-    img_resized = cv2.resize(img_bgr, target_size)
+    batch_input = []
+    orig_shapes = []
     
-    if grayscale:
-        img_input = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
-        img_input = img_input.astype(np.float32) / 255.0
-        img_jax = img_input[np.newaxis, :, :, np.newaxis]
-    else:
-        img_input = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-        img_input = img_input.astype(np.float32) / 255.0
-        img_jax = img_input[np.newaxis, :, :, :]
-    
-    # 2. Inférence U-Net
-    preds = model.apply(variables, jnp.array(img_jax), training=False)
-    # preds est (1, 224, 224, 1)
-    
-    pred_mask = np.array(preds[0, :, :, 0]) # (224, 224)
-    
-    # 3. Redimensionnement à la taille de l'image originale
-    mask_resized = cv2.resize(pred_mask, (w_orig, h_orig), interpolation=cv2.INTER_CUBIC)
-    
-    # 4. Binarisation Directe
-    # Le modèle BCE+Dice produit des Heatmaps très franches
-    binary_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
-    
-    # =====================================================
-    # MORPHOLOGICAL CLOSING DOUX
-    # Kernel (9,9) : Bouche les petits défauts de la prédiction
-    # sans risquer de fusionner deux avions proches.
-    # =====================================================
-    closing_kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE,
-        (9, 9)
-    )
-    
-    binary_mask = cv2.morphologyEx(
-        binary_mask,
-        cv2.MORPH_CLOSE,
-        closing_kernel,
-        iterations=1
-    )
-    
-    # =====================================================
-    # Dilatation légère pour capturer un peu de contexte
-    # =====================================================
-    dilate_kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE,
-        (5, 5) # Réduit de 11 à 5 pour coller au plus près de la silhouette
-    )
-    binary_mask = cv2.dilate(
-        binary_mask,
-        dilate_kernel,
-        iterations=1
-    )    
-    
-    
-    # --- EXTRACTION ET MARGE PROPORTIONNELLE ---
-    # On a supprimé cv2.dilate car l'effet en pixels absolus était trop faible sur du 1080p.
-    # Il est bien plus performant et juste d'appliquer une marge en pourcentage sur la bounding box finale.
-    
-    # 5. Extraction des Contours
-    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    final_detections = []
-    
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area < box_aera_min: # Ignorer le bruit microscopique
-            continue
+    for img_bgr in frames_bgr:
+        h_orig, w_orig = img_bgr.shape[:2]
+        orig_shapes.append((h_orig, w_orig))
+        
+        img_resized = cv2.resize(img_bgr, target_size)
+        if grayscale:
+            img_input = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
+            img_input = img_input.astype(np.float32) / 255.0
+            batch_input.append(img_input[:, :, np.newaxis])
+        else:
+            img_input = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+            img_input = img_input.astype(np.float32) / 255.0
+            batch_input.append(img_input)
             
-        x, y, w, h = cv2.boundingRect(contour)
-        
-        # Le "score" peut être la valeur moyenne ou max de probabilité dans la box STRICTE
-        sub_mask = mask_resized[y:y+h, x:x+w]
-        score = float(np.max(sub_mask)) if sub_mask.size > 0 else 1.0
-        #score = np.mean(sub_mask)
-        
-        # Application de la marge proportionnelle (ex: 15% de la taille de l'avion)
-        margin_x = int(w * (CROP_MARGIN_PERCENT / 100.0))
-        margin_y = int(h * (CROP_MARGIN_PERCENT / 100.0))
-        
-        x1 = max(0, x - margin_x)
-        y1 = max(0, y - margin_y)
-        x2 = min(w_orig, x + w + margin_x)
-        y2 = min(h_orig, y + h + margin_y)
-        
-        final_detections.append((x1, y1, x2, y2, score))
+    img_jax_batch = jnp.array(np.stack(batch_input, axis=0))
     
-    # stabilité visuelle : haut → bas puis gauche → droite
-    final_detections = sorted(
-        final_detections,
-        key=lambda b: (b[1], b[0])  # y puis x
-    )
+    # 2. Inférence U-Net Massive en une seule passe !
+    preds = predict_fn(img_jax_batch)
+    # preds est (BATCH_SIZE, 224, 224, 1)
+    
+    preds_np = np.array(preds)
+    results = []
+    
+    # 3. Post-traitement (OpenCV) boucle par boucle
+    for i, img_bgr in enumerate(frames_bgr):
+        h_orig, w_orig = orig_shapes[i]
+        pred_mask = preds_np[i, :, :, 0] # (224, 224)
         
-    return final_detections, mask_resized, binary_mask
+        # Redimensionnement à la taille de l'image originale
+        mask_resized = cv2.resize(pred_mask, (w_orig, h_orig), interpolation=cv2.INTER_CUBIC)
+        
+        # Binarisation Directe
+        binary_mask = (mask_resized > conf_threshold).astype(np.uint8) * 255
+        
+        closing_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, closing_kernel, iterations=1)
+        
+        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        binary_mask = cv2.dilate(binary_mask, dilate_kernel, iterations=1)    
+        
+        # Extraction des Contours
+        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        final_detections = []
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < box_aera_min:
+                continue
+                
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            sub_mask = mask_resized[y:y+h, x:x+w]
+            score = float(np.max(sub_mask)) if sub_mask.size > 0 else 1.0
+            
+            # Application de la marge proportionnelle
+            margin_x = int(w * (CROP_MARGIN_PERCENT / 100.0))
+            margin_y = int(h * (CROP_MARGIN_PERCENT / 100.0))
+            
+            x1 = max(0, x - margin_x)
+            y1 = max(0, y - margin_y)
+            x2 = min(w_orig, x + w + margin_x)
+            y2 = min(h_orig, y + h + margin_y)
+            
+            final_detections.append((x1, y1, x2, y2, score))
+        
+        final_detections = sorted(final_detections, key=lambda b: (b[1], b[0]))
+        results.append((final_detections, mask_resized, binary_mask))
+            
+    return results
 
 # =================================================================================================
 # MAIN
@@ -415,8 +395,7 @@ def build_quadrant_canvas(target_frame,
                           target_heatmap,
                           target_binary_mask,
                           target_detections,
-                          clf_model,
-                          clf_vars,
+                          clf_predict_fn,
                           dataset_mean,
                           dataset_std,
                           config):
@@ -496,8 +475,7 @@ def build_quadrant_canvas(target_frame,
 
     batch_preds = predict_crops_batch(
         [c for _, c in valid_boxes_crops],
-        clf_model,
-        clf_vars,
+        clf_predict_fn,
         dataset_mean,
         dataset_std,
         config,
@@ -557,6 +535,11 @@ if __name__ == "__main__":
     clf_model, clf_vars, dataset_mean, dataset_std = load_jax_model(CHECKPOINT_PATH, config)
 
     print("✅ Modèles chargés.")
+    
+    print("⚡ Compilation JAX (JIT)...")
+    det_predict_fn = jax.jit(lambda x: det_model.apply(det_vars, x, training=False))
+    clf_predict_fn = jax.jit(lambda x: clf_model.apply(clf_vars, x, training=False))
+    print("✅ Compilation terminée.")
 
     # ======================================================
     # OUVERTURE VIDEO
@@ -574,6 +557,9 @@ if __name__ == "__main__":
 
     frame_id = 0
     saved_count = 0
+    
+    frames_buffer = []
+    frame_ids_buffer = []
 
     with tqdm(total=total_frames, desc="Traitement vidéo") as pbar:
 
@@ -588,49 +574,84 @@ if __name__ == "__main__":
                 pbar.update(1)
                 continue
 
-            original_frame = frame.copy()
+            frames_buffer.append(frame.copy())
+            frame_ids_buffer.append(frame_id)
 
-            # ==================================================
-            # DÉTECTION
-            # ==================================================
-            # Inférence
-            detections, heatmap, binary_mask = decode_segmentation_and_detect(
-                original_frame, 
-                det_model, det_vars, det_config, 
-                conf_threshold=DETECTION_CONF_THRESHOLD,
-                box_aera_min=BOX_AERA_MIN
-            )
-            
-            target_binary_mask = binary_mask
-            target_idx = frame_id
-            target_frame = original_frame
-            target_detections = detections
-            target_heatmap = heatmap
+            if len(frames_buffer) == BATCH_SIZE:
+                # ==================================================
+                # DÉTECTION PAR BATCH
+                # ==================================================
+                batch_results = decode_segmentation_and_detect_batch(
+                    frames_buffer, 
+                    det_predict_fn, det_config, 
+                    conf_threshold=DETECTION_CONF_THRESHOLD,
+                    box_aera_min=BOX_AERA_MIN
+                )
                 
-            # ==================================================
-            # CONSTRUCTION DU CANVAS 4-QUARTS
-            # ==================================================
-            canvas = build_quadrant_canvas(
-                target_frame,
-                target_heatmap,
-                target_binary_mask,
-                target_detections,
-                clf_model,
-                clf_vars,
-                dataset_mean,
-                dataset_std,
-                config
-            )
+                for i in range(len(frames_buffer)):
+                    target_frame = frames_buffer[i]
+                    target_idx = frame_ids_buffer[i]
+                    target_detections, target_heatmap, target_binary_mask = batch_results[i]
+                    
+                    # ==================================================
+                    # CONSTRUCTION DU CANVAS 4-QUARTS
+                    # ==================================================
+                    canvas = build_quadrant_canvas(
+                        target_frame,
+                        target_heatmap,
+                        target_binary_mask,
+                        target_detections,
+                        clf_predict_fn,
+                        dataset_mean,
+                        dataset_std,
+                        config
+                    )
 
-            # ==================================================
-            # SAUVEGARDE IMAGE
-            # ==================================================
-            output_path = os.path.join(OUTPUT_DIR, f"frame_{target_idx:06d}.jpg")
-            cv2.imwrite(output_path, canvas)
-            saved_count += 1
+                    # ==================================================
+                    # SAUVEGARDE IMAGE
+                    # ==================================================
+                    output_path = os.path.join(OUTPUT_DIR, f"frame_{target_idx:06d}.jpg")
+                    cv2.imwrite(output_path, canvas)
+                    saved_count += 1
+                    
+                frames_buffer.clear()
+                frame_ids_buffer.clear()
 
             frame_id += 1
             pbar.update(1)
+            
+        # ==================================================
+        # TRAITER LES FRAMES RESTANTES
+        # ==================================================
+        if len(frames_buffer) > 0:
+            batch_results = decode_segmentation_and_detect_batch(
+                frames_buffer, 
+                det_predict_fn, det_config, 
+                conf_threshold=DETECTION_CONF_THRESHOLD,
+                box_aera_min=BOX_AERA_MIN
+            )
+            for i in range(len(frames_buffer)):
+                target_frame = frames_buffer[i]
+                target_idx = frame_ids_buffer[i]
+                target_detections, target_heatmap, target_binary_mask = batch_results[i]
+                
+                canvas = build_quadrant_canvas(
+                    target_frame,
+                    target_heatmap,
+                    target_binary_mask,
+                    target_detections,
+                    clf_predict_fn,
+                    dataset_mean,
+                    dataset_std,
+                    config
+                )
+
+                output_path = os.path.join(OUTPUT_DIR, f"frame_{target_idx:06d}.jpg")
+                cv2.imwrite(output_path, canvas)
+                saved_count += 1
+                
+            frames_buffer.clear()
+            frame_ids_buffer.clear()
 
     cap.release()
 

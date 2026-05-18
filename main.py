@@ -105,7 +105,6 @@ def main(dataset_name="FIGHTERJET_9CLASSES"):
     
     # 4. INSTANCIATION DE LA STRATEGIE (Injection de dépendance)
     task_type = config.get("task_type", "classification")
-    print(">>>>>>>>>>>>> ", task_type)
     if task_type == "classification":
         print("🎯 Application de la logique d'entraînement : CLASSIFICATION")
         strategy = ClassificationStrategy(

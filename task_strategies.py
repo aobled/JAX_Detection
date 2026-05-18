@@ -155,11 +155,11 @@ class ClassificationStrategy(TaskStrategy):
 class DetectionStrategy(TaskStrategy):
     @property
     def primary_metric_name(self) -> str:
-        return "Loss"
+        return "IoU"
         
     @property
     def optimization_mode(self) -> str:
-        return "min"
+        return "max"
         
     def _get_export_path(self, config) -> str:
         return "best_model_detection.pkl"
@@ -178,9 +178,26 @@ class DetectionStrategy(TaskStrategy):
         
         
     def compute_metrics(self, outputs, targets):
-        # En détection, nous n'avons pas d'Accuracy simple à calculer tensoriellement.
-        # Le Trainer utilisera directement la vraie 'val_loss' grâce au mode 'min'.
-        return 0.0
+        """Calcule le mIoU (Mean Intersection over Union) binaire pour la segmentation."""
+        # Binarisation avec un seuil de 0.5
+        threshold = 0.5
+        preds = (outputs > threshold).astype(jnp.float32)
+        targets = targets.astype(jnp.float32)
+        
+        # Calcul par image dans le batch (axes 1, 2, 3 correspondants à H, W, C)
+        intersection = jnp.sum(preds * targets, axis=(1, 2, 3))
+        union = jnp.sum(preds, axis=(1, 2, 3)) + jnp.sum(targets, axis=(1, 2, 3)) - intersection
+        
+        # S'il n'y a pas d'objet et qu'on a rien prédit, IoU = 1.0
+        # Sinon IoU = intersection / union
+        iou = jnp.where(
+            union > 0, 
+            intersection / union, 
+            jnp.where(jnp.sum(targets, axis=(1, 2, 3)) == 0, 1.0, 0.0)
+        )
+        
+        # Retourne l'IoU moyen du batch (entre 0 et 1)
+        return jnp.mean(iou)
         
     def generate_reports(self, val_ds, final_state, model, config):
         import cv2

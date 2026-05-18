@@ -317,13 +317,13 @@ DATASET_CONFIGS = {
         
         # === Modèle ---
         #"model_name": "aircraft_detector_unet",
-        "model_name": "aircraft_detector_unet_token",
+        "model_name": "aircraft_detector_unet",
         "grid_size": 224,      # Segmentation sémantique (output size = input size)
         
         # === Hyperparamètres TPU ===
         "tpu": {
-            "micro_batch_size": 32,    # Batch ramené à 32 pour plus de stochasticité (YOLO)
-            "accum_steps": 2,          # Accumulation pour simuler 64
+            "micro_batch_size": 64,    # Batch ramené à 32 pour plus de stochasticité (YOLO)
+            "accum_steps": 1,          # Accumulation pour simuler 64
             "learning_rate": 4e-4,     # LR légèrement remonté
             "weight_decay": 5e-5,
             "dropout_rate": 0.2,
