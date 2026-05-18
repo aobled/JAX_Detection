@@ -1036,9 +1036,9 @@ class PhotoViewer:
 
 CROP_HEIGHT = 0  # Hauteur en pixels à croper (0 = désactivé)
 AUTO_CROP = False  # Croper automatiquement lors de la sauvegarde (touche 's')
-CATEGORY_NAME = 'unknown'
+CATEGORY_NAME = 'a400m'
 if __name__ == "__main__":
-    root_folder = "/home/aobled/Downloads/tmp_test"
+    root_folder = "/home/aobled/Downloads/Aircraft_DATASET/tmpa400m"
     viewer = PhotoViewer(root_folder, category_name=CATEGORY_NAME, crop_height=CROP_HEIGHT, auto_crop=AUTO_CROP)
 
 

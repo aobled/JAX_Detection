@@ -125,7 +125,7 @@ def process_all_files(directory):
 threshold = 1
 
 
-directory = '/home/aobled/Downloads/Military Aircraft Dataset (81 Classes) sorted/HURJET'
+directory = '/home/aobled/Downloads/Military Aircraft Dataset (81 Classes)/a400m'
 duplicates = find_duplicates_optimized(directory, threshold)
 process_duplicates(directory, duplicates)
 process_all_files(directory)

@@ -209,11 +209,13 @@ class DetectionStrategy(TaskStrategy):
                 
                 # Sauvegarder juste un batch visuel pour debug
                 # Image 0
-                img0 = (vis_imgs[0] * 255).astype(np.uint8)
-                true0 = (vis_masks[0] * 255).astype(np.uint8)
-                pred0 = (pred_masks[0] * 255).astype(np.uint8)
+                img0 = np.array(vis_imgs[0] * 255, dtype=np.uint8)
+                true0 = np.array(vis_masks[0] * 255, dtype=np.uint8)
+                pred0 = np.array(pred_masks[0] * 255, dtype=np.uint8)
                 
-                heatmap = cv2.applyColorMap(pred0, cv2.COLORMAP_JET)
+                # OpenCV a besoin d'un vrai tableau Numpy 2D (H, W) pour la ColorMap
+                pred0_flat = pred0[..., 0] if pred0.ndim == 3 and pred0.shape[-1] == 1 else pred0
+                heatmap = cv2.applyColorMap(pred0_flat, cv2.COLORMAP_JET)
                 
                 # Conversion grayscale -> RGB si nécessaire pour la concatenation
                 if img0.shape[-1] == 1:
