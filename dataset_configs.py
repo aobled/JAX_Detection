@@ -84,7 +84,7 @@ DATASET_CONFIGS = {
         "mean_std_path": f"{DATA_ROOT}/chunks/classification/dataset_classification_meanstd.npz",
         
         # === Modèle ===
-        "model_name": "sophisticated_cnn_128_plus",  # ✅ OPTIMAL: Version optimisée+ (4M params). "88% val" était obsolète/faux (corrigé 2026-07-14) - la vraie référence est ~94.5% val (archive/training_classification_log_bfloat16_256x2.txt: 0.9448, archive/training_classification_log.txt: 0.9458, deux configs proches concordantes)
+        "model_name": "sophisticated_cnn_128_lite",  # ✅ VALIDE 2026-07-26 (Winston/Aymeric): variante allegee de sophisticated_cnn_128_plus (Bloc 1 96->64, Bloc 4 pic 512->384 canaux), 0.83M params vs 1.26M pour Plus (-34%), pour la vitesse d'inference. 0.9451 val obtenu (archive/training_classification_log_128x4_ligthv2.txt) vs 0.9521 pour Plus a schedule egal (-0.7pt pour -34% params) - premier essai (0.9322, training_classification_log_128x4_ligth.txt) fausse par un decay_steps etale sur 40 epochs au lieu de 7, corrige depuis (voir "decay_epochs" ci-dessous). Retour arriere: remettre "sophisticated_cnn_128_plus". ATTENTION: checkpoint_path/training_state_path ci-dessous sont derives de dataset_name, pas de model_name (trainer.py:511-512) - sauvegarder best_model.pkl/best_model_training_state_classification.pkl avant de lancer un run si vous voulez garder un point de comparaison.
         "loss_method": "focal_loss",
         "loss_params": {"gamma": 2.0},
 
@@ -119,6 +119,7 @@ DATASET_CONFIGS = {
         "lr_schedule": "cosine",
         "epochs": 40,              # 40
         "patience": 5,
+        "decay_epochs": 7,  # 🧪 2026-07-26: schedule cosinus decay sur 7 epochs (~6000 steps, comme l'ancien decay_steps fige) au lieu des 40 epochs par defaut - restaure la longue queue de fine-tuning a bas LR qui a produit 0.9458/0.9521 val avant le passage au calcul auto (trainer.py, 2026-07-21). Voir deferred-work.md pour le run sophisticated_cnn_128_lite (0.9322) qui a motive ce changement.
         "label_smoothing": 0.15,  # ✅ Validé 2026-07-14 (après fix task_strategies.py:110-118, ex-mort par if/elif) : combiné à mixup, 0.9521 val vs 0.9458 référence identique sans smoothing (+0.63pt, archive/training_classification_log_128x4_mixup_smoothing.txt)
         "mixup_alpha": 0.05,        # ✅ OPTIMAL: Mixup doux (meilleur compromis trouvé) - confirmé combinable avec label_smoothing (voir ci-dessus)
         

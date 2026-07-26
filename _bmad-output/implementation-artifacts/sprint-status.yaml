@@ -221,3 +221,27 @@ action_items:
     action: "Verifier explicitement toute affirmation technique (attribution de cause, estimation chiffree) contre le log/la source avant de l'enoncer, pas seulement apres correction utilisateur - 2 occurrences ce cycle (v8 checkpoint, +15%/+30%)"
     owner: "Process (Claude)"
     status: open
+  - epic: "refactor-boxes-tkinter-2026-07-24"
+    action: "Analyser tools/boxes_process_manual_tkinter.py (PhotoViewer, ~1220 lignes, God class) et definir une strategie de refactorisation incrementale - fait (Winston), voir refactor-boxes-process-manual-tkinter.md. 5 etapes ordonnees du moins couple au plus couple, chacune une story Amelia testee par Aymeric sur des images reelles. Contrainte AD-20 : comportement/pipeline strictement preserve"
+    owner: "Winston"
+    status: done
+  - epic: "refactor-boxes-tkinter-2026-07-24"
+    action: "Etape 1 : extraire le cluster d'inference JAX (load_jax_models, generate_and_show_predictions) dans une classe dediee - implemente (tools/boxes_manual_prediction_assistant.py). Teste manuellement par Aymeric (touches p/a) : pas de regression"
+    owner: "Amelia"
+    status: done
+  - epic: "refactor-boxes-tkinter-2026-07-24"
+    action: "Etape 2 : extraire la persistance JSON (validate_and_fix_bbox_coordinates, ensure_json_consistency, save_json_with_consistency_check) - implemente (tools/boxes_manual_json_store.py). Teste manuellement par Aymeric (s/t/r/n) : pas de regression"
+    owner: "Amelia"
+    status: done
+  - epic: "refactor-boxes-tkinter-2026-07-24"
+    action: "Etape 3 : factoriser la conversion de coordonnees zoom->original (dupliquee 5x) - implemente (ImageManager.zoomed_to_original). Teste manuellement par Aymeric (zoom + f/l/s/t/p) : pas de regression"
+    owner: "Amelia"
+    status: done
+  - epic: "refactor-boxes-tkinter-2026-07-24"
+    action: "Etape 4 : fusionner image_save_folder/image_save_tmp (duplication ~90%) - implemente (PhotoViewer._export_bbox_annotations). Teste manuellement par Aymeric sur plusieurs images : valide, pas de regression. Les 4 etapes detaillees du plan sont terminees (1284 -> 1084 lignes)"
+    owner: "Amelia"
+    status: done
+  - epic: "refactor-boxes-tkinter-2026-07-24"
+    action: "Etape 5 (optionnelle, non detaillee) : separer rendu Canvas et etat des boites (View/Model) - decision Aymeric 2026-07-24 : chantier clos pour l'instant, gain deja suffisant (1284->1084 lignes, 0 regression sur 4 etapes). Necessiterait une nouvelle session de planification Winston avant toute implementation si repris"
+    owner: "Amelia"
+    status: backlog

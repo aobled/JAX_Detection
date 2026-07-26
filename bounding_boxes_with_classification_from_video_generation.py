@@ -60,8 +60,8 @@ BATCH_SIZE = 8                         # Batch single-pass (réduire si OOM GPU,
 # réels en perdrait silencieusement l'excédent (uniquement les pics de heatmap les moins confiants).
 MAX_BOXES = 7
 
-VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
-TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
+#VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
+#TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
 #VIDEO_PATH = "/home/aobled/Downloads/testvid2.mp4"
 #TARGET_CLASS_LIST = ["f15", "rafale", "mirage2000"]
 #VIDEO_PATH = "/home/aobled/Downloads/eaa2.mp4"
@@ -72,6 +72,8 @@ TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
 #TARGET_CLASS_LIST = ["f22"]
 #VIDEO_PATH = "/media/aobled/Elements/Python/videos/flypast over Paris for Bastille Day.mp4"
 #TARGET_CLASS_LIST = ["alphajet", "rafale", "mirage2000", "f35", "f16", "f18", "hawkeye", "a400m", "typhoon"]
+VIDEO_PATH = "/media/aobled/Elements/Python/videos/250th USA.mp4"
+TARGET_CLASS_LIST = ["f22", "b2", "b1b", "f16"]
 
 
 

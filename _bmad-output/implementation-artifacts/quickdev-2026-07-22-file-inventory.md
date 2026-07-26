@@ -2,7 +2,7 @@
 
 **Origine** : rétro `quickdev-2026-07-22` (`quickdev-retro-jax-detector-full-frame-2026-07-22.md`), item d'action #1 — "inventorier les ~56 fichiers `.py` (hors `archive/`), valider leur utilité un par un, archiver les scripts de diagnostic ponctuels obsolètes".
 
-**Portée** : 53 fichiers `.py` (56 initialement, 3 supprimés le 2026-07-22 — voir Historique), hors `archive/`, `.venv/`, `__pycache__/`, `.claude/`, `_bmad/` (tooling BMAD lui-même).
+**Portée** : 55 fichiers `.py` (56 initialement — voir Historique pour le détail des suppressions/déplacements/ajouts/restaurations), hors `archive/`, `.venv/`, `__pycache__/`, `.claude/`, `_bmad/` (tooling BMAD lui-même).
 
 **Usage** : document vivant, à reprendre au fil des sessions avec l'agent pertinent (Amelia pour l'implémentation, Winston pour les questions d'architecture/frontières de module, Claude en direct sinon). Chaque ligne porte une colonne **Statut** — mettre à jour en place au fil des décisions, pas de réécriture de l'historique. Valeurs possibles : `à trier` (défaut), `garder`, `candidat archivage`, `candidat fusion`, `archivé le AAAA-MM-JJ`.
 
@@ -29,13 +29,13 @@
 | Fichier | Fonction | Statut |
 |---|---|---|
 | `bounding_boxes_with_classification_from_images_generation.py` | Annotation d'images fixes (2 backends JAX_DETECTOR/FIGHTERJET_DETECTION) | garder |
-| `boxes_process_manual_tkinter.py` | Outil GUI Tkinter de correction manuelle de boîtes | garder |
+| `boxes_process_manual_tkinter.py` | Outil GUI Tkinter de correction manuelle de boîtes — refactorisé le 2026-07-24 (1284→1084 lignes), délègue maintenant à `boxes_manual_prediction_assistant.py`/`boxes_manual_json_store.py` | garder |
+| `boxes_manual_json_store.py` | Persistance JSON (validation/cohérence/sauvegarde), extrait de `boxes_process_manual_tkinter.py` le 2026-07-24 | garder |
+| `boxes_manual_prediction_assistant.py` | Assistant d'inférence JAX (`PredictionAssistant`), extrait de `boxes_process_manual_tkinter.py` le 2026-07-24 | garder |
 | `build_fixed_aircraft_dataset.py` | Construction d'un dataset filtré/rééquilibré depuis les JSON | à trier |
-| `convert_aeroscan_aircraft_to_json.py` | Convertisseur dataset externe AeroScan (YOLO) → JSON interne — **non déplacé avec les autres convertisseurs, à vérifier si volontaire** | à trier |
 | `duplicate_files_find.py` | Exporte en CSV les images en double (même nom) trouvées dans un dossier | garder |
+| `duplicate_image_detection_and_normalization.py` | Détection de doublons par hash perceptuel + normalisation JSON — **restauré le 2026-07-24** (supprimé par erreur le 2026-07-22, en réalité utile et non remplaçable par les outils existants) | garder |
 | `inspect_pickle.py` | Debug : inspecte les clés/structure d'un checkpoint `.pkl` | à trier |
-| `kepler_dataset_tools.py` | Préparation dataset Kepler (exoplanètes) — sans lien avec l'aviation | candidat archivage |
-| `move_excess_to_detection.py` | Déplace l'excédent d'images classification vers le dataset detection | à trier |
 | `rename_category_in_json_files.py` | Renomme une catégorie dans tous les JSON d'un répertoire | à trier |
 | `reporting_dataset_pandas.py` | Analyses pandas du dataset (tailles de boîtes, comptages) — étendu récemment | garder |
 
@@ -50,10 +50,11 @@ Cassés par le déplacement (voir Historique) — **laissés tels quels, Aymeric
 | `audit_dataset_detection.py` | Audit IoU ancien pipeline `FIGHTERJET_DETECTION` (AD-20 protégé) | candidat archivage (cassé, non prioritaire) |
 | `audit_dataset_results_pandas.py` | Lecture/synthèse texte d'un CSV d'audit déjà généré | candidat archivage (cherche son CSV au mauvais endroit, non prioritaire) |
 
-## `tools/convert/` (5) — regroupés par Aymeric le 2026-07-22
+## `tools/convert/` (6) — regroupés par Aymeric le 2026-07-22
 
 | Fichier | Fonction | Statut |
 |---|---|---|
+| `convert_aeroscan_aircraft_to_json.py` | Convertisseur dataset externe AeroScan (YOLO) → JSON interne — rejoint le groupe le 2026-07-24 | à trier |
 | `convert_HRPlanesv2_aircraft_to_json.py` | Convertisseur dataset externe HRPlanesv2 (YOLO) → JSON interne | à trier |
 | `convert_Military_Aircraft_Detection_Dataset.py` | Convertisseur Military Aircraft Detection (CSV) → organisation par classe | à trier |
 | `convert_Military_Aircraft_Detection_Dataset_Yolo.py` | Variante YOLO du convertisseur précédent | à trier |
@@ -79,7 +80,7 @@ Cassés par le déplacement (voir Historique) — **laissés tels quels, Aymeric
 | `test_rescale_boxes.py` | Test inverse exact RESCALE vs RESIZE (Story 8.4) | garder |
 | `test_single_pass_predict_fn.py` | Test bout-en-bout `build_single_pass_predict_fn` (Story 8.6) | garder |
 
-## `dataset_builder/` (4)
+## `dataset_builder/` (5)
 
 | Fichier | Fonction | Statut |
 |---|---|---|
@@ -87,6 +88,7 @@ Cassés par le déplacement (voir Historique) — **laissés tels quels, Aymeric
 | `fighterjet_classification_dataset_tools.py` | Préparation dataset classification (crops depuis annotations) | garder |
 | `fighterjet_detection_dataset_tools.py` | Préparation dataset détection ancien format (masques), AD-20 protégé | garder |
 | `jax_detector_dataset_tools.py` | Préparation dataset détection nouveau format (heatmap+taille CenterNet) | garder |
+| `kepler_dataset_tools.py` | Préparation dataset Kepler (exoplanètes) — sans lien avec l'aviation ; **correction 2026-07-24** : était listé à tort sous `tools/` dans l'inventaire initial, il vivait déjà ici | candidat archivage |
 
 ## `_bmad-output/implementation-artifacts/baseline/` (3)
 
@@ -110,3 +112,5 @@ Cassés par le déplacement (voir Historique) — **laissés tels quels, Aymeric
   - `audit_dataset_results_pandas.py` ne plante pas (aucun import projet, aucun `sys.path`) mais résout son CSV par défaut (`audit_results.csv`) via le même calcul `script_dir` — cherche maintenant dans `tools/audit/` au lieu de `tools/`, silencieusement absent plutôt qu'une erreur explicite.
   - `tools/convert/*.py` non affectés — aucun de ces 5 scripts n'importe quoi que ce soit du projet (uniquement stdlib + PIL), le déplacement est sans risque pour eux.
   - **Décision d'Aymeric (2026-07-22)** : ne pas corriger — ces 4 audits n'ont plus d'utilité réelle. Restent cassés/mal résolus intentionnellement, candidats à un archivage complet plutôt qu'à une réparation. Le correctif serait trivial si un jour l'un d'eux redevient utile (3 niveaux de `dirname()` au lieu de 2, même ligne dans les 4 fichiers).
+- 2026-07-24 : refactor de `boxes_process_manual_tkinter.py` (session dédiée, voir `refactor-boxes-process-manual-tkinter.md`) — 2 nouveaux fichiers ajoutés à l'inventaire (`boxes_manual_json_store.py`, `boxes_manual_prediction_assistant.py`). Aymeric supprime `move_excess_to_detection.py` (plus d'utilité) et déplace `convert_aeroscan_aircraft_to_json.py` vers `tools/convert/` (rejoint enfin le groupe, résout la remarque "non déplacé, à vérifier si volontaire" du 2026-07-22). **Correction au passage** : `kepler_dataset_tools.py` était listé par erreur sous `tools/` dans l'inventaire initial — vérifié via `git log`, il vivait déjà dans `dataset_builder/` avant même le début de cet inventaire, jamais déplacé depuis. Corrigé ici, pas un nouveau mouvement. 53 → 54 fichiers.
+- 2026-07-24 : **retour en arrière** sur la suppression du 2026-07-22 de `duplicate_image_detection_and_normalization.py` — Aymeric : "j'ai été trop confiant en le supprimant, c'est utile et ne peut être remplacé par les programmes existants" (contrairement à `find_and_deduplicate.py`, dont la suppression reste valide). Fichier restauré avec `git checkout a639c12^ -- tools/duplicate_image_detection_and_normalization.py` (`a639c12` = commit qui l'avait supprimé ; le fichier n'était déjà plus modifié dans l'arbre de travail, la suppression était déjà committée). Restauré dans l'index (`git status` : `A`), pas encore commité — à Aymeric de décider. 54 → 55 fichiers.

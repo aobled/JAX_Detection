@@ -314,6 +314,52 @@ def reporting_boxes_between_size_ratio(df, min_size=15, max_size=25):
     return in_range
 
 
+# Boxes incohérentes : coin haut-gauche (box_x, box_y) négatif, ou coin bas-droit
+# (box_x+box_l, box_y+box_h) dépassant les dimensions de l'image (image_width/
+# image_height) - retour utilisateur 2026-07-24, boîtes "hors image" trouvées en
+# examinant quelques cas à la main.
+def reporting_incoherent_boxes(df):
+    image_area = df['image_width'] * df['image_height']
+
+    invalid = image_area <= 0
+    n_invalid = int(invalid.sum())
+    if n_invalid:
+        print(f"⚠️  {n_invalid} boîte(s) ignorée(s) (image_width/image_height manquant ou nul)")
+
+    valid_df = df[~invalid].copy()
+    valid_df['box_x2'] = valid_df['box_x'] + valid_df['box_l']
+    valid_df['box_y2'] = valid_df['box_y'] + valid_df['box_h']
+
+    neg_x1 = valid_df['box_x'] < 0
+    neg_y1 = valid_df['box_y'] < 0
+    over_x2 = valid_df['box_x2'] > valid_df['image_width']
+    over_y2 = valid_df['box_y2'] > valid_df['image_height']
+
+    incoherent = valid_df[neg_x1 | neg_y1 | over_x2 | over_y2].copy()
+
+    def _reason(row):
+        reasons = []
+        if row['box_x'] < 0:
+            reasons.append('x1<0')
+        if row['box_y'] < 0:
+            reasons.append('y1<0')
+        if row['box_x2'] > row['image_width']:
+            reasons.append('x2>width')
+        if row['box_y2'] > row['image_height']:
+            reasons.append('y2>height')
+        return ','.join(reasons)
+
+    incoherent['reason'] = incoherent.apply(_reason, axis=1)
+
+    COLUMNS = ['image_filename', 'box_class', 'directory', 'split',
+               'box_x', 'box_y', 'box_l', 'box_h', 'box_x2', 'box_y2',
+               'image_width', 'image_height', 'reason']
+    print(f"Boxes incohérentes (hors image) : {len(incoherent)}")
+    print(incoherent[COLUMNS])
+    incoherent.to_csv("incoherent_boxes.csv", columns=COLUMNS, index=False)
+    return incoherent
+
+
 #------------------------------
 #--- Configuration download ---
 #------------------------------
@@ -346,8 +392,9 @@ if __name__ == "__main__":
     #reporting_at_least_one_box_not_in_class_list(df, class_list=CLASS_NAMES)
 
     #reporting_single_classe_images(df, target_class='f8', min_size=16)
-    #reporting_all_images_in_class_list(df, class_list=['unknown', 'alpahjet'])
+    #reporting_all_images_in_class_list(df, class_list=['unknown', 'er2','f5','b747'])
     #reporting_small_boxes(df, min_size=16)
     
     #reporting_global_boxes_size(df)
     #reporting_boxes_between_size_ratio(df, min_size=0, max_size=1)
+    #reporting_incoherent_boxes(df)

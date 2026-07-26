@@ -92,8 +92,9 @@ class SophisticatedCNN128Plus(nn.Module):
     - CBAM attention: Channel + Spatial attention combinée
     - Classification head amélioré: 2 couches au lieu d'1
     - Skip connections dans le head
-    - Paramètres: ~4M (vs 2.5M, +60%)
-    
+    - Paramètres: 1.26M mesuré (num_classes=32) — corrigé 2026-07-26, le "~4M" d'origine
+      était faux (jamais vérifié par comptage réel, voir memoire "verifier contre logs")
+
     Objectif: Dépasser 90% de validation
     Val attendue: 90-92% (vs 87% avec modèle standard)
     """
@@ -206,6 +207,129 @@ class SophisticatedCNN128Plus(nn.Module):
 def create_sophisticated_cnn_128_plus(num_classes=2, dropout_rate=0.0):
     """Crée une instance de SophisticatedCNN128Plus optimisé+ pour images 128×128"""
     return SophisticatedCNN128Plus(num_classes=num_classes, dropout_rate=dropout_rate)
+
+
+class SophisticatedCNN128Lite(nn.Module):
+    """
+    CNN sophistiqué OPTIMISÉ+ pour images 128×128 — variante LITE (vitesse d'inférence)
+
+    Même topologie que SophisticatedCNN128Plus (SeparableConv, résiduelles, CBAM,
+    tête à 2 couches), largeurs réduites aux deux points chauds identifiés (Winston,
+    2026-07-26) :
+    - Bloc 1 : 96 → 64 canaux — tourne à pleine résolution 128×128 avant tout
+      maxpool, donc le principal point chaud en FLOPs (pas en paramètres) malgré
+      son faible nombre de canaux.
+    - Bloc 4 : pic 512 → 384 canaux (×0.75, même ratio que le conv de compression
+      384/512 d'origine) — principal point chaud en paramètres (convs 1×1 à large
+      canal sur une carte déjà réduite à 16×16).
+    Blocs 0/2/3 et tête de classification inchangés par choix (portée limitée aux
+    deux blocs validés). SophisticatedCNN128Plus reste inchangé pour comparaison
+    et retour arrière.
+    """
+    num_classes: int = 2
+    dropout_rate: float = 0.0
+
+    @nn.compact
+    def __call__(self, x, training=True):
+        # Input: (B, 128, 128, C) où C=1 (grayscale) ou C=3 (RGB)
+
+        # === BLOC 0: Conv initiale (inchangé) ===
+        x = nn.Conv(64, (3, 3), padding="SAME", use_bias=False,
+                   kernel_init=nn.initializers.kaiming_normal())(x)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x)
+
+        # === BLOC 1: 64 canaux (LITE: 96 -> 64, pleine résolution 128×128) ===
+        x = SeparableConv(64, (3, 3))(x, training)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x)
+
+        residual = nn.Conv(64, (1, 1), padding="SAME", use_bias=False,
+                          kernel_init=nn.initializers.kaiming_normal())(x)
+        residual = nn.BatchNorm(use_running_average=not training)(residual)
+
+        x = SeparableConv(64, (3, 3))(x, training)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = x + residual
+        x = nn.silu(x)
+
+        # Max Pool 1: 128×128 → 64×64
+        x = nn.max_pool(x, (2, 2), strides=(2, 2))
+
+        # === BLOC 2: 128 canaux (inchangé) ===
+        x = SeparableConv(128, (3, 3))(x, training)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x)
+
+        residual = nn.Conv(128, (1, 1), padding="SAME", use_bias=False,
+                          kernel_init=nn.initializers.kaiming_normal())(x)
+        residual = nn.BatchNorm(use_running_average=not training)(residual)
+
+        x = SeparableConv(128, (3, 3))(x, training)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = x + residual
+        x = nn.silu(x)
+
+        # Max Pool 2: 64×64 → 32×32
+        x = nn.max_pool(x, (2, 2), strides=(2, 2))
+
+        # === BLOC 3: 256 canaux (inchangé) ===
+        x = SeparableConv(256, (3, 3))(x, training)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x)
+
+        x = SeparableConv(256, (3, 3))(x, training)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x)
+
+        # SE Attention
+        x = SEBlock(reduction=16)(x, training)
+
+        # Max Pool 3: 32×32 → 16×16
+        x = nn.max_pool(x, (2, 2), strides=(2, 2))
+
+        # === BLOC 4: 384 canaux (LITE: pic 512 -> 384, x0.75) ===
+        x = nn.Conv(288, (1, 1), padding="SAME", use_bias=False,
+                   kernel_init=nn.initializers.kaiming_normal())(x)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x)
+
+        x = SeparableConv(384, (3, 3))(x, training)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x)
+
+        # Residual connection
+        residual = nn.Conv(384, (1, 1), padding="SAME", use_bias=False,
+                          kernel_init=nn.initializers.kaiming_normal())(x)
+        residual = nn.BatchNorm(use_running_average=not training)(residual)
+
+        x = nn.Conv(384, (1, 1), padding="SAME", use_bias=False,
+                   kernel_init=nn.initializers.kaiming_normal())(x)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = x + residual
+        x = nn.silu(x)
+
+        # SE Attention
+        x = SEBlock(reduction=16)(x, training)
+
+        # Spatial Attention
+        x = SpatialAttention()(x, training)
+
+        # Global Average Pooling
+        x = jnp.mean(x, axis=(1, 2))  # (B, 384)
+
+        # Classification head (inchangé)
+        x = nn.LayerNorm()(x)
+        x = nn.Dense(384, use_bias=True)(x)
+        x = nn.silu(x)
+        x = nn.Dropout(self.dropout_rate, deterministic=not training)(x)
+
+        return nn.Dense(self.num_classes, use_bias=True)(x)
+
+
+def create_sophisticated_cnn_128_lite(num_classes=2, dropout_rate=0.0):
+    """Crée une instance de SophisticatedCNN128Lite (Blocs 1+4 allégés pour la vitesse d'inférence)"""
+    return SophisticatedCNN128Lite(num_classes=num_classes, dropout_rate=dropout_rate)
 
 
 class SophisticatedCNN32Plus(nn.Module):
@@ -629,6 +753,7 @@ MODELS = {
     'aircraft_detector_unet': create_aircraft_detector_unet, # Semantic Segmentation U-Net
     'aircraft_detector_centernet': create_aircraft_detector_centernet, # CenterNet (point central, anchor-free)
     'sophisticated_cnn_128_plus': create_sophisticated_cnn_128_plus,
+    'sophisticated_cnn_128_lite': create_sophisticated_cnn_128_lite,
     'sophisticated_cnn_32_plus': create_sophisticated_cnn_32_plus,
     'kepler_1d_cnn': create_kepler_1d_cnn,
 }
@@ -693,6 +818,13 @@ def get_model_info(model_name):
             'params': '~4M',
             'size': 'non mesuré ici (voir checkpoint)',
             'best_for': 'Classification fine-grained (FIGHTERJET_CLASSIFICATION).'
+        },
+        'sophisticated_cnn_128_lite': {
+            'name': 'SophisticatedCNN128Lite',
+            'description': 'Variante allégée de SophisticatedCNN128Plus (Bloc 1: 96->64 canaux, Bloc 4: pic 512->384) pour réduire la latence d\'inférence, mêmes attentions SE/Spatial.',
+            'params': '834,089 mesuré (num_classes=32)',
+            'size': '3.2 MB',
+            'best_for': 'Classification fine-grained (FIGHTERJET_CLASSIFICATION) quand la vitesse d\'inférence prime sur le dernier point d\'accuracy. Validé 2026-07-26 : 0.9451 val vs 0.9521 pour Plus à schedule égal (-0.7pt pour -34% params).'
         },
         'sophisticated_cnn_32_plus': {
             'name': 'SophisticatedCNN32Plus',

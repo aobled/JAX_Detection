@@ -161,13 +161,21 @@ class Trainer:
         # classe de bug "steps/epoch mesure une fois a la main, jamais remis a jour
         # quand le dataset ou micro_batch_size change" (3 incidents reels, voir
         # deferred-work.md). Repli sur la config si aucun chunk trouve (ex. tests).
+        # decay_epochs (optionnel) decouple la duree du decay du budget total
+        # d'epochs - certaines configs veulent une longue queue de fine-tuning a
+        # bas LR (decay court) plutot qu'un decay etale sur tout l'entrainement.
+        # Repli sur self.epochs si absent (comportement inchange pour les configs
+        # existantes). Ajoute 2026-07-26 suite a la comparaison Plus/Lite sur
+        # FIGHTERJET_CLASSIFICATION (voir deferred-work.md).
+        decay_epochs = self.config.get("decay_epochs", self.epochs)
+
         real_train_samples = _count_real_train_samples(self.config.get("output_prefix", ""))
         if real_train_samples:
             real_steps_per_epoch = real_train_samples // self.micro_batch_size
-            decay_steps = real_steps_per_epoch * self.epochs
+            decay_steps = real_steps_per_epoch * decay_epochs
             print(
                 f"📐 decay_steps calculé automatiquement : {real_train_samples} échantillons réels, "
-                f"batch={self.micro_batch_size} -> {real_steps_per_epoch} steps/epoch × {self.epochs} epochs = {decay_steps}"
+                f"batch={self.micro_batch_size} -> {real_steps_per_epoch} steps/epoch × {decay_epochs} decay_epochs = {decay_steps}"
             )
         else:
             decay_steps = self.backend_config.get("decay_steps", 6000)
@@ -457,7 +465,7 @@ class Trainer:
             if checkpoint is not None:
                 self.state, self.best_val_metric, self.patience_counter, start_epoch, rng = \
                     self.checkpoint_manager.resume_training(
-                        checkpoint, self.model, self.learning_rate, self.weight_decay
+                        checkpoint, self.model, self.schedule, self.weight_decay
                     )
                 if self.state is None:
                     print("❌ Impossible de reprendre, démarrage depuis zéro")

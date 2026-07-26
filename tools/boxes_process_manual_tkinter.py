@@ -4,6 +4,9 @@ import tkinter as tk
 from tkinter import Tk, Canvas, PhotoImage, simpledialog
 from PIL import Image, ImageTk
 
+from boxes_manual_prediction_assistant import PredictionAssistant
+import boxes_manual_json_store as json_store
+
 class ImageManager:
     def __init__(self, root_folder):
         self.root_folder = root_folder
@@ -53,6 +56,18 @@ class ImageManager:
 
         return bounding_boxes
 
+    def zoomed_to_original(self, x1, y1, x2, y2):
+        """Convertit des coordonnées zoomées (repère canvas) en coordonnées
+        originales (repère image source) - factorisé Étape 3 du refactor
+        2026-07-24 (voir refactor-boxes-process-manual-tkinter.md), remplace
+        5 duplications identiques qui vivaient dans PhotoViewer."""
+        return (
+            x1 / self.zoom_factor,
+            y1 / self.zoom_factor,
+            x2 / self.zoom_factor,
+            y2 / self.zoom_factor,
+        )
+
 class PhotoViewer:
     def __init__(self, root_folder, category_name, crop_height=0, auto_crop=False):
         self.root = Tk()
@@ -82,15 +97,10 @@ class PhotoViewer:
         self.auto_processing = False  # Mode auto-traitement actif
         self.auto_process_thread = None  # Thread pour l'auto-traitement
 
-        # Variables pour l'inférence JAX
+        # Variables pour l'inférence JAX (calcul délégué à PredictionAssistant,
+        # Étape 1 du refactor 2026-07-24 - voir refactor-boxes-process-manual-tkinter.md)
         self.show_predictions = False
-        self.jax_models_loaded = False
-        self.det_predict_fn = None
-        self.clf_predict_fn = None
-        self.det_config = None
-        self.clf_config = None
-        self.dataset_mean = None
-        self.dataset_std = None
+        self.prediction_assistant = PredictionAssistant()
         self.last_predictions = []  # Stocke les prédictions JAX pour acceptation
 
         self.drag_start_x = 0
@@ -120,85 +130,17 @@ class PhotoViewer:
 
         self.root.mainloop()
 
-    def validate_and_fix_bbox_coordinates(self, data, image_width, image_height):
-        """
-        Valide et corrige les coordonnées des boîtes pour s'assurer qu'elles sont dans les limites de l'image.
-        Retourne les données corrigées.
-        """
-        if 'annotation' in data and 'bbox' in data['annotation']:
-            bbox = data['annotation']['bbox']
-            if len(bbox) == 4:
-                x, y, w, h = bbox
-                
-                # Corriger les coordonnées négatives
-                x = max(0, x)
-                y = max(0, y)
-                
-                # Corriger les dimensions négatives
-                w = max(1, w)  # Largeur minimale de 1 pixel
-                h = max(1, h)  # Hauteur minimale de 1 pixel
-                
-                # S'assurer que la boîte ne dépasse pas les limites de l'image
-                if x + w > image_width:
-                    w = max(1, image_width - x)
-                if y + h > image_height:
-                    h = max(1, image_height - y)
-                
-                # Mettre à jour les coordonnées corrigées
-                data['annotation']['bbox'] = [x, y, w, h]
-                
-                print(f"[✓] Coordonnées corrigées : [{x:.1f}, {y:.1f}, {w:.1f}, {h:.1f}]")
-        
-        return data
-
-    def ensure_json_consistency(self, data, image_name, image_width, image_height):
-        """
-        Assure la cohérence du JSON en ajoutant les champs manquants et en validant les coordonnées.
-        """
-        # S'assurer que la section 'image' existe et est complète
-        if 'image' not in data:
-            data['image'] = {}
-        
-        data['image']['file_name'] = image_name
-        data['image']['width'] = image_width
-        data['image']['height'] = image_height
-        
-        # S'assurer que la section 'annotation' existe et est complète
-        if 'annotation' not in data:
-            data['annotation'] = {}
-        
-        data['annotation']['file_name'] = image_name
-        
-        # Ajouter bbox_id s'il n'existe pas
-        if 'bbox_id' not in data['annotation']:
-            # Essayer d'extraire l'ID du nom de fichier
-            try:
-                bbox_id = int(data.get('annotation', {}).get('bbox_id', 0))
-            except (ValueError, TypeError):
-                bbox_id = 0
-            data['annotation']['bbox_id'] = bbox_id
-        
-        # Valider et corriger les coordonnées des boîtes
-        data = self.validate_and_fix_bbox_coordinates(data, image_width, image_height)
-        
-        return data
-
     def save_json_with_consistency_check(self, file_path, data):
         """
-        Sauvegarde un JSON avec vérification de cohérence et formatage correct.
+        Sauvegarde un JSON avec vérification de cohérence et formatage correct
+        (calcul délégué à boxes_manual_json_store, Étape 2 du refactor
+        2026-07-24 - voir refactor-boxes-process-manual-tkinter.md).
         """
-        # Obtenir les informations de l'image courante
         current_image_name = self.image_manager.image_list[self.image_manager.current_image_index]
         image_width, image_height = self.original_image.size
-        
-        # Assurer la cohérence du JSON
-        data = self.ensure_json_consistency(data, current_image_name, image_width, image_height)
-        
-        # Sauvegarder avec formatage correct
-        json_string = json.dumps(data, indent=4, ensure_ascii=False, separators=(',', ': '))
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(json_string)
-            f.write('\n')  # Ajouter un retour à la ligne final
+        json_store.save_json_with_consistency_check(
+            file_path, data, current_image_name, image_width, image_height
+        )
 
     def bind_events(self):
         #self.root.bind("<KeyRelease-n>", self.show_next_image)
@@ -660,16 +602,17 @@ class PhotoViewer:
                     data = json.load(f)
                 
                 # Convertir les coordonnées zoomées en coordonnées originales
-                x1_original = x1_zoomed / self.image_manager.zoom_factor
-                y1_original = y1_zoomed / self.image_manager.zoom_factor
-                width_original = (x2_zoomed - x1_zoomed) / self.image_manager.zoom_factor
-                height_original = (y2_zoomed - y1_zoomed) / self.image_manager.zoom_factor
-                
+                x1_original, y1_original, x2_original, y2_original = self.image_manager.zoomed_to_original(
+                    x1_zoomed, y1_zoomed, x2_zoomed, y2_zoomed
+                )
+                width_original = x2_original - x1_original
+                height_original = y2_original - y1_original
+
                 data['annotation']['bbox'] = [x1_original, y1_original, width_original, height_original]
-                
+
                 # Sauvegarder avec contrôle de cohérence
                 self.save_json_with_consistency_check(bbox_file_path, data)
-                
+
                 self.draw_bounding_boxes()
 
     def fill_box_full_width(self):
@@ -706,31 +649,31 @@ class PhotoViewer:
                     data = json.load(f)
                 
                 # Convertir les coordonnées zoomées en coordonnées originales
-                x1_original = x1_zoomed / self.image_manager.zoom_factor
-                y1_original = y1_zoomed / self.image_manager.zoom_factor
-                width_original = (x2_zoomed - x1_zoomed) / self.image_manager.zoom_factor
-                height_original = (y2_zoomed - y1_zoomed) / self.image_manager.zoom_factor
-                
+                x1_original, y1_original, x2_original, y2_original = self.image_manager.zoomed_to_original(
+                    x1_zoomed, y1_zoomed, x2_zoomed, y2_zoomed
+                )
+                width_original = x2_original - x1_original
+                height_original = y2_original - y1_original
+
                 data['annotation']['bbox'] = [x1_original, y1_original, width_original, height_original]
-                
+
                 # Sauvegarder avec contrôle de cohérence
                 self.save_json_with_consistency_check(bbox_file_path, data)
-                
+
                 self.draw_bounding_boxes()
 
-    def image_save_folder(self):
-        # Croper automatiquement si activé
-        if self.auto_crop and self.crop_height > 0:
-            print("🔄 AUTO_CROP activé - Crop automatique avant sauvegarde")
-            self.crop_bottom_zone()
-        
-        origin_image_path = self.image_manager.get_image_path()
+    def _export_bbox_annotations(self, target_dir, remove_source, handle_deleted):
+        """Coeur partage entre image_save_folder (deplace + navigue) et
+        image_save_tmp (sauvegarde sur place) - Etape 4 du refactor 2026-07-24
+        (voir refactor-boxes-process-manual-tkinter.md).
+
+        target_dir : dossier de destination pour les JSON sauvegardes.
+        remove_source : si True, le fichier JSON source est retire apres
+        l'ecriture vers target_dir (equivalent a un deplacement).
+        handle_deleted : si True, les boites marquees supprimees voient leur
+        fichier JSON source retire ; si False, elles sont laissees intactes.
+        """
         base_name = os.path.splitext(self.image_manager.image_list[self.image_manager.current_image_index])[0]
-
-        target_image_path = os.path.join(self.image_manager.root_folder, self.image_manager.save_folder, os.path.basename(origin_image_path))
-        os.rename(origin_image_path, target_image_path)
-
-        bbox_files = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name) and f.endswith('.json')]
 
         # Créer une correspondance entre les noms de fichiers et leurs coordonnées
         bbox_coords_map = {}
@@ -738,42 +681,56 @@ class PhotoViewer:
             if idx < len(self.bbox_coords):
                 bbox_coords_map[bbox_file] = self.bbox_coords[idx]
 
-        for bbox_file in bbox_files:
-            if bbox_file not in self.deleted_bboxes:
-                bbox_file_path = os.path.join(self.image_manager.root_folder, bbox_file)
+        bbox_files = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name) and f.endswith('.json')]
 
+        for bbox_file in bbox_files:
+            bbox_file_path = os.path.join(self.image_manager.root_folder, bbox_file)
+
+            if bbox_file not in self.deleted_bboxes:
                 with open(bbox_file_path, 'r') as f:
                     data = json.load(f)
 
                 # Utiliser les coordonnées mises à jour si disponibles
                 if bbox_file in bbox_coords_map:
                     x1, y1, x2, y2 = bbox_coords_map[bbox_file]
-                    x1_original = x1 / self.image_manager.zoom_factor
-                    y1_original = y1 / self.image_manager.zoom_factor
-                    x2_original = x2 / self.image_manager.zoom_factor
-                    y2_original = y2 / self.image_manager.zoom_factor
+                    x1_original, y1_original, x2_original, y2_original = self.image_manager.zoomed_to_original(
+                        x1, y1, x2, y2
+                    )
 
                     data['annotation']['bbox'] = [x1_original, y1_original, x2_original - x1_original, y2_original - y1_original]
 
-                target_bbox_path = os.path.join(self.image_manager.root_folder, self.image_manager.save_folder, bbox_file)
+                target_bbox_path = os.path.join(target_dir, bbox_file)
                 # Sauvegarder avec contrôle de cohérence
                 self.save_json_with_consistency_check(target_bbox_path, data)
 
+                if remove_source:
+                    os.remove(bbox_file_path)
+            elif handle_deleted:
                 os.remove(bbox_file_path)
-            else:
-                bbox_file_path = os.path.join(self.image_manager.root_folder, bbox_file)
-                os.remove(bbox_file_path)
+
+    def image_save_folder(self):
+        # Croper automatiquement si activé
+        if self.auto_crop and self.crop_height > 0:
+            print("🔄 AUTO_CROP activé - Crop automatique avant sauvegarde")
+            self.crop_bottom_zone()
+
+        origin_image_path = self.image_manager.get_image_path()
+        target_image_path = os.path.join(self.image_manager.root_folder, self.image_manager.save_folder, os.path.basename(origin_image_path))
+        os.rename(origin_image_path, target_image_path)
+
+        save_dir = os.path.join(self.image_manager.root_folder, self.image_manager.save_folder)
+        self._export_bbox_annotations(target_dir=save_dir, remove_source=True, handle_deleted=True)
 
         # Seulement passer à l'image suivante si on n'est pas en auto-traitement
         # (pour éviter les conflits de thread)
         if not self.auto_processing:
             # Recharger la liste des images après sauvegarde (mode manuel)
             self.image_manager.reload_images()
-            
+
             # Ajuster l'index si nécessaire (si on était sur la dernière image)
             if self.image_manager.current_image_index >= len(self.image_manager.image_list):
                 self.image_manager.current_image_index = len(self.image_manager.image_list) - 1
-            
+
             self.show_next_image(None)
         else:
             # En auto-traitement, ne pas recharger la liste pour éviter les problèmes d'index
@@ -782,36 +739,7 @@ class PhotoViewer:
 
     def image_save_tmp(self):
         """Sauvegarde les boîtes de l'image courante sans déplacer l'image ni passer à la suivante."""
-        origin_image_path = self.image_manager.get_image_path()
-        base_name = os.path.splitext(self.image_manager.image_list[self.image_manager.current_image_index])[0]
-
-        # Créer une correspondance entre les noms de fichiers et leurs coordonnées
-        bbox_coords_map = {}
-        for idx, bbox_file in enumerate(self.bbox_files):
-            if idx < len(self.bbox_coords):
-                bbox_coords_map[bbox_file] = self.bbox_coords[idx]
-
-        bbox_files = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name) and f.endswith('.json')]
-
-        for bbox_file in bbox_files:
-            if bbox_file not in self.deleted_bboxes:
-                bbox_file_path = os.path.join(self.image_manager.root_folder, bbox_file)
-
-                with open(bbox_file_path, 'r') as f:
-                    data = json.load(f)
-
-                # Utiliser les coordonnées mises à jour si disponibles
-                if bbox_file in bbox_coords_map:
-                    x1, y1, x2, y2 = bbox_coords_map[bbox_file]
-                    x1_original = x1 / self.image_manager.zoom_factor
-                    y1_original = y1 / self.image_manager.zoom_factor
-                    x2_original = x2 / self.image_manager.zoom_factor
-                    y2_original = y2 / self.image_manager.zoom_factor
-
-                    data['annotation']['bbox'] = [x1_original, y1_original, x2_original - x1_original, y2_original - y1_original]
-
-                # Sauvegarder avec contrôle de cohérence
-                self.save_json_with_consistency_check(bbox_file_path, data)
+        self._export_bbox_annotations(target_dir=self.image_manager.root_folder, remove_source=False, handle_deleted=False)
 
     def draw_crop_zone(self):
         """Dessine un carré vert représentant la zone qui sera croppée"""
@@ -872,9 +800,11 @@ class PhotoViewer:
             crop_box = (0, 0, original_width, new_height)
             cropped_image = self.original_image.crop(crop_box)
             
-            # Sauvegarder l'image croppée
+            # Sauvegarder l'image croppée. quality=95/subsampling=0 : minimise la perte
+            # JPEG de CETTE passe de compression (bonus mineur - voir commentaire plus bas
+            # pour le vrai correctif contre le cumul de pertes).
             image_path = self.image_manager.get_image_path()
-            cropped_image.save(image_path)
+            cropped_image.save(image_path, quality=95, subsampling=0)
             print(f"Image croppée: {original_width}x{original_height} → {original_width}x{new_height}")
             
             # 2. Mettre à jour tous les JSON associés
@@ -902,9 +832,22 @@ class PhotoViewer:
                     print(f"Erreur lors de la mise à jour de {bbox_file}: {e}")
             
             print(f"Mis à jour {updated_files} fichiers JSON")
-            
-            # 3. Recharger l'image et redessiner
-            self.load_image()
+
+            # 3. Rafraîchir l'affichage depuis l'image déjà en mémoire (cropped_image) -
+            # SURTOUT PAS self.load_image(), qui rechargerait depuis le disque le fichier
+            # qu'on vient de sauvegarder (donc déjà recompressé). En cas d'appuis répétés
+            # sur 'x' (usage normal - crop_height=4px, plusieurs appuis pour ajuster), un
+            # rechargement composerait la perte JPEG de chaque passe sur la précédente -
+            # bug réel identifié le 2026-07-24 (archive/e8ca95356acba932.jpg, artefacts en
+            # carrés sur le ciel après appui prolongé). Repartir de cropped_image (jamais
+            # ré-encodée) élimine tout cumul, quel que soit le nombre d'appuis - vérifié par
+            # simulation (100 cycles : écart nul vs une compression unique).
+            self.original_image = cropped_image
+            self.image = self.original_image.copy()
+            self.tk_image = ImageTk.PhotoImage(self.image)
+            self.canvas.config(width=self.image.width, height=self.image.height)
+            self.canvas.create_image(0, 0, anchor="nw", image=self.tk_image)
+            self.root.title(f"{image_path} (Zoom: {round(self.image_manager.zoom_factor, 3)})")
             self.draw_bounding_boxes()
             self.draw_crop_zone()
             
@@ -1047,8 +990,8 @@ class PhotoViewer:
 
     def toggle_predictions(self):
         if not self.show_predictions:
-            if not self.jax_models_loaded:
-                self.load_jax_models()
+            if not self.prediction_assistant.loaded:
+                self.prediction_assistant.load_models()
             self.show_predictions = True
             self.generate_and_show_predictions()
         else:
@@ -1058,164 +1001,36 @@ class PhotoViewer:
             self.draw_crop_zone()
             self.update_window_color_from_current_image()
 
-    def load_jax_models(self):
-        print("🏗️ Chargement des modèles JAX en arrière-plan (Lazy Loading)...")
-        import sys
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        
-        from dataset_configs import get_dataset_config
-        from inference_utils import (
-            load_detection_model, load_jax_model, build_predict_fn, build_clf_predict_fn
-        )
-
-        self.clf_config = get_dataset_config("FIGHTERJET_CLASSIFICATION")
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        parent_dir = os.path.dirname(script_dir)
-        det_path = os.path.join(parent_dir, "best_model_detection.pkl")
-        clf_path = os.path.join(parent_dir, "best_model.pkl")
-
-        det_model, det_vars, self.det_config = load_detection_model(det_path)
-        clf_model, clf_vars, self.dataset_mean, self.dataset_std = load_jax_model(clf_path, self.clf_config)
-
-        print("⚡ Compilation JIT...")
-        self.det_predict_fn = build_predict_fn(det_model, det_vars)
-        self.clf_predict_fn = build_clf_predict_fn(clf_model, clf_vars)
-        
-        self.jax_models_loaded = True
-        print("✅ Modèles JAX prêts !")
-
     def generate_and_show_predictions(self):
-        import cv2
-        import numpy as np
-        from PIL import Image, ImageTk
-        import sys
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from inference_utils import (
-            decode_segmentation_and_detect_batch, predict_crops_batch, get_iou
-        )
-        
-        print("🔍 Analyse de l'image en cours...")
-        cv_img = cv2.cvtColor(np.array(self.original_image), cv2.COLOR_RGB2BGR)
-        
-        batch_results = decode_segmentation_and_detect_batch(
-            [cv_img], 
-            self.det_predict_fn, self.det_config, 
-            conf_threshold=0.3,
-            box_aera_min=25
-        )
-        
-        pred_boxes, target_heatmap_lr, _target_binary_mask = batch_results[0]
-        
-        crop_imgs = []
-        valid_boxes = []
-        img_h, img_w = cv_img.shape[:2]
-        
-        for box in pred_boxes:
-            x1, y1, x2, y2, conf = box
-            
-            x_start = max(0, int(x1))
-            y_start = max(0, int(y1))
-            x_end = min(img_w, int(x2))
-            y_end = min(img_h, int(y2))
-            
-            if x_end > x_start and y_end > y_start:
-                crop = cv_img[y_start:y_end, x_start:x_end]
-                if crop.size > 0:
-                    crop_imgs.append(crop)
-                    valid_boxes.append([conf, x_start, y_start, x_end - x_start, y_end - y_start])
-                
-        pred_boxes = valid_boxes
-            
-        class_predictions = predict_crops_batch(
-            crop_imgs, self.clf_predict_fn, self.dataset_mean, self.dataset_std, self.clf_config
-        )
-        
-        # --- Construction de la heatmap couleur (upscale basse résolution -> HD) ---
-        target_heatmap_hd = cv2.resize(
-            target_heatmap_lr, (img_w, img_h), interpolation=cv2.INTER_LINEAR
-        )
-        heatmap_uint8 = np.clip(target_heatmap_hd * 255, 0, 255).astype(np.uint8)
-        
-        heatmap_color = cv2.applyColorMap(
-            heatmap_uint8,
-            cv2.COLORMAP_JET
-        )
-        
-        # Supprime les faibles activations visuellement
-        mask = heatmap_uint8 > 40
-        heatmap_color[~mask] = 0
-
-        # --- Overlay transparent ---
-        alpha = 0.45  # transparence heatmap
-        
-        result_img = cv2.addWeighted(
-            cv_img,
-            1.0,
-            heatmap_color,
-            alpha,
-            0
-        )
-        
-        predicted_bboxes_x1y1x2y2 = []
-        self.last_predictions = []
-        
-        for i, box in enumerate(pred_boxes):
-            conf, x, y, w, h = box
-            x, y, w, h = int(x), int(y), int(w), int(h)
-            pred_class, pred_conf = class_predictions[i]
-            
-            color = (0, 255, 0)
-            cv2.rectangle(result_img, (x, y), (x+w, y+h), color, 2)
-            label = f"{pred_class} ({100*pred_conf:.0f}%)"
-            cv2.putText(result_img, label, (x, max(0, y-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-            
-            predicted_bboxes_x1y1x2y2.append([x, y, x+w, y+h])
-            self.last_predictions.append({"bbox": [x, y, w, h], "class_name": pred_class})
-            
-        # Calcul de l'IoU
+        # Calcul de l'IoU : boîtes vraies dézoomées (repère original), passées à
+        # PredictionAssistant qui les compare aux boîtes prédites.
         true_boxes_x1y1x2y2 = []
         for (x1_z, y1_z, x2_z, y2_z) in self.bbox_coords:
-            x1 = x1_z / self.image_manager.zoom_factor
-            y1 = y1_z / self.image_manager.zoom_factor
-            x2 = x2_z / self.image_manager.zoom_factor
-            y2 = y2_z / self.image_manager.zoom_factor
+            x1, y1, x2, y2 = self.image_manager.zoomed_to_original(x1_z, y1_z, x2_z, y2_z)
             true_boxes_x1y1x2y2.append([x1, y1, x2, y2])
-            
-        total_iou = 0.0
-        matches = 0
-        
-        for true_box in true_boxes_x1y1x2y2:
-            best_iou = 0.0
-            for pred_box in predicted_bboxes_x1y1x2y2:
-                iou = get_iou(true_box, pred_box)
-                if iou > best_iou:
-                    best_iou = iou
-            total_iou += best_iou
-            matches += 1
-            
-        avg_iou = (total_iou / matches * 100) if matches > 0 else 0.0
-        
+
+        result_image, avg_iou, predictions = self.prediction_assistant.predict(
+            self.original_image, true_boxes_x1y1x2y2
+        )
+        self.last_predictions = predictions
+
         new_width = int(self.original_image.width * self.image_manager.zoom_factor)
         new_height = int(self.original_image.height * self.image_manager.zoom_factor)
-        
-        result_img_rgb = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
-        result_pil = Image.fromarray(result_img_rgb)
-        
-        self.image = result_pil.resize((new_width, new_height))
+
+        self.image = result_image.resize((new_width, new_height))
         self.tk_image = ImageTk.PhotoImage(self.image)
         self.canvas.config(width=new_width, height=new_height)
         self.canvas.create_image(0, 0, anchor="nw", image=self.tk_image)
-        
+
         self.canvas.delete("bbox")
-        
+
         current_title = self.root.title()
         if " | " in current_title:
             base_title = current_title.split(" | ")[0]
         else:
             base_title = current_title
-        
+
         self.root.title(f"{base_title} | [PREDICTION IA ACTVÉE] | IoU Moyen: {avg_iou:.2f}%")
-        print(f"✅ Prédiction terminée. IoU: {avg_iou:.2f}%")
 
     def accept_predictions(self):
         if not self.show_predictions or not self.last_predictions:
@@ -1278,7 +1093,7 @@ CROP_HEIGHT = 4  # Hauteur en pixels à croper (0 = désactivé)
 AUTO_CROP = False  # Croper automatiquement lors de la sauvegarde (touche 's')
 CATEGORY_NAME = 'unknown'
 if __name__ == "__main__":
-    root_folder = "/home/aobled/Downloads/tmp_test/harrier"
+    root_folder = "/home/aobled/Downloads/tmp_multi/f22"
     viewer = PhotoViewer(root_folder, category_name=CATEGORY_NAME, crop_height=CROP_HEIGHT, auto_crop=AUTO_CROP)
 
 

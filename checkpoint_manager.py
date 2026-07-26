@@ -90,34 +90,31 @@ class CheckpointManager:
             print(f"⚠️  Aucun checkpoint valide trouvé: {self.checkpoint_path} ({e})")
             return None
     
-    def resume_training(self, checkpoint, model, learning_rate: float, weight_decay: float):
+    def resume_training(self, checkpoint, model, schedule, weight_decay: float):
         """
         Reprend l'entraînement depuis un checkpoint
-        
+
         Args:
             checkpoint: Dictionnaire du checkpoint
             model: Modèle JAX
-            learning_rate: Learning rate
+            schedule: Schedule de learning rate (le même objet que celui calculé
+                dans Trainer.create_train_state - corrige 2026-07-26 un schedule
+                distinct code en dur ici (warmup=500/decay=5000) qui pilotait
+                silencieusement l'optimiseur restauré, desynchronise du LR affiche
+                dans les logs (self.schedule cote Trainer)
             weight_decay: Weight decay
-        
+
         Returns:
             tuple: (state, best_val_metric, patience_counter, epoch, rng) ou (None, None, None, None, None)
         """
         if checkpoint is None:
             return None, None, None, None, None
-        
+
         # Recréer l'état d'entraînement
         rng = checkpoint['training_state']['rng']
         rng, init_rng = jax.random.split(rng)
-        
-        # Recréer l'optimiseur
-        schedule = optax.warmup_cosine_decay_schedule(
-            init_value=0.0,
-            peak_value=learning_rate,
-            warmup_steps=500,
-            decay_steps=5000,
-            end_value=1e-6
-        )
+
+        # Recréer l'optimiseur avec le même schedule que celui utilisé avant l'interruption
         tx = optax.adamw(schedule, weight_decay=weight_decay)
         
         # Import TrainStateWithBatchStats
