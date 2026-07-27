@@ -98,7 +98,12 @@ class Trainer:
         
         # Image configuration
         self.grayscale = config.get("grayscale", False)
-        self.num_channels = 1 if self.grayscale else 3
+        # "num_channels" (2026-07-27, Story 9.3, écart explicite à AC2 - arbitré par
+        # Aymeric) : le domaine échecs a 29 canaux d'entrée (NUM_PLANES,
+        # chess_target_encoding.py), qui ne rentrent pas dans l'hypothèse binaire
+        # grayscale/RGB (1/3). Rétrocompatible : aucune config existante ne définit
+        # "num_channels", donc leur comportement (fallback grayscale/RGB) est inchangé.
+        self.num_channels = config.get("num_channels", 1 if self.grayscale else 3)
         
         # État d'entraînement
         self.state = None

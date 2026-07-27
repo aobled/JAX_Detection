@@ -9,6 +9,8 @@ inputDocuments:
   - _bmad-output/planning-artifacts/prds/prd-JAX_Detection-2026-07-14/prd.md
   - _bmad-output/specs/spec-jax-single-pass/SPEC.md
   - _bmad-output/planning-artifacts/architecture/architecture-jax_supervised_training-2026-07-15/ARCHITECTURE-SPINE.md
+  - _bmad-output/planning-artifacts/prds/prd-jax_supervised_training-2026-07-27/prd.md
+  - _bmad-output/planning-artifacts/architecture/architecture-chess-2026-07-27/ARCHITECTURE-SPINE.md
 ---
 
 # Refactor jax_supervised_training — Epic Breakdown
@@ -1124,3 +1126,172 @@ So that FR3 et AD-20/NFR3 soient prouvés par exécution réelle.
 **Given** les Stories 8.1 à 8.8 complétées
 **When** cette story conclut l'Epic 8
 **Then** FR2, FR3, FR4 sont tous confirmés couverts et prouvés par exécution
+
+## Requirements Inventory — Epic Échecs (preuve de généralisation policy/value)
+
+Source : `_bmad-output/planning-artifacts/prds/prd-jax_supervised_training-2026-07-27/prd.md` (status: final, issu du brief `brief-jax_supervised_training-2026-07-27`) et `_bmad-output/planning-artifacts/architecture/architecture-chess-2026-07-27/ARCHITECTURE-SPINE.md` (AD-21 à AD-25, hérite AD-3/AD-14/AD-17/AD-18 de la spine JAX Single-Pass 2026-07-15 comme contraintes read-only). Initiative distincte des Epics 1-8 — brancher un domaine échecs (sortie policy+value, ni classification ni détection) sur `Trainer`/`TaskStrategy`, comme test de généricité réelle du pattern, en parallèle/backlog du travail avion en cours, sans aucun impact sur `JAX_DETECTOR`.
+
+### Functional Requirements
+
+FR1 : Le pipeline construit un dataset de positions à partir d'archives PGN par joueur (pgnmentor.com/files.html#players), en rejouant chaque partie coup par coup via `python-chess` — une partie de N demi-coups produit N exemples.
+FR2 : Chaque position est encodée en planes façon AlphaZero (pièces, trait, roques, répétition, coups légaux), enrichies de l'historique des 5 derniers coups des deux joueurs. Fenêtre fixe à 5 créneaux : une position de début de partie (moins de 5 demi-coups joués) n'est pas exclue du dataset — ses créneaux d'historique manquants sont remplis à zéro (padding), pour que le modèle apprenne aussi les ouvertures classiques.
+FR3 : La policy head est entraînée à imiter le coup réellement joué, Blancs et Noirs confondus, sans filtrage par résultat de partie. La value head porte le résultat final de la partie du point de vue du joueur au trait (+1/0/-1, nulles = 0).
+FR4 : Une nouvelle `TaskStrategy` gère l'entraînement conjoint de la tête policy et de la tête value (deux losses), sur le modèle du pattern Strategy existant.
+FR5 : Un nouveau modèle implémente l'architecture envisagée : CNN 8×8 (convolutions + blocs résiduels) → bottleneck de tokens appris (Perceiver/TokenLearner-style) → auto-attention entre tokens → tête policy + tête value.
+FR6 : Le domaine échecs est intégré sans modifier `Trainer` au-delà de ce que sa généricité actuelle permet déjà (nouveaux modèles/loss/évaluation acceptés ; changement structurel du cœur générique non accepté sans être documenté comme écart).
+FR7 : Une story dédiée valide, par exécution réelle (pas par lecture de code), que `JAX_DETECTOR` produit un comportement identique avant et après l'intégration du domaine échecs.
+
+### NonFunctional Requirements
+
+NFR1 — Non-régression `JAX_DETECTOR` : contrainte dure, non négociable. `JAX_DETECTOR` continue de fonctionner sans aucun impact de cette epic. Validé par exécution réelle (FR7), pas par lecture de code.
+NFR2 — Aucune dépendance à un moteur d'échecs externe pour la génération de labels : ni pour la policy, ni pour la value, y compris en repli en cas de value head bruitée.
+NFR3 — Pas de complexification inutile du pipeline générique : `Trainer`/`TaskStrategy` absorbent le domaine échecs par les mêmes points d'extension que les domaines précédents.
+
+### Additional Requirements (Architecture)
+
+- **AD-21** : Non-régression — `JAX_DETECTOR` et toute sa chaîne restent utilisables de bout en bout sans modification fonctionnelle, pendant et après cette epic. Validé par diff à une baseline capturée avant l'epic. Précédent direct d'AD-20 (parent), qui protège l'ancien pipeline segmentation mais pas `JAX_DETECTOR`.
+- **AD-22** : Policy à espace de sortie fixe façon AlphaZero, sans masquage des coups illégaux cette epic (repoussé au futur projet d'intégration `chess_game.py`). Taille de l'espace à source unique : constante `NUM_MOVES` dans `chess_target_encoding.py`, reprise par `num_classes` de l'entrée `CHESS` (`dataset_configs.py`) — réutilise la plomberie `model_kwargs` existante (`main.py:110`), aucun nouveau kwarg.
+- **AD-23** : Bottleneck par tokens à requêtes apprises (Perceiver/TokenLearner-style), pas par pooling par groupe de canaux. Auto-attention standard entre les tokens (pas de biais géométrique cette epic, différé).
+- **AD-24** : `TaskStrategy` échecs — loss composite zero-touch sur `Trainer` (`policy_weight*policy_loss + value_weight*value_loss`, exactement sur le modèle de `compute_centernet_loss`). Détail policy/value visible uniquement en fin d'entraînement via `generate_reports()`, jamais dans le log epoch-par-epoch. `primary_metric_name = PolicyAccuracy` (top-1), gate la sauvegarde du best model. Value head = sortie scalaire (`Dense(1)`+`tanh`), loss de régression (MSE).
+- **AD-25** : Format d'exemple dataset minimal (position + policy target + value target uniquement, aucune métadonnée cadence/ECO). Aucune dépendance à un moteur d'échecs externe (NFR2). Le producteur (`dataset_builder/chess_pgn_dataset_tools.py`) calcule et fige le signe de la value une seule fois ; le consommateur ne le re-dérive jamais.
+- **Hérité (read-only)** : AD-3 (fallback checkpoint 3 niveaux), AD-14 (entraînement toujours modulaire), AD-17 (nouveau `task_type="chess_policy_value"` = nouvelle classe `TaskStrategy` + nouvelle classe chargeur dédiées, référencé identiquement aux 2 points de dispatch réels `main.py`/`data_management.py`), AD-18 (module d'échange partagé unique `chess_target_encoding.py`, miroir de `detection_target_encoding.py`).
+- **Naming** : `task_type="chess_policy_value"`, `model_name="chess_cnn_attention_policy_value"` (registry `model_library.MODELS`), entrée `dataset_configs.py`=`CHESS`.
+- **Stack** : aucune nouvelle dépendance externe — `flax.linen` 0.10.7 (déjà présent, fournit `nn.MultiHeadDotProductAttention`) et `chess` (python-chess) 1.11.2 (déjà présent, déjà utilisé par `chess/chess_game.py`).
+
+### UX Design Requirements
+
+N/A — aucun contrat UX applicable. Projet solo, un seul opérateur, aucune interface modifiée (l'intégration dans `chess/chess_game.py` est un Non-Goal explicite de cette epic).
+
+### FR Coverage Map
+
+FR1: Epic 9 — Extraction du dataset depuis les archives PGN
+FR2: Epic 9 — Encodage de l'input (planes AlphaZero + historique)
+FR3: Epic 9 — Construction des labels policy et value
+FR4: Epic 9 — Nouvelle `TaskStrategy` à double tête
+FR5: Epic 9 — Nouveau modèle échecs (CNN + bottleneck tokens + attention)
+FR6: Epic 9 — Intégration sans modification structurelle de `Trainer`
+FR7: Epic 9 — Validation de non-régression `JAX_DETECTOR` par exécution
+
+## Epic List
+
+### Epic 9: Généralisation du pipeline via un domaine échecs (policy+value)
+
+Un nouveau domaine (échecs) est branché sur `Trainer`/`TaskStrategy` — nouveau modèle, nouveau dataset, nouvelle `TaskStrategy` à double tête — sans modification structurelle de `Trainer` et sans aucun impact sur `JAX_DETECTOR`. Standalone : preuve de généricité du pattern, ne dépend d'aucun epic futur.
+**FRs covered:** FR1, FR2, FR3, FR4, FR5, FR6, FR7
+**Note d'implémentation :** séquence de stories dictée par le Structural Seed du spine — (1) module d'échange partagé `chess_target_encoding.py` + builder dataset `dataset_builder/chess_pgn_dataset_tools.py` (FR1-3, AD-18/AD-25, story "auteur unique" sur le même principe que la Story 0 des Epics 1/7) ; (2) nouveau modèle `chess_cnn_attention_policy_value` (FR5, AD-22/AD-23) ; (3) `ChessPolicyValueStrategy` + loss composite (FR4, FR6, AD-24) ; (4) validation de non-régression `JAX_DETECTOR` par exécution, story de clôture (FR7, AD-21).
+
+## Epic 9: Généralisation du pipeline via un domaine échecs (policy+value)
+
+Un nouveau domaine (échecs) est branché sur `Trainer`/`TaskStrategy` — nouveau modèle, nouveau dataset, nouvelle `TaskStrategy` à double tête — sans modification structurelle de `Trainer` et sans aucun impact sur `JAX_DETECTOR`. Standalone : preuve de généricité du pattern, ne dépend d'aucun epic futur. **FRs covered:** FR1, FR2, FR3, FR4, FR5, FR6, FR7
+
+### Story 9.1: Module d'échange partagé + builder dataset PGN
+
+As a mainteneur du pipeline,
+I want un module `chess_target_encoding.py` définissant le schéma position/policy/value et un outil `dataset_builder/chess_pgn_dataset_tools.py` qui construit le dataset depuis des archives PGN,
+So that le domaine échecs dispose d'une source unique de vérité pour le format d'échange (AD-18) avant que tout consommateur ne soit développé.
+
+**Acceptance Criteria:**
+
+**Given** des archives PGN pgnmentor (par joueur)
+**When** `chess_pgn_dataset_tools.py` les traite via `python-chess`
+**Then** chaque partie de N demi-coups produit N exemples (position, policy target, value target), y compris les positions de début de partie (aucun filtrage par ancienneté d'historique) — FR1
+
+**Given** une position à un demi-coup donné
+**When** elle est encodée par `chess_target_encoding.py`
+**Then** elle produit des planes façon AlphaZero + historique des 5 derniers coups des deux joueurs — FR2
+
+**Given** une position de début de partie avec moins de 5 demi-coups joués
+**When** ses créneaux d'historique manquants sont encodés
+**Then** ils sont remplis à zéro (padding), jamais exclus ni remplacés par une répétition de la position de départ — FR2 (précision Aymeric 2026-07-27)
+
+**Given** un coup joué à une position
+**When** la policy target est construite
+**Then** c'est l'index du coup réellement joué (Blancs et Noirs confondus), sans filtrage par résultat de partie — FR3
+
+**Given** le résultat final d'une partie
+**When** la value target est construite pour une position donnée
+**Then** c'est +1/0/-1 du point de vue du joueur au trait à cette position, nulles = 0, calculé et figé une seule fois par le producteur — AD-25
+
+**Given** AD-25/NFR2
+**When** le dataset est généré
+**Then** aucun moteur d'échecs externe (Stockfish ou autre) n'est utilisé — seul `python-chess` sert à la légalité/au rejeu
+
+**Given** AD-18/AD-22
+**When** `chess_target_encoding.py` est créé
+**Then** il expose une constante nommée unique `NUM_MOVES` (taille de l'espace policy), importée par tout consommateur futur — jamais un littéral dupliqué
+
+### Story 9.2: Nouveau modèle échecs
+
+As a mainteneur du pipeline de modèles,
+I want un nouveau modèle `chess_cnn_attention_policy_value` enregistré dans `model_library.py`,
+So that le domaine échecs dispose d'une architecture CNN+bottleneck de tokens appris+attention+têtes policy/value, dimensionnée par le schéma d'échange de la Story 9.1.
+
+**Acceptance Criteria:**
+
+**Given** `chess_target_encoding.py` (Story 9.1) et sa constante `NUM_MOVES`
+**When** le modèle `chess_cnn_attention_policy_value` est implémenté
+**Then** sa tête policy produit un vecteur de taille `NUM_MOVES` (source unique, pas un littéral dupliqué) — AD-22
+
+**Given** l'architecture envisagée
+**When** le modèle est construit
+**Then** il enchaîne CNN 8×8 (convolutions + blocs résiduels) → bottleneck de K tokens par requêtes apprises (cross-attention, Perceiver/TokenLearner-style) → auto-attention standard entre les tokens (sans biais géométrique) → tête policy + tête value — FR5, AD-23
+
+**Given** la tête value
+**When** elle est implémentée
+**Then** elle produit un scalaire (`Dense(1)`+`tanh`, borne [-1, 1]) — AD-24
+
+**Given** `model_library.get_model()`
+**When** `chess_cnn_attention_policy_value` est appelé avec les `model_kwargs` génériques (`num_classes`, `dropout_rate`)
+**Then** il s'instancie sans modification de `get_model()` ni de `main.py` au-delà du dispatch déjà prévu
+
+### Story 9.3: `TaskStrategy` échecs, loss composite et intégration au pipeline
+
+As a mainteneur du pipeline d'entraînement,
+I want une nouvelle `ChessPolicyValueStrategy` et une entrée `CHESS`/`task_type="chess_policy_value"` dispatchée dans `main.py`/`data_management.py`,
+So that le domaine échecs s'entraîne de bout en bout via `Trainer`, sans modification structurelle de celui-ci.
+
+**Acceptance Criteria:**
+
+**Given** le modèle (Story 9.2) et le dataset (Story 9.1)
+**When** `compute_loss` est appelé
+**Then** il retourne une loss unique `policy_weight * policy_loss + value_weight * value_loss` (poids dans `loss_params`, exactement sur le modèle de `compute_centernet_loss`) — AD-24, FR4
+
+**Given** `trainer.py`
+**When** cette story est complétée
+**Then** aucune ligne de `trainer.py` n'est modifiée — FR6
+
+**Given** `generate_reports()`
+**When** l'entraînement se termine
+**Then** le détail `policy_loss`/`value_loss` est affiché séparément, en réutilisant `self.loss_params` et les mêmes sous-fonctions de `loss_functions.py` (pas de duplication) — AD-24
+
+**Given** `primary_metric_name`/`optimization_mode`
+**When** le meilleur modèle est sauvegardé
+**Then** c'est la policy accuracy (top-1) qui gate la sauvegarde, `optimization_mode="max"` — AD-24
+
+**Given** `task_type="chess_policy_value"` et l'entrée `CHESS` (`dataset_configs.py`)
+**When** `main.py` et `data_management.py` sont mis à jour
+**Then** le dispatch suit exactement le pattern des 2 points de dispatch réels existants (AD-17 hérité), sans branche conditionnelle sur une classe existante
+
+**Given** AD-17
+**When** cette story est complétée
+**Then** aucune modification n'est faite à `ClassificationStrategy`/`DetectionStrategy`/`CenterNetDetectionStrategy`/`KeplerStrategy` ni à leurs classes de chargeur associées
+
+### Story 9.4: Validation non-régression `JAX_DETECTOR` par exécution
+
+As a mainteneur du pipeline,
+I want valider par exécution réelle que `JAX_DETECTOR` fonctionne à l'identique avant et après l'intégration du domaine échecs,
+So that NFR1/AD-21 (contrainte dure) est prouvé, pas supposé.
+
+**Acceptance Criteria:**
+
+**Given** une baseline (boxes/classes/scores sur un set fixe d'images) capturée avant le début de cette epic
+**When** `JAX_DETECTOR` est ré-exécuté (entraînement et/ou inférence) après les Stories 9.1 à 9.3
+**Then** les résultats sont comparés à la baseline par diff — tout écart documenté et justifié, jamais silencieux — FR7
+
+**Given** `CenterNetDetectionStrategy`, `CenterNetDetectionDataset`, `aircraft_detector_centernet(_lite)` et leurs consommateurs actuels
+**When** cette story est complétée
+**Then** aucun n'a été modifié par cette epic — AD-21
+
+**Given** les Stories 9.1 à 9.3 complétées
+**When** cette story conclut l'Epic 9
+**Then** FR1 à FR6 sont confirmés couverts et le domaine échecs est entraînable de bout en bout via `Trainer`

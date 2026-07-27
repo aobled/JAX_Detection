@@ -64,7 +64,11 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
     
     # Extraire les paramètres essentiels
     num_classes = config["num_classes"]
-    class_names = config["class_names"]
+    # class_names optionnel (2026-07-27, Story 9.3) : CHESS n'en a pas (espace de 4672
+    # coups, pas de noms de classe) - consommateurs réels (Trainer, generate_reports
+    # des strategies de classification) le lisent déjà via .get()/directement sur config,
+    # cette variable locale n'est utilisée nulle part ailleurs dans main.py.
+    class_names = config.get("class_names")
     
     # === 1. GESTION DES DONNÉES ===
     print(f"\n📁 GESTION DES DONNÉES")
@@ -162,6 +166,13 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
         # une moyenne continue, pas un seuil dur), pas loss_method/metric_method/
         # report_method comme les 3 branches ci-dessus.
         strategy = CenterNetDetectionStrategy(loss_params=loss_params)
+    elif task_type == "chess_policy_value":
+        print("🎯 Application de la logique d'entraînement : CHESS POLICY+VALUE")
+        from task_strategies import ChessPolicyValueStrategy
+        # ChessPolicyValueStrategy n'a pas de dispatch interne (une seule methode de
+        # perte/metrique, Story 9.3) - meme pattern que CenterNetDetectionStrategy
+        # ci-dessus (loss_params uniquement, pas loss_method/metric_method/report_method).
+        strategy = ChessPolicyValueStrategy(loss_params=loss_params)
     else:
         raise ValueError(f"task_type '{task_type}' non reconnu.")
 

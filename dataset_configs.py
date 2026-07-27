@@ -7,6 +7,8 @@ import os
 
 import numpy as np
 
+from chess_target_encoding import NUM_MOVES, NUM_PLANES
+
 # Racine des datasets chunkés (.npz). Local par défaut ; sur Colab, définir
 # JAX_SUPERVISED_TRAINING_DATA_ROOT (ex: /content/drive/MyDrive/jax_supervised_training/data)
 # AVANT d'importer ce module.
@@ -27,8 +29,15 @@ def validate_config(config_name, config):
         if not isinstance(config["image_size"], tuple) or len(config["image_size"]) != 2:
             errors.append(f"image_size doit être un tuple (H, W)")
     
-    # Vérifier que les paramètres requis sont présents
-    required = ["num_classes", "image_size", "model_name"]
+    # Vérifier que les paramètres requis sont présents. "image_size" retiré de cette
+    # liste (2026-07-27, décision Aymeric, Story 9.3) : c'était un défaut de conception
+    # forçant tout domaine SANS image (ex. CHESS, plateau 8x8 encodé en planes, pas une
+    # image redimensionnable) à porter une valeur factice. Redevenu conditionnel comme
+    # class_names ci-dessus (verifie seulement si present, lignes suivantes) - aucun
+    # changement de comportement pour les configs existantes, qui fournissent toutes
+    # deja image_size (y compris JAX_KEPLER, qui le detourne deja en (longueur, 1) pour
+    # une sequence 1D - meme esprit que ce fix, pousse un cran plus loin).
+    required = ["num_classes", "model_name"]
     for key in required:
         if key not in config:
             errors.append(f"Paramètre requis manquant: {key}")
@@ -555,6 +564,98 @@ DATASET_CONFIGS = {
         # dataset_name (Story 5.0, CenterNetDetectionStrategy._get_export_path, Story 7.6)
         # -> best_model_jax_detector.pkl / best_model_training_state_jax_detector.pkl
         "save_dir": "./checkpoints_jax_detector",
+    },
+
+    "CHESS": {
+        # === CONFIG DOMAINE ÉCHECS - policy+value (Epic 9, AD-17/AD-22/AD-23/AD-24) ===
+        # Premier domaine du projet qui n'est ni classification ni détection - preuve de
+        # généralisation du pipeline Trainer/TaskStrategy, pas un objectif de qualité de jeu.
+        "task_type": "chess_policy_value",
+
+        # === Données ===
+        "num_classes": NUM_MOVES,  # taille de la tête policy (AD-22) - PAS un nombre de classes
+        # "image_size" reste optionnel (fix validate_config ci-dessus) mais Trainer.create_train_state
+        # (trainer.py:139) le lit sans garde pour construire le dummy_input d'init - fourni ici
+        # (8, 8, taille réelle du plateau) pour ce site de lecture précis, même si
+        # ChessPolicyValueDataset, lui, dérive sa shape de chess_target_encoding.py, pas de la config.
+        "image_size": (8, 8),
+        # "num_channels" (2026-07-27, écart explicite à AC2 arbitré par Aymeric, voir Dev
+        # Notes) : Trainer.__init__ dérive normalement 1/3 canaux de "grayscale" - ne
+        # convient pas aux 29 canaux (NUM_PLANES) du domaine échecs. Trainer.__init__ lit
+        # désormais "num_channels" en priorité (fallback grayscale/RGB inchangé si absent).
+        "num_channels": NUM_PLANES,
+        # Pas de "class_names" (n'a pas de sens pour un espace de 4672 coups).
+        "model_name": "chess_cnn_attention_policy_value",
+        # Sous-dossier dédié (chunks/chess/chess_*.npz), cohérent avec la convention déjà
+        # utilisée pour JAX_DETECTOR (chunks/jax_detector/jax_detector_targets_*.npz) -
+        # corrigé le 2026-07-27 (Aymeric avait initialement mis les chunks directement
+        # sous chunks/ avec le préfixe "chess", sans sous-dossier). Les 139 chunks déjà
+        # générés (691 779 positions) sont déplacés vers ce nouveau chemin en conséquence.
+        "output_prefix": f"{DATA_ROOT}/chunks/chess/chess",
+        # Fraction des CHUNKS (pas des exemples) réservée à la validation - split côté
+        # chargement, voir ChessPolicyValueDataset (data_management.py, Story 9.3).
+        "val_split": 0.1,
+
+        # === Perte ===
+        # Pas de loss_method/metric_method/report_method : ChessPolicyValueStrategy
+        # (Story 9.3) n'a qu'une seule méthode de perte et une seule métrique, aucun
+        # dispatch interne - même discipline que JAX_DETECTOR ci-dessus.
+        "loss_params": {
+            "policy_weight": 1.0,
+            "value_weight": 1.0,
+        },
+
+        # === Hyperparamètres TPU/GPU ===
+        # dropout_rate niché ici (pas top-level) : main.py:106 le lit via backend_config,
+        # même convention que toutes les autres configs (bug trouvé en code review - une
+        # première version de cette entrée l'avait à tort au niveau racine).
+        # tpu : toujours non tunée empiriquement (aucun run réel sur TPU à ce stade) -
+        # seule la config gpu a été ajustée ci-dessous suite au 1er entraînement réel local.
+        "tpu": {
+            "micro_batch_size": 128,
+            "accum_steps": 1,
+            "learning_rate": 4e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            "decay_steps": 10000,
+        },
+        # gpu : ajusté le 2026-07-27 après 2 epochs réelles à micro_batch_size=64
+        # (~835s/epoch, ~85ms/step train vs ~15ms/step val) - l'écart train/val pour un
+        # modèle de 382K paramètres (bottleneck K=8 tokens) pointe vers un coût dominé par
+        # le nombre de lancements de kernels (attention croisée+auto-attention en petits
+        # matmuls), pas par le calcul brut - un step à batch plus large ne coûte donc pas
+        # proportionnellement plus cher, d'où le x4 sur micro_batch_size. learning_rate
+        # x4 en conséquence (règle de scaling linéaire, cf. Goyal et al. 2017) pour ne pas
+        # dégrader l'accuracy avec le nouveau batch. decay_steps recalculé pour couvrir les
+        # 15 epochs réelles au nouveau nombre de steps/epoch (~2448 x 15 ~= 36 700) - la
+        # valeur précédente (10000) était déjà décalée même à batch=64 (~9844 steps/epoch),
+        # le cosine s'aplatissait après ~1 epoch sur 15. accum_steps laissé à 1 : aucune
+        # contrainte mémoire ne justifie l'accumulation de gradient ici (modèle 1.5 Mo).
+        "gpu": {
+            "micro_batch_size": 256,
+            "accum_steps": 1,
+            "learning_rate": 8e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            "decay_steps": 36700,
+        },
+
+        # === Entraînement ===
+        "optimizer": "adamw",
+        "lr_schedule": "cosine",
+        "epochs": 15,
+        "patience": 8,
+
+        # === Évaluation ===
+        "eval_batch_size": 64,
+
+        # === Sauvegarde ===
+        # Pas de checkpoint_path/training_state_path explicite : nommage dérivé de
+        # dataset_name (Story 5.0, ChessPolicyValueStrategy._get_export_path, Story 9.3)
+        # -> best_model_chess.pkl / best_model_training_state_chess.pkl
+        "save_dir": "./checkpoints_chess",
     }
 }
 
@@ -603,8 +704,11 @@ def print_config(dataset_name):
     print(f"\n📊 CONFIGURATION: {dataset_name}")
     print("=" * 60)
     print(f"Classes: {config['num_classes']}")
-    print(f"Noms: {config['class_names']}")
-    print(f"Image size: {config['image_size']}")
+    # class_names/image_size redevenus optionnels (2026-07-27, Story 9.3, voir
+    # validate_config) - CHESS n'a ni l'un ni l'autre (num_classes y porte NUM_MOVES,
+    # la shape vient de chess_target_encoding.py, pas de la config).
+    print(f"Noms: {config.get('class_names', 'N/A')}")
+    print(f"Image size: {config.get('image_size', 'N/A')}")
     print(f"Modèle: {config['model_name']}")
     print(f"Epochs: {config['epochs']}")
     print(f"Patience: {config['patience']}")
@@ -622,7 +726,7 @@ if __name__ == "__main__":
         print(f"\n✅ Validation de {dataset_name}...")
         try:
             config = get_dataset_config(dataset_name)
-            print(f"   ✓ {config['num_classes']} classes: {config['class_names']}")
+            print(f"   ✓ {config['num_classes']} classes: {config.get('class_names', 'N/A')}")
         except Exception as e:
             print(f"   ❌ Erreur: {e}")
     

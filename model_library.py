@@ -13,6 +13,7 @@ from flax.training import train_state
 import flax
 
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
+from chess_target_encoding import POLICY_KEY, VALUE_KEY, BOARD_SIZE
 
 
 class SeparableConv(nn.Module):
@@ -834,6 +835,148 @@ def create_aircraft_detector_centernet_lite(dropout_rate=0.2, heatmap_prior=0.01
 # Récupérable via l'historique git si besoin.
 
 
+class ChessCnnAttentionPolicyValue(nn.Module):
+    """
+    Modèle échecs : CNN 8×8 (sans pooling) -> bottleneck de K tokens appris
+    (Perceiver/TokenLearner-style, cross-attention) -> auto-attention entre
+    tokens -> têtes policy + value (FR5, AD-23, Story 9.2).
+
+    Input : (B, BOARD_SIZE, BOARD_SIZE, C) - planes position+historique de
+    chess_target_encoding.py (Story 9.1, C=NUM_PLANES=29 en pratique, mais le
+    nombre de canaux d'entrée n'est pas codé en dur ici - inféré par la
+    première conv, comme tous les autres modèles de ce fichier). La dimension
+    spatiale est validée contre BOARD_SIZE (chess_target_encoding.py, source
+    unique) plutôt que supposée.
+    Output : {POLICY_KEY: (B, num_moves), VALUE_KEY: (B,)} - miroir du pattern
+    dict de AircraftDetectorCenterNet (HEATMAP_KEY/SIZE_KEY), AD-24.
+
+    Pas de maxpool (contrairement aux CNN images de ce fichier, ex.
+    SophisticatedCNN128Plus/Lite) : le plateau 8×8 est déjà petit, un
+    empilement de convs 3×3 couvre déjà tout le champ réceptif
+    (_bmad-output/planning-artifacts/briefs/brief-jax_supervised_training-2026-07-27/brief.md,
+    § "Architecture envisagée") - pooler détruirait l'identité des cases avant
+    le bottleneck, alors que la tête policy (AD-22) a besoin de distinguer les
+    64 cases source.
+
+    num_moves : taille de la tête policy - doit venir de NUM_MOVES
+    (chess_target_encoding.py) côté appelant, jamais un littéral dupliqué ici
+    (AD-22). Passe par le kwarg générique `num_classes` de model_kwargs
+    (main.py) via create_chess_cnn_attention_policy_value ci-dessous - le champ
+    interne s'appelle num_moves pour la clarté, la factory fait le pont.
+    Validé > 0 à l'appel (garde-fou contre un défaut générique du type
+    num_classes=2, utilisé par d'autres modèles de ce fichier).
+
+    token_dim/num_bottleneck_tokens/num_heads : hyperparamètres d'architecture,
+    valeurs de départ (proposition initiale d'Aymeric, memlog du brief
+    ci-dessus, entrée du 2026-07-27 "Architecture proposée par Aymeric",
+    K=8/D=64) - ajustables via la factory (voir create_chess_cnn_attention_policy_value),
+    pas des contraintes fixées par le PRD/spine. token_dim doit être divisible
+    par num_heads (validé à l'appel).
+    """
+    num_moves: int
+    dropout_rate: float = 0.1
+    token_dim: int = 64
+    num_bottleneck_tokens: int = 8
+    num_heads: int = 4
+
+    @nn.compact
+    def __call__(self, x, training: bool = True):
+        assert self.token_dim % self.num_heads == 0, (
+            f"token_dim ({self.token_dim}) doit etre divisible par num_heads ({self.num_heads})"
+        )
+        assert self.num_moves > 0, (
+            f"num_moves doit etre > 0 (recu {self.num_moves}) - as-tu bien passe num_classes=NUM_MOVES "
+            f"(chess_target_encoding.py) plutot qu'un defaut generique de ce fichier (ex. num_classes=2) ?"
+        )
+        assert x.shape[1] == BOARD_SIZE and x.shape[2] == BOARD_SIZE, (
+            f"attendu un plateau {BOARD_SIZE}x{BOARD_SIZE} (chess_target_encoding.BOARD_SIZE), "
+            f"recu {x.shape[1]}x{x.shape[2]}"
+        )
+
+        # --- BACKBONE CNN 8×8, aucun maxpool (voir docstring) ---
+        x = nn.Conv(self.token_dim, (3, 3), padding="SAME", use_bias=False,
+                    kernel_init=nn.initializers.kaiming_normal())(x)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x)
+
+        # 2 blocs résiduels - pattern repris caractère pour caractère de
+        # SophisticatedCNN128Lite (model_library.py, cf. Dev Notes story 9.2) : le
+        # skip part de x APRES la première SeparableConv+BN+silu du bloc (pas de
+        # l'entrée brute du bloc), une seconde SeparableConv+BN suit avant l'addition.
+        # Avec la conv initiale ci-dessus, 5 convs 3×3 au total (RF=11, couvre
+        # largement les 8×8 du plateau).
+        for _ in range(2):
+            x = SeparableConv(self.token_dim, (3, 3))(x, training)
+            x = nn.BatchNorm(use_running_average=not training)(x)
+            x = nn.silu(x)
+
+            residual = nn.Conv(self.token_dim, (1, 1), padding="SAME", use_bias=False,
+                                kernel_init=nn.initializers.kaiming_normal())(x)
+            residual = nn.BatchNorm(use_running_average=not training)(residual)
+
+            x = SeparableConv(self.token_dim, (3, 3))(x, training)
+            x = nn.BatchNorm(use_running_average=not training)(x)
+            x = x + residual
+            x = nn.silu(x)
+
+        # --- BOTTLENECK : 64 tokens case (8×8 aplati) -> K tokens appris ---
+        batch_size = x.shape[0]
+        # Dimension spatiale derivee de x.shape (deja validee ci-dessus contre
+        # BOARD_SIZE), jamais un litteral "8*8" duplique.
+        board_tokens = x.reshape(batch_size, x.shape[1] * x.shape[2], self.token_dim)  # (B, 64, D)
+
+        queries = self.param(
+            "bottleneck_queries",
+            nn.initializers.normal(0.02),
+            (self.num_bottleneck_tokens, self.token_dim),
+        )
+        queries = jnp.broadcast_to(
+            queries[None, :, :], (batch_size, self.num_bottleneck_tokens, self.token_dim)
+        )
+
+        # Cross-attention Perceiver-style : les K requêtes apprises interrogent les
+        # 64 tokens case (AD-23).
+        tokens = nn.MultiHeadDotProductAttention(num_heads=self.num_heads)(
+            inputs_q=queries, inputs_kv=board_tokens
+        )  # (B, K, D)
+
+        # Auto-attention standard entre les K tokens du bottleneck, sans biais
+        # géométrique (AD-23, différé - voir spine Deferred).
+        tokens = nn.MultiHeadDotProductAttention(num_heads=self.num_heads)(inputs_q=tokens)  # (B, K, D)
+
+        pooled = jnp.mean(tokens, axis=1)  # (B, D)
+        pooled = nn.Dropout(self.dropout_rate, deterministic=not training)(pooled)
+
+        # --- TÊTES ---
+        # Policy : logits bruts (B, num_moves) - la cross-entropy (Story 9.3) attend
+        # des logits, pas une distribution déjà normalisée. Pas de masquage des coups
+        # illégaux (AD-22, tranché en Story 9.1).
+        policy_logits = nn.Dense(self.num_moves)(pooled)
+
+        # Value : scalaire (B,) borné [-1, 1] (AD-24).
+        value = nn.Dense(1)(pooled)
+        value = nn.tanh(value)
+        value = jnp.squeeze(value, axis=-1)
+
+        return {POLICY_KEY: policy_logits, VALUE_KEY: value}
+
+
+def create_chess_cnn_attention_policy_value(num_classes, dropout_rate=0.1, **kwargs):
+    """
+    Factory pour le modèle échecs. `num_classes` (nom imposé par la plomberie
+    model_kwargs générique de main.py, AD-22) porte en réalité NUM_MOVES - PAS
+    un nombre de classes au sens habituel. Piège connu de ce fichier
+    (create_aircraft_detector_centernet ci-dessus laisse tomber num_classes
+    dans **kwargs sans jamais l'utiliser, correct pour CenterNet mono-classe
+    mais casserait AD-22 ici) : cette factory lit et utilise num_classes.
+
+    **kwargs transmis tel quel à ChessCnnAttentionPolicyValue - permet de
+    surcharger les hyperparamètres "ajustables" documentés sur la classe
+    (token_dim, num_bottleneck_tokens, num_heads) sans modifier cette factory.
+    """
+    return ChessCnnAttentionPolicyValue(num_moves=num_classes, dropout_rate=dropout_rate, **kwargs)
+
+
 class Kepler1DConvNet(nn.Module):
     """
     Réseau de Neurones Convolutif 1D pour l'analyse de Séries Temporelles.
@@ -885,6 +1028,7 @@ MODELS = {
     'aircraft_detector_unet': create_aircraft_detector_unet, # Semantic Segmentation U-Net
     'aircraft_detector_centernet': create_aircraft_detector_centernet, # CenterNet (point central, anchor-free)
     'aircraft_detector_centernet_lite': create_aircraft_detector_centernet_lite, # CenterNet, encoder/decoder en SeparableConv
+    'chess_cnn_attention_policy_value': create_chess_cnn_attention_policy_value, # CNN 8x8 + bottleneck attention, policy+value (Epic 9)
     'sophisticated_cnn_128_plus': create_sophisticated_cnn_128_plus,
     'sophisticated_cnn_128_lite': create_sophisticated_cnn_128_lite,
     'sophisticated_cnn_32_plus': create_sophisticated_cnn_32_plus,
@@ -972,6 +1116,13 @@ def get_model_info(model_name):
             'params': 'non mesuré ici (voir checkpoint)',
             'size': 'non mesuré ici (voir checkpoint)',
             'best_for': 'Classification sur petites images (ex. CIFAR-10).'
+        },
+        'chess_cnn_attention_policy_value': {
+            'name': 'ChessCnnAttentionPolicyValue',
+            'description': 'CNN 8×8 sans pooling + bottleneck de tokens appris (Perceiver-style, cross-attention) + auto-attention + têtes policy/value (FR5, AD-23, Epic 9).',
+            'params': '382,017 mesuré (num_classes=NUM_MOVES=4672, token_dim=64, K=8)',
+            'size': 'non mesuré ici (voir checkpoint)',
+            'best_for': 'Domaine échecs (policy+value) - preuve de généralisation du pipeline, pas encore entraîné (Story 9.2).'
         }
     }
 

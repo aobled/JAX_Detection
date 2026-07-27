@@ -1,7 +1,9 @@
 import jax
 import jax.numpy as jnp
+import optax
 
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
+from chess_target_encoding import POLICY_KEY, VALUE_KEY
 
 def compute_grid_loss(pred_grid, gt_boxes, lambda_coord=5.0, lambda_noobj=0.5):
     """
@@ -554,4 +556,39 @@ def compute_centernet_loss(outputs, targets, heatmap_weight=1.0, size_weight=0.1
     size_loss = compute_size_regression_loss(outputs[SIZE_KEY], targets[SIZE_KEY])
 
     return heatmap_weight * heatmap_loss + size_weight * size_loss
+
+
+def compute_chess_policy_loss(policy_logits, policy_targets):
+    """
+    Cross-entropy simple contre l'index du coup joue (labels entiers, pas one-hot -
+    FR3 : aucun filtrage par resultat, aucun masquage des coups illegaux - AD-22,
+    deja tranche en Story 9.1). Meme formule que ClassificationStrategy.compute_loss
+    (task_strategies.py), factorisee ici pour miroir architectural de
+    compute_centernet_loss (Story 9.3, AD-24).
+
+    policy_logits: (Batch, NUM_MOVES) logits bruts. policy_targets: (Batch,) int32.
+    """
+    return optax.softmax_cross_entropy_with_integer_labels(policy_logits, policy_targets).mean()
+
+
+def compute_chess_value_loss(value_pred, value_targets):
+    """
+    MSE simple - value_pred/value_targets: (Batch,) float32, deja dans [-1, 1]
+    (tete value Story 9.2, AD-24).
+    """
+    return jnp.mean((value_pred - value_targets) ** 2)
+
+
+def compute_chess_policy_value_loss(outputs, targets, policy_weight=1.0, value_weight=1.0):
+    """
+    Combine compute_chess_policy_loss et compute_chess_value_loss en une loss unique
+    ponderee - exactement sur le modele de compute_centernet_loss ci-dessus (AD-24).
+    Ne cable aucune strategie d'entrainement (ChessPolicyValueStrategy, Story 9.3).
+
+    outputs/targets: dict {POLICY_KEY: ..., VALUE_KEY: ...} (chess_target_encoding.py, AD-18).
+    """
+    policy_loss = compute_chess_policy_loss(outputs[POLICY_KEY], targets[POLICY_KEY])
+    value_loss = compute_chess_value_loss(outputs[VALUE_KEY], targets[VALUE_KEY])
+
+    return policy_weight * policy_loss + value_weight * value_loss
 

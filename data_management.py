@@ -39,6 +39,7 @@ import tqdm
 from typing import Tuple, Optional
 
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
+from chess_target_encoding import POSITION_KEY, POLICY_KEY, VALUE_KEY, NUM_PLANES, BOARD_SIZE
 
 
 class ChunkManager:
@@ -599,6 +600,108 @@ class CenterNetDetectionDataset:
         return train_ds, val_ds
 
 
+class ChessPolicyValueDataset:
+    """
+    Gestionnaire de dataset pour le domaine échecs (policy+value, AD-17/AD-18, Story 9.3).
+    Charge les chunks générés par dataset_builder/chess_pgn_dataset_tools.py (Story 9.1).
+    Classe séparée des loaders existants (AD-17) - ne les modifie ni ne les étend.
+
+    Déviation délibérée de la convention "split côté producteur" des autres loaders
+    (ChunkManager/DetectionDataset/CenterNetDetectionDataset attendent des chunks
+    {output_prefix}_train_chunk*.npz / {output_prefix}_val_chunk*.npz déjà séparés) :
+    chess_pgn_dataset_tools.py (Story 9.1, déjà close) ne produit qu'un seul flux
+    {output_prefix}_chunk*.npz, sans split. Le split se fait donc ICI, au chargement,
+    par fraction de CHUNKS entiers (pas d'exemple par exemple) - limite connue, acceptée
+    pour une preuve de généricité (voir Dev Notes de la Story 9.3). Les chunks sont
+    triés numériquement (pas lexicographiquement - "chunk10" ne doit pas passer avant
+    "chunk2") puis mélangés avec une graine fixe (reproductible d'un run à l'autre)
+    avant de prélever la fraction val - évite qu'un split "toujours les derniers par
+    ordre alphabétique" biaise systématiquement vers les dernières parties du fichier
+    PGN source (trouvé en code review, 2026-07-27).
+
+    Pas d'augmentation de données (contrairement à DetectionDataset/CenterNetDetectionDataset) :
+    flip/zoom/translation n'ont pas de sens géométrique direct sur un plateau encodé en
+    planes - non demandé par le PRD/spine.
+    """
+    def __init__(self, output_prefix: str, batch_size: int = 32, val_split: float = 0.1, shuffle_seed: int = 42):
+        self.output_prefix = output_prefix
+        self.batch_size = batch_size
+
+        def _chunk_index(path):
+            # Extrait l'entier de "..._chunk{N}.npz" - tri numerique, jamais lexicographique
+            # (chess_pgn_dataset_tools.py::_save_chunk n'ecrit pas d'index zero-pad).
+            stem = os.path.basename(path).rsplit("_chunk", 1)[-1]
+            return int(stem[:-len(".npz")])
+
+        all_chunks = sorted(glob.glob(f"{output_prefix}_chunk*.npz"), key=_chunk_index)
+        if not all_chunks:
+            error_msg = (
+                f"\n❌ ERREUR: Chunks introuvables pour le domaine échecs !\n"
+                f"   Je m'attendais à trouver {output_prefix}_chunk*.npz\n"
+                f"💡 LANCEZ D'ABORD : python dataset_builder/chess_pgn_dataset_tools.py"
+            )
+            print(error_msg)
+            exit(1)
+
+        # Melange reproductible (graine fixe) avant le split - evite le biais "toujours
+        # les derniers chunks numeriquement" d'un simple tri croissant + slice de queue.
+        shuffled_chunks = list(all_chunks)
+        np.random.RandomState(shuffle_seed).shuffle(shuffled_chunks)
+
+        n_val = 0 if val_split <= 0 else (max(1, int(len(shuffled_chunks) * val_split)) if len(shuffled_chunks) > 1 else 0)
+        self.train_chunks = shuffled_chunks[:-n_val] if n_val else shuffled_chunks
+        self.val_chunks = shuffled_chunks[-n_val:] if n_val else []
+
+        print(f"📦 Chess Policy+Value Dataset: {len(self.train_chunks)} train chunks, "
+              f"{len(self.val_chunks)} val chunks (split côté chargement, val_split={val_split}, "
+              f"mélange reproductible seed={shuffle_seed})")
+
+    def create_tf_dataset(self, split='train'):
+        """
+        Crée un dataset TensorFlow qui retourne (position, {POLICY_KEY: policy, VALUE_KEY: value})
+        position: (BOARD_SIZE, BOARD_SIZE, NUM_PLANES) ; policy: scalaire int32 ; value: scalaire float32
+        """
+        chunks = self.train_chunks if split == 'train' else self.val_chunks
+        if not chunks:
+            raise ValueError(f"Aucun chunk '{split}' disponible pour le domaine échecs "
+                              f"(output_prefix={self.output_prefix}, val_split trop faible ou trop peu de chunks)")
+
+        def gen():
+            for chunk_path in chunks:
+                with np.load(chunk_path) as data:
+                    positions = data[POSITION_KEY]  # (N, BOARD_SIZE, BOARD_SIZE, NUM_PLANES)
+                    policies = data[POLICY_KEY]      # (N,)
+                    values = data[VALUE_KEY]         # (N,)
+
+                    for pos, pol, val in zip(positions, policies, values):
+                        # Cast explicite en int32 : chess_pgn_dataset_tools.py sauvegarde
+                        # deja POLICY_KEY en int32, mais output_signature ci-dessous
+                        # l'exige STRICTEMENT (tf.data.Dataset.from_generator) - defense
+                        # explicite plutot que de compter silencieusement sur le producteur.
+                        yield pos, {POLICY_KEY: np.int32(pol), VALUE_KEY: val}
+
+        output_signature = (
+            tf.TensorSpec(shape=(BOARD_SIZE, BOARD_SIZE, NUM_PLANES), dtype=tf.float32),
+            {
+                POLICY_KEY: tf.TensorSpec(shape=(), dtype=tf.int32),
+                VALUE_KEY: tf.TensorSpec(shape=(), dtype=tf.float32),
+            }
+        )
+
+        ds = tf.data.Dataset.from_generator(gen, output_signature=output_signature)
+
+        if split == 'train':
+            ds = ds.shuffle(1000)
+
+        ds = ds.batch(self.batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE)
+        return ds
+
+    def get_dataset(self):
+        train_ds = self.create_tf_dataset('train')
+        val_ds = self.create_tf_dataset('val') if self.val_chunks else None
+        return train_ds, val_ds
+
+
 def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
     """
     Fonction factory unifiée pour charger les datasets selon le type de tâche.
@@ -659,6 +762,14 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
             print("✅ Mode vérification: epochs=0, vérification des chunks requise")
 
         return train_ds, val_ds
+
+    elif task_type == "chess_policy_value":
+        dataset_manager = ChessPolicyValueDataset(
+            output_prefix=config["output_prefix"],
+            batch_size=backend_config["micro_batch_size"],
+            val_split=config.get("val_split", 0.1)
+        )
+        return dataset_manager.get_dataset()
 
     else:
         raise ValueError(f"Task type inconnu: {task_type}")

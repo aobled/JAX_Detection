@@ -1,5 +1,5 @@
 # generated: 2026-07-12
-# last_updated: 2026-07-12
+# last_updated: 2026-07-27
 # project: jax_supervised_training
 # project_key: NOKEY
 # tracking_system: file-system
@@ -50,9 +50,15 @@
 #     Sequence: 8-1 (pixel-parity validation) -> 8-2 -> 8-3 -> 8-4 -> 8-5 -> 8-6 -> {8-7, 8-8
 #     any order} -> 8-9. AD-20: no Epic 8 story may modify FIGHTERJET_DETECTION or its
 #     existing consumers (non-regression, explicit user requirement).
+# - jax_supervised_training-specific: Epic 9 (domaine echecs, policy+value) stories MUST run
+#     in strict sequence (AD-18/AD-22): 9-1 -> 9-2 -> 9-3 -> 9-4. Story 9-1 (chess_target_encoding.py
+#     + dataset_builder/chess_pgn_dataset_tools.py, incl. constante NUM_MOVES) est un
+#     prerequisite auteur unique ; 9-2/9-3 doivent l'importer, jamais le redefinir. AD-21 :
+#     aucune story de cet epic ne modifie CenterNetDetectionStrategy/CenterNetDetectionDataset/
+#     aircraft_detector_centernet(_lite) ni leurs consommateurs (non-regression JAX_DETECTOR).
 
 generated: 2026-07-12
-last_updated: 2026-07-22
+last_updated: 2026-07-27
 project: jax_supervised_training
 project_key: NOKEY
 tracking_system: file-system
@@ -127,6 +133,13 @@ development_status:
   8-8-migration-tools-bounding-boxes-with-classification-from-images-generation-py: done
   8-9-validation-finale-fusion-de-boites-resolue-non-regression: done
   epic-8-retrospective: done
+
+  epic-9: in-progress
+  9-1-module-dechange-partage-builder-dataset-pgn: done
+  9-2-nouveau-modele-echecs: done
+  9-3-taskstrategy-echecs-loss-composite-et-integration-au-pipeline: done
+  9-4-validation-non-regression-jax-detector-par-execution: ready-for-dev
+  epic-9-retrospective: optional
 
 action_items:
   - epic: "1-3"
