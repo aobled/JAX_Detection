@@ -1,0 +1,183 @@
+/usr/local/lib/python3.12/dist-packages/jax/_src/cloud_tpu_init.py:86: UserWarning: Transparent hugepages are not enabled. TPU runtime startup and shutdown time should be significantly improved on TPU v5e and newer. If not already set, you may need to enable transparent hugepages in your VM image (sudo sh -c "echo always > /sys/kernel/mm/transparent_hugepage/enabled")
+  warnings.warn(
+🚀 TPU détecté - Optimisations activées
+📊 TPU: Utilisation de float16
+Backend JAX: tpu
+Devices: [TpuDevice(id=0, process_index=0, coords=(0,0,0), core_on_chip=0)]
+Using device: TPU_0(process=0,(0,0,0,0))
+🎯 Dataset spécifié: JAX_DETECTOR
+
+📊 Chargement de la configuration: JAX_DETECTOR
+
+📊 CONFIGURATION: JAX_DETECTOR
+============================================================
+Classes: 1
+Noms: ['aircraft']
+Image size: (224, 224)
+Modèle: aircraft_detector_centernet_lite
+Epochs: 15
+Patience: 8
+
+TPU: batch=128×1, lr=0.0004, wd=5e-05
+GPU: batch=64×1, lr=0.0002, wd=5e-05
+============================================================
+
+📁 GESTION DES DONNÉES
+============================================================
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1785104256.086437    7255 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1785104258.478703    7255 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+E0000 00:00:1785104266.745289    7255 cuda_platform.cc:52] failed call to cuInit: INTERNAL: CUDA error: Failed call to cuInit: UNKNOWN ERROR (303)
+🔄 Initialisation du pipeline de données pour la tâche : DETECTION_CENTERNET
+📦 CenterNet Detection Dataset: 8 train chunks, 2 val chunks [Grayscale (1 canal)]
+
+🔍 Vérification des datasets...
+📊 Train: shape=(128, 224, 224, 1), targets={'heatmap': (128, 224, 224, 1), 'size': (128, 224, 224, 2)}
+📊 Val: shape=(128, 224, 224, 1), targets={'heatmap': (128, 224, 224, 1), 'size': (128, 224, 224, 2)}
+
+🏗️  CRÉATION DU MODÈLE
+============================================================
+Modèle: aircraft_detector_centernet_lite
+Classes: 1
+Dropout: 0.1
+🎯 Application de la logique d'entraînement : DETECTION CENTERNET
+
+🎯 CRÉATION DU TRAINER
+============================================================
+
+🚀 LANCEMENT DE L'ENTRAÎNEMENT
+============================================================
+💾 RAM avant entraînement: 14.5%
+📐 decay_steps calculé automatiquement : 98678 échantillons réels, batch=128 -> 770 steps/epoch × 15 decay_epochs = 11550
+📊 TAILLE DU MODÈLE:
+   Paramètres totaux: 1,363,276
+   Taille: 5.2 MB
+⚠️  Aucun checkpoint valide trouvé: best_model_training_state_jax_detector.pkl ([Errno 2] No such file or directory: 'best_model_training_state_jax_detector.pkl')
+🚀 Démarrage d'un nouvel entraînement
+
+Epoch 1/15 - training...
+💾 RAM: 16.2% (7.1GB/47.0GB)
+Training: 770it [10:29,  1.22it/s]
+Train | Loss=5.3021 | HeatmapActivation=0.0401 | Time=629.2s
+Val   | Loss=3.9131 | HeatmapActivation=0.0928 | Time=117.3s
+[✓] New best model saved (HeatmapActivation=0.0928)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 2/15 - training...
+Training: 770it [09:08,  1.40it/s]
+Train | Loss=3.0511 | HeatmapActivation=0.0716 | Time=548.4s
+Val   | Loss=2.8278 | HeatmapActivation=0.0865 | Time=77.0s
+
+Epoch 3/15 - training...
+Training: 770it [09:23,  1.37it/s]
+Train | Loss=2.8198 | HeatmapActivation=0.0869 | Time=563.4s
+Val   | Loss=2.6708 | HeatmapActivation=0.1070 | Time=84.9s
+[✓] New best model saved (HeatmapActivation=0.1070)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 4/15 - training...
+Training: 770it [09:01,  1.42it/s]
+Train | Loss=2.6727 | HeatmapActivation=0.0994 | Time=541.5s
+Val   | Loss=2.5464 | HeatmapActivation=0.1167 | Time=81.4s
+[✓] New best model saved (HeatmapActivation=0.1167)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 5/15 - training...
+Training: 770it [09:20,  1.37it/s]
+Train | Loss=2.5602 | HeatmapActivation=0.1095 | Time=560.4s
+Val   | Loss=2.4560 | HeatmapActivation=0.1247 | Time=79.6s
+[✓] New best model saved (HeatmapActivation=0.1247)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 6/15 - training...
+💾 RAM: 19.7% (8.7GB/47.0GB)
+Training: 770it [09:06,  1.41it/s]
+Train | Loss=2.4792 | HeatmapActivation=0.1177 | Time=546.7s
+Val   | Loss=2.3900 | HeatmapActivation=0.1239 | Time=84.0s
+
+Epoch 7/15 - training...
+Training: 770it [09:22,  1.37it/s]
+Train | Loss=2.4122 | HeatmapActivation=0.1244 | Time=562.8s
+Val   | Loss=2.3152 | HeatmapActivation=0.1276 | Time=76.3s
+[✓] New best model saved (HeatmapActivation=0.1276)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 8/15 - training...
+Training: 770it [09:07,  1.41it/s]
+Train | Loss=2.3548 | HeatmapActivation=0.1308 | Time=547.8s
+Val   | Loss=2.2764 | HeatmapActivation=0.1415 | Time=84.6s
+[✓] New best model saved (HeatmapActivation=0.1415)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 9/15 - training...
+Training: 770it [09:16,  1.38it/s]
+Train | Loss=2.3043 | HeatmapActivation=0.1364 | Time=556.7s
+Val   | Loss=2.2492 | HeatmapActivation=0.1451 | Time=81.5s
+[✓] New best model saved (HeatmapActivation=0.1451)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 10/15 - training...
+Training: 770it [09:04,  1.41it/s]
+Train | Loss=2.2661 | HeatmapActivation=0.1408 | Time=544.4s
+Val   | Loss=2.1937 | HeatmapActivation=0.1481 | Time=83.1s
+[✓] New best model saved (HeatmapActivation=0.1481)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 11/15 - training...
+💾 RAM: 19.7% (8.7GB/47.0GB)
+Training: 770it [09:20,  1.37it/s]
+Train | Loss=2.2322 | HeatmapActivation=0.1448 | Time=560.7s
+Val   | Loss=2.1821 | HeatmapActivation=0.1538 | Time=80.9s
+[✓] New best model saved (HeatmapActivation=0.1538)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 12/15 - training...
+Training: 770it [09:03,  1.42it/s]
+Train | Loss=2.2085 | HeatmapActivation=0.1477 | Time=543.1s
+Val   | Loss=2.1558 | HeatmapActivation=0.1548 | Time=82.3s
+[✓] New best model saved (HeatmapActivation=0.1548)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 13/15 - training...
+Training: 770it [09:06,  1.41it/s]
+Train | Loss=2.1894 | HeatmapActivation=0.1502 | Time=547.1s
+Val   | Loss=2.1434 | HeatmapActivation=0.1575 | Time=77.7s
+[✓] New best model saved (HeatmapActivation=0.1575)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 14/15 - training...
+Training: 770it [09:11,  1.40it/s]
+Train | Loss=2.1772 | HeatmapActivation=0.1516 | Time=551.7s
+Val   | Loss=2.1385 | HeatmapActivation=0.1583 | Time=81.4s
+[✓] New best model saved (HeatmapActivation=0.1583)
+   [💾] Export pur PKL généré: best_model_jax_detector.pkl
+
+Epoch 15/15 - training...
+Training: 770it [09:10,  1.40it/s]
+Train | Loss=2.1689 | HeatmapActivation=0.1527 | Time=550.8s
+Val   | Loss=2.1378 | HeatmapActivation=0.1583 | Time=77.6s
+
+🎯 ENTRAÎNEMENT TERMINÉ
+   Meilleur HeatmapActivation validation: 0.1583
+
+📊 GÉNÉRATION DES MÉTRIQUES DÉLÉGUÉE À LA STRATÉGIE
+============================================================
+✅ Visualisation CenterNet générée (final_detection_centernet_vis.png)
+
+🏁 Programme terminé
+   Meilleur score validation (Accuracy ou Loss): 0.1583
+
+🔌 Fin de script sur Colab : déconnexion du runtime (runtime.unassign)...
+Traceback (most recent call last):
+  File "/content/drive/MyDrive/jax_supervised_training/main.py", line 238, in <module>
+    colab_runtime.unassign()
+  File "/usr/local/lib/python3.12/dist-packages/google/colab/runtime.py", line 38, in unassign
+    _output.eval_js('google.colab.kernel.disconnect();', ignore_result=True)
+  File "/usr/local/lib/python3.12/dist-packages/google/colab/output/_js.py", line 36, in eval_js
+    kernel = _ipython.get_kernel()
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/google/colab/_ipython.py", line 24, in get_kernel
+    return get_ipython().kernel
+           ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'kernel'

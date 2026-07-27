@@ -226,3 +226,16 @@ if __name__ == "__main__":
     
     main(dataset_name)
 
+    # Libere immediatement le runtime Colab en fin de script (2026-07-26) - sans ca,
+    # la VM/GPU-TPU reste allouee (et facturee sur Pro/Pay-as-you-go) jusqu'au
+    # timeout d'inactivite (~90min) ou la limite de session (12-24h), meme si le
+    # training est termine et que personne ne regarde. exit(0)/sys.exit ne suffit
+    # pas : ca tue le kernel, pas la VM (Colab en redemarre un automatiquement).
+    # Sans effet en local (ImportError attendu, google.colab n'existe que sur Colab).
+    try:
+        from google.colab import runtime as colab_runtime
+        print("\n🔌 Fin de script sur Colab : déconnexion du runtime (runtime.unassign)...")
+        colab_runtime.unassign()
+    except ImportError:
+        pass
+

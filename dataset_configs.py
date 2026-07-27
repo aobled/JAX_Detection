@@ -448,7 +448,7 @@ DATASET_CONFIGS = {
         },
 
         # === Modèle ===
-        "model_name": "aircraft_detector_centernet",  # Story 7.2
+        "model_name": "aircraft_detector_centernet",  # Testé le 2026-07-26 : variante "lite" (SeparableConv, -36% params, 1.36M) entrainee et auditee - impact localisation limite mais gain de vitesse/taille reel quasi nul en inference (mesure utilisateur), donc pas de raison de payer la baisse de confiance heatmap (HeatmapActivation val 0.2022->0.1583). Retour a "aircraft_detector_centernet" (2.13M params) comme modele actif. Checkpoint lite conserve en reference (archive/best_model_jax_detector.pkl = non-lite v10, root = lite tant que non re-entraine). ATTENTION: nommage checkpoint derive de dataset_name (JAX_DETECTOR), pas de model_name (Story 5.0, voir "Sauvegarde" plus bas).
 
         # Proportion reelle de pixels positifs (gt_heatmap==1.0) mesuree sur les 211 266
         # images du train set (2026-07-17, execution reelle Story 7.8) : 283 753 pixels

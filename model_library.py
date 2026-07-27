@@ -696,6 +696,138 @@ def create_aircraft_detector_centernet(dropout_rate=0.2, heatmap_prior=0.01, **k
     return AircraftDetectorCenterNet(dropout_rate=dropout_rate, heatmap_prior=heatmap_prior)
 
 
+class AircraftDetectorCenterNetLite(nn.Module):
+    """
+    Variante allegee de AircraftDetectorCenterNet (vitesse d'inference).
+
+    Le bottleneck dilate + branche de contexte global (2026-07-19/07-22) concentre
+    51% des parametres du modele (1.08M/2.13M mesure) ET c'est le mecanisme qui a
+    resolu la chute d'IoU sur les boites plein-cadre (70-100% de l'image) - INTACT
+    ici, caractere pour caractere identique a AircraftDetectorCenterNet. Aucune
+    modification ne touche Conv_6-9 (dilatation, contexte global) ni les tetes de
+    sortie (biais heatmap_prior notamment).
+
+    Seul l'encoder/decoder ("jumeau" AircraftDetectorUNet, AD-10, jamais touche par
+    les fix plein-cadre) est modifie : les convolutions 3x3 pleines deviennent des
+    SeparableConv (depthwise+pointwise, deja utilisee et validee sur les modeles de
+    classification de ce fichier - voir SophisticatedCNN128Lite). Les convs 2x2 de
+    pont avant chaque concat (fusion skip connection) restent des nn.Conv pleines,
+    volontairement - elles ne font que reconcilier les canaux avant fusion, pas de
+    l'extraction spatiale.
+
+    Risque distinct de la classification (Winston, 2026-07-26) : ici la tache est
+    une prediction dense (heatmap+taille par pixel) avec des skip connections qui
+    transportent le detail spatial de l'encoder directement au decodeur - contrairement
+    a un classifieur qui finit par un Global Average Pooling, la factorisation
+    depthwise/pointwise peut couter de la finesse spatiale exactement la ou elle sert.
+    A valider par un vrai entrainement contre la reference actuelle (IoU moyen 0.7003,
+    82.5% GOOD, voir deferred-work.md) - surveiller specifiquement le bucket 70-100%
+    plein-cadre, le cas que la dilatation+contexte a sauve.
+    """
+    dropout_rate: float = 0.2
+    heatmap_prior: float = 0.01
+
+    @nn.compact
+    def __call__(self, x, training: bool = True):
+        # --- ENCODER --- (LITE: nn.Conv -> SeparableConv, sinon identique)
+        # Block 1 (H,W -> H/2,W/2)
+        x1 = SeparableConv(32, (3, 3))(x, training)
+        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.silu(x1)
+        x1 = SeparableConv(32, (3, 3))(x1, training)
+        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.silu(x1)
+        p1 = nn.max_pool(x1, window_shape=(2, 2), strides=(2, 2))
+
+        # Block 2 (H/2,W/2 -> H/4,W/4)
+        x2 = SeparableConv(64, (3, 3))(p1, training)
+        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.silu(x2)
+        x2 = SeparableConv(64, (3, 3))(x2, training)
+        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.silu(x2)
+        p2 = nn.max_pool(x2, window_shape=(2, 2), strides=(2, 2))
+
+        # Block 3 (H/4,W/4 -> H/8,W/8)
+        x3 = SeparableConv(128, (3, 3))(p2, training)
+        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.silu(x3)
+        x3 = SeparableConv(128, (3, 3))(x3, training)
+        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.silu(x3)
+        p3 = nn.max_pool(x3, window_shape=(2, 2), strides=(2, 2))
+
+        # --- BOTTLENECK --- (inchangé, caractère pour caractère - voir docstring)
+        b = nn.Conv(256, (3, 3), kernel_dilation=(2, 2), padding="SAME")(p3)
+        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.silu(b)
+        b = nn.Conv(256, (3, 3), kernel_dilation=(4, 4), padding="SAME")(b)
+        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.silu(b)
+
+        context = jnp.mean(b, axis=(1, 2), keepdims=True)  # (B,1,1,256)
+        context = nn.Conv(256, (1, 1), padding="SAME")(context)
+        context = nn.silu(context)
+        context = jnp.broadcast_to(context, b.shape)  # (B,28,28,256)
+        b = jnp.concatenate([b, context], axis=-1)  # (B,28,28,512) : local + global
+        b = nn.Conv(256, (1, 1), padding="SAME")(b)  # projection retour a 256ch
+        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.silu(b)
+
+        b = nn.Dropout(self.dropout_rate, deterministic=not training)(b)
+
+        # --- DECODER --- (LITE: convs 3x3 post-concat -> SeparableConv ; ponts 2x2 inchangés)
+        # Up 1
+        u1 = jax.image.resize(b, shape=(b.shape[0], x3.shape[1], x3.shape[2], b.shape[3]), method='bilinear')
+        u1 = nn.Conv(128, (2, 2), padding="SAME")(u1)
+        u1 = jnp.concatenate([u1, x3], axis=-1)
+        u1 = SeparableConv(128, (3, 3))(u1, training)
+        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.silu(u1)
+        u1 = SeparableConv(128, (3, 3))(u1, training)
+        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.silu(u1)
+
+        # Up 2
+        u2 = jax.image.resize(u1, shape=(u1.shape[0], x2.shape[1], x2.shape[2], u1.shape[3]), method='bilinear')
+        u2 = nn.Conv(64, (2, 2), padding="SAME")(u2)
+        u2 = jnp.concatenate([u2, x2], axis=-1)
+        u2 = SeparableConv(64, (3, 3))(u2, training)
+        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.silu(u2)
+        u2 = SeparableConv(64, (3, 3))(u2, training)
+        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.silu(u2)
+
+        # Up 3
+        u3 = jax.image.resize(u2, shape=(u2.shape[0], x1.shape[1], x1.shape[2], u2.shape[3]), method='bilinear')
+        u3 = nn.Conv(32, (2, 2), padding="SAME")(u3)
+        u3 = jnp.concatenate([u3, x1], axis=-1)
+        u3 = SeparableConv(32, (3, 3))(u3, training)
+        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.silu(u3)
+        u3 = SeparableConv(32, (3, 3))(u3, training)
+        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.silu(u3)
+
+        # --- OUTPUT : deux têtes paralleles --- (inchangé, voir AircraftDetectorCenterNet)
+        assert 0.0 < self.heatmap_prior < 1.0, (
+            f"heatmap_prior doit etre dans (0,1) - log(p/(1-p)) indefini sinon, recu {self.heatmap_prior}"
+        )
+        heatmap_bias_init = math.log(self.heatmap_prior / (1.0 - self.heatmap_prior))
+        heatmap = nn.Conv(1, (1, 1), padding="SAME", bias_init=nn.initializers.constant(heatmap_bias_init))(u3)
+        heatmap = nn.sigmoid(heatmap)
+
+        size = nn.Conv(2, (1, 1), padding="SAME")(u3)
+
+        return {HEATMAP_KEY: heatmap, SIZE_KEY: size}
+
+
+def create_aircraft_detector_centernet_lite(dropout_rate=0.2, heatmap_prior=0.01, **kwargs):
+    """Factory for CenterNet Detector Lite (encoder/decoder en SeparableConv, bottleneck inchangé)"""
+    return AircraftDetectorCenterNetLite(dropout_rate=dropout_rate, heatmap_prior=heatmap_prior)
+
+
 # MiniUNet/conv_block/create_aircraft_detector_miniunet supprimés le 2026-07-15 : non utilisés par
 # aucune des 4 configs actives (seule référence était une ligne commentée dans dataset_configs.py),
 # aucun .pkl versionné n'en dépendait (vérifié : best_model_detection.pkl est aircraft_detector_unet).
@@ -752,6 +884,7 @@ def create_kepler_1d_cnn(**kwargs):
 MODELS = {
     'aircraft_detector_unet': create_aircraft_detector_unet, # Semantic Segmentation U-Net
     'aircraft_detector_centernet': create_aircraft_detector_centernet, # CenterNet (point central, anchor-free)
+    'aircraft_detector_centernet_lite': create_aircraft_detector_centernet_lite, # CenterNet, encoder/decoder en SeparableConv
     'sophisticated_cnn_128_plus': create_sophisticated_cnn_128_plus,
     'sophisticated_cnn_128_lite': create_sophisticated_cnn_128_lite,
     'sophisticated_cnn_32_plus': create_sophisticated_cnn_32_plus,
@@ -808,9 +941,16 @@ def get_model_info(model_name):
         'aircraft_detector_centernet': {
             'name': 'AircraftDetectorCenterNet',
             'description': 'Détection par point central (heatmap de centres + régression de taille), anchor-free, style CenterNet/CornerNet.',
-            'params': 'non mesuré ici (voir checkpoint)',
+            'params': '2,125,539 mesuré',
             'size': 'non mesuré ici (voir checkpoint)',
             'best_for': 'Détection multi-instances (formations serrées), remplace la segmentation U-Net (AD-9/AD-10).'
+        },
+        'aircraft_detector_centernet_lite': {
+            'name': 'AircraftDetectorCenterNetLite',
+            'description': 'Variante de AircraftDetectorCenterNet: encoder/decoder en SeparableConv (comme SophisticatedCNN128Lite), bottleneck dilaté+contexte global strictement inchangé (AD-20-like: ne pas régresser sur le fix plein-cadre).',
+            'params': 'non mesuré ici (voir checkpoint) - a l\'essai, non entraîné',
+            'size': 'non mesuré ici (voir checkpoint)',
+            'best_for': 'A valider: candidat vitesse d\'inférence pour JAX_DETECTOR si l\'IoU sur le bucket plein-cadre (70-100%) tient face à la référence (0.7003 IoU moyen, 82.5% GOOD).'
         },
         'sophisticated_cnn_128_plus': {
             'name': 'SophisticatedCNN128Plus',
