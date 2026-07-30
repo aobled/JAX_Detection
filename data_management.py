@@ -623,9 +623,16 @@ class ChessPolicyValueDataset:
     flip/zoom/translation n'ont pas de sens géométrique direct sur un plateau encodé en
     planes - non demandé par le PRD/spine.
     """
-    def __init__(self, output_prefix: str, batch_size: int = 32, val_split: float = 0.1, shuffle_seed: int = 42):
+    def __init__(self, output_prefix: str, batch_size: int = 32, val_split: float = 0.1, shuffle_seed: int = 42,
+                 num_planes: int = NUM_PLANES):
         self.output_prefix = output_prefix
         self.batch_size = batch_size
+        # num_planes (2026-07-29, test d'ablation historique, voir deferred-work.md) :
+        # jusqu'ici NUM_PLANES etait code en dur dans output_signature (create_tf_dataset)
+        # au lieu d'etre derive des donnees reelles - cassait silencieusement tout dataset
+        # dont les positions n'ont pas exactement 29 canaux (ex. CHESS_NO_HISTORY, 19
+        # canaux). Defaut NUM_PLANES : comportement inchange pour la config CHESS existante.
+        self.num_planes = num_planes
 
         def _chunk_index(path):
             # Extrait l'entier de "..._chunk{N}.npz" - tri numerique, jamais lexicographique
@@ -681,7 +688,7 @@ class ChessPolicyValueDataset:
                         yield pos, {POLICY_KEY: np.int32(pol), VALUE_KEY: val}
 
         output_signature = (
-            tf.TensorSpec(shape=(BOARD_SIZE, BOARD_SIZE, NUM_PLANES), dtype=tf.float32),
+            tf.TensorSpec(shape=(BOARD_SIZE, BOARD_SIZE, self.num_planes), dtype=tf.float32),
             {
                 POLICY_KEY: tf.TensorSpec(shape=(), dtype=tf.int32),
                 VALUE_KEY: tf.TensorSpec(shape=(), dtype=tf.float32),
@@ -767,7 +774,8 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
         dataset_manager = ChessPolicyValueDataset(
             output_prefix=config["output_prefix"],
             batch_size=backend_config["micro_batch_size"],
-            val_split=config.get("val_split", 0.1)
+            val_split=config.get("val_split", 0.1),
+            num_planes=config.get("num_channels", NUM_PLANES),
         )
         return dataset_manager.get_dataset()
 

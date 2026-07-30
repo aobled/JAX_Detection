@@ -1,5 +1,5 @@
 # generated: 2026-07-12
-# last_updated: 2026-07-27
+# last_updated: 2026-07-29
 # project: jax_supervised_training
 # project_key: NOKEY
 # tracking_system: file-system
@@ -58,7 +58,7 @@
 #     aircraft_detector_centernet(_lite) ni leurs consommateurs (non-regression JAX_DETECTOR).
 
 generated: 2026-07-12
-last_updated: 2026-07-27
+last_updated: 2026-07-29
 project: jax_supervised_training
 project_key: NOKEY
 tracking_system: file-system
@@ -134,11 +134,11 @@ development_status:
   8-9-validation-finale-fusion-de-boites-resolue-non-regression: done
   epic-8-retrospective: done
 
-  epic-9: in-progress
+  epic-9: done
   9-1-module-dechange-partage-builder-dataset-pgn: done
   9-2-nouveau-modele-echecs: done
   9-3-taskstrategy-echecs-loss-composite-et-integration-au-pipeline: done
-  9-4-validation-non-regression-jax-detector-par-execution: ready-for-dev
+  9-4-validation-non-regression-jax-detector-par-execution: done
   epic-9-retrospective: optional
 
 action_items:

@@ -7,7 +7,7 @@ import os
 
 import numpy as np
 
-from chess_target_encoding import NUM_MOVES, NUM_PLANES
+from chess_target_encoding import NUM_MOVES, NUM_PLANES, NUM_POSITION_PLANES
 
 # Racine des datasets chunkés (.npz). Local par défaut ; sur Colab, définir
 # JAX_SUPERVISED_TRAINING_DATA_ROOT (ex: /content/drive/MyDrive/jax_supervised_training/data)
@@ -24,20 +24,29 @@ def validate_config(config_name, config):
         if len(config["class_names"]) != config["num_classes"]:
             errors.append(f"num_classes ({config['num_classes']}) != len(class_names) ({len(config['class_names'])})")
     
-    # Vérifier que image_size est un tuple de 2 entiers
+    # Vérifier que image_size est un tuple de 2 entiers - usage restreint désormais au
+    # retraitement d'image réel (data_management.py/dataset_builder/, resize) depuis que
+    # "input_shape" (2026-07-30) a repris le rôle de forme d'entrée modèle (voir plus bas).
     if "image_size" in config:
         if not isinstance(config["image_size"], tuple) or len(config["image_size"]) != 2:
             errors.append(f"image_size doit être un tuple (H, W)")
-    
+
+    # Vérifier que input_shape est un tuple d'au moins 2 entiers positifs - forme
+    # complète (hors batch) que Trainer.create_train_state() utilise pour construire son
+    # entrée factice (2026-07-30, remplace l'ancien couple image_size+num_channels/
+    # grayscale + branche if/elif par task_type dans trainer.py - source unique, 100%
+    # générique, jamais un domaine qui détourne une autre clé comme JAX_KEPLER le faisait
+    # avec image_size). (H, W, C) pour une image, (longueur, canaux) pour une séquence 1D,
+    # (8, 8, NUM_PLANES) pour les échecs, etc.
+    if "input_shape" in config:
+        shape = config["input_shape"]
+        if not isinstance(shape, tuple) or len(shape) < 2 or not all(isinstance(d, int) and d > 0 for d in shape):
+            errors.append("input_shape doit être un tuple d'au moins 2 entiers positifs, ex. (H, W, C)")
+
     # Vérifier que les paramètres requis sont présents. "image_size" retiré de cette
-    # liste (2026-07-27, décision Aymeric, Story 9.3) : c'était un défaut de conception
-    # forçant tout domaine SANS image (ex. CHESS, plateau 8x8 encodé en planes, pas une
-    # image redimensionnable) à porter une valeur factice. Redevenu conditionnel comme
-    # class_names ci-dessus (verifie seulement si present, lignes suivantes) - aucun
-    # changement de comportement pour les configs existantes, qui fournissent toutes
-    # deja image_size (y compris JAX_KEPLER, qui le detourne deja en (longueur, 1) pour
-    # une sequence 1D - meme esprit que ce fix, pousse un cran plus loin).
-    required = ["num_classes", "model_name"]
+    # liste (2026-07-27, décision Aymeric, Story 9.3) puis remplacé par "input_shape"
+    # (2026-07-30, obligatoire pour tous les domaines - Trainer le lit sans garde).
+    required = ["num_classes", "model_name", "input_shape"]
     for key in required:
         if key not in config:
             errors.append(f"Paramètre requis manquant: {key}")
@@ -77,6 +86,7 @@ DATASET_CONFIGS = {
         "chunk_size": 30000,
         "image_size": (128, 128),
         "grayscale": True,  # ✅ GRAYSCALE (3× plus rapide, même accuracy)
+        "input_shape": (128, 128, 1),  # forme d'entrée modèle (Trainer, 2026-07-30) - dérivée de image_size+grayscale
         "augmentation_params": {
             "flip_h": True,
             "flip_v": False,              # False par défaut, mais on tente à True
@@ -156,6 +166,7 @@ DATASET_CONFIGS = {
         "output_prefix": f"{DATA_ROOT}/chunks/detection/dataset_detection",
         "image_size": (224, 224),
         "grayscale": True,
+        "input_shape": (224, 224, 1),  # forme d'entrée modèle (Trainer, 2026-07-30) - dérivée de image_size+grayscale
         "max_boxes": 20,  # 🔥 Images avec plus de 20 boxes seront ignorées (évite padding excessif et faux négatifs)
         
         # === Augmentation de Données ===
@@ -247,7 +258,11 @@ DATASET_CONFIGS = {
         # (longueur, 1) : format (H,W) attendu par la validation et ChunkManager → tenseurs (L, 1, C)
         "image_size": (3197, 1),
         "grayscale": True,       # Force data_management à ne pas chercher de RGB
-        
+        # input_shape (Trainer, 2026-07-30) : ancien détournement de image_size en (longueur,
+        # 1) pour une séquence 1D remplacé par une forme d'entrée explicite - Trainer ne
+        # devine plus la famille de forme depuis task_type=="kepler", il lit juste ce tuple.
+        "input_shape": (3197, 1),
+
         # === Augmentation de Données ===
         # Pas d'augmentation spatiale (flip_h n'a pas de sens physique direct ici)
         "augmentation_params": {
@@ -321,6 +336,7 @@ DATASET_CONFIGS = {
         "output_prefix": f"{DATA_ROOT}/chunks/cifar10/dataset_cifar10",
         "image_size": (32, 32),
         "grayscale": False,
+        "input_shape": (32, 32, 3),  # forme d'entrée modèle (Trainer, 2026-07-30) - dérivée de image_size+grayscale
         "augmentation_params": {
             "flip_h": True,
             "flip_v": False,
@@ -406,6 +422,7 @@ DATASET_CONFIGS = {
         "chunk_size": 12800,
         "image_size": (224, 224),
         "grayscale": True,
+        "input_shape": (224, 224, 1),  # forme d'entrée modèle (Trainer, 2026-07-30) - dérivée de image_size+grayscale
         "max_boxes": 20,
         # Seuil de score pour valid_mask a l'inference (Story 8.3, AD-15 : seuil en config,
         # jamais une constante privee dupliquee). Valeur de depart alignee sur le
@@ -574,18 +591,26 @@ DATASET_CONFIGS = {
 
         # === Données ===
         "num_classes": NUM_MOVES,  # taille de la tête policy (AD-22) - PAS un nombre de classes
-        # "image_size" reste optionnel (fix validate_config ci-dessus) mais Trainer.create_train_state
-        # (trainer.py:139) le lit sans garde pour construire le dummy_input d'init - fourni ici
-        # (8, 8, taille réelle du plateau) pour ce site de lecture précis, même si
-        # ChessPolicyValueDataset, lui, dérive sa shape de chess_target_encoding.py, pas de la config.
-        "image_size": (8, 8),
-        # "num_channels" (2026-07-27, écart explicite à AC2 arbitré par Aymeric, voir Dev
-        # Notes) : Trainer.__init__ dérive normalement 1/3 canaux de "grayscale" - ne
-        # convient pas aux 29 canaux (NUM_PLANES) du domaine échecs. Trainer.__init__ lit
-        # désormais "num_channels" en priorité (fallback grayscale/RGB inchangé si absent).
+        # "image_size" retiré (2026-07-30) : n'a jamais eu de sens pour les échecs, n'était
+        # là que pour satisfaire l'ancienne lecture sans garde de Trainer.create_train_state
+        # - remplacée par "input_shape" ci-dessous (source unique, générique).
+        # "num_channels" : toujours utilisé par ChessPolicyValueDataset (data_management.py,
+        # get_datasets()) pour la forme des tenseurs de position - rôle distinct de
+        # "input_shape", ne pas retirer.
         "num_channels": NUM_PLANES,
+        # "input_shape" (2026-07-30, remplace l'ancien couple image_size+num_channels côté
+        # Trainer, voir trainer.py::create_train_state) : forme complète (hors batch) de
+        # l'entrée modèle - (8, 8, NUM_PLANES) ici.
+        "input_shape": (8, 8, NUM_PLANES),
         # Pas de "class_names" (n'a pas de sens pour un espace de 4672 coups).
         "model_name": "chess_cnn_attention_policy_value",
+        # num_bottleneck_tokens (K) : teste a 32 le 2026-07-28 (cout quasi nul confirme -
+        # +1536 parametres sur 382 017, temps d'epoch quasi identique) mais resultat legerement
+        # EN DESSOUS de K=8 (23.81% vs 24.43% val PolicyAccuracy, meme dataset Carlsen, voir
+        # deferred-work.md "test num_bottleneck_tokens K=8->32") - remis a la valeur par defaut
+        # du modele (8) en consequence. Prochain levier a explorer : dataset multi-joueurs
+        # (deferred-work.md), pas d'autre retouche isolee de K/D.
+        "num_bottleneck_tokens": 8,
         # Sous-dossier dédié (chunks/chess/chess_*.npz), cohérent avec la convention déjà
         # utilisée pour JAX_DETECTOR (chunks/jax_detector/jax_detector_targets_*.npz) -
         # corrigé le 2026-07-27 (Aymeric avait initialement mis les chunks directement
@@ -656,6 +681,101 @@ DATASET_CONFIGS = {
         # dataset_name (Story 5.0, ChessPolicyValueStrategy._get_export_path, Story 9.3)
         # -> best_model_chess.pkl / best_model_training_state_chess.pkl
         "save_dir": "./checkpoints_chess",
+    },
+
+    "CHESS_NO_HISTORY": {
+        # === Variante d'ablation de CHESS - test "l'historique sert-il a quelque chose ?"
+        # (2026-07-29, voir deferred-work.md "test ablation historique"). Copie de CHESS,
+        # seules 3 differences : num_channels (19 au lieu de 29), output_prefix (dataset
+        # regenere sans les 10 plans d'historique, chess_target_encoding.py::encode_position
+        # avec include_history=False), save_dir (checkpoint distinct). Tout le reste
+        # (hyperparametres GPU/TPU, K du bottleneck, etc.) identique a CHESS pour une
+        # comparaison directe et isolee sur ce seul facteur.
+        "task_type": "chess_policy_value",
+        "num_classes": NUM_MOVES,
+        "num_channels": NUM_POSITION_PLANES,  # 19, pas NUM_PLANES (29) - pas d'historique
+        "input_shape": (8, 8, NUM_POSITION_PLANES),  # forme d'entrée modèle (Trainer, 2026-07-30)
+        "model_name": "chess_cnn_attention_policy_value",
+        "num_bottleneck_tokens": 8,
+        "output_prefix": f"{DATA_ROOT}/chunks/chess_no_history/chess",
+        "val_split": 0.1,
+        "loss_params": {
+            "policy_weight": 1.0,
+            "value_weight": 1.0,
+        },
+        "tpu": {
+            "micro_batch_size": 128,
+            "accum_steps": 1,
+            "learning_rate": 4e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            "decay_steps": 10000,
+        },
+        "gpu": {
+            "micro_batch_size": 256,
+            "accum_steps": 1,
+            "learning_rate": 8e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            "decay_steps": 36700,
+        },
+        "optimizer": "adamw",
+        "lr_schedule": "cosine",
+        "epochs": 15,
+        "patience": 8,
+        "eval_batch_size": 64,
+        "save_dir": "./checkpoints_chess_no_history",
+    },
+
+    "CHESS_NAKAMURA_NO_HISTORY": {
+        # === "model2" - test 2026-07-29 : les donnees d'entrainement (joueur source,
+        # volume) influencent-elles reellement la qualite de jeu, ou est-on proche du
+        # hasard ? Voir deferred-work.md "tournoi model1 (Carlsen) vs model2 (Nakamura)".
+        # Copie de CHESS_NO_HISTORY (meme variante sans historique - un seul facteur
+        # teste a la fois, pas deux), seule la source PGN change : Nakamura.pgn au lieu
+        # de Carlsen.pgn, 943 250 positions / 9756 parties / 189 chunks (~35% de plus que
+        # Carlsen, confondu avec le style du joueur - assume et documente, pas isole).
+        "task_type": "chess_policy_value",
+        "num_classes": NUM_MOVES,
+        "num_channels": NUM_POSITION_PLANES,
+        "input_shape": (8, 8, NUM_POSITION_PLANES),  # forme d'entrée modèle (Trainer, 2026-07-30)
+        "model_name": "chess_cnn_attention_policy_value",
+        "num_bottleneck_tokens": 8,
+        "output_prefix": f"{DATA_ROOT}/chunks/nakamura_no_history/nakamura",
+        "val_split": 0.1,
+        "loss_params": {
+            "policy_weight": 1.0,
+            "value_weight": 1.0,
+        },
+        "tpu": {
+            "micro_batch_size": 128,
+            "accum_steps": 1,
+            "learning_rate": 4e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            "decay_steps": 13600,  # ~ decay_steps CHESS_NO_HISTORY (10000) x ratio positions
+        },
+        "gpu": {
+            "micro_batch_size": 256,
+            "accum_steps": 1,
+            "learning_rate": 8e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            # Recalcule pour ce volume (943 250 positions, pas 691 779) : ~171 chunks train
+            # x ~5000/256 ~= 3333 steps/epoch x 15 epochs ~= 50000 (cf. CHESS_NO_HISTORY,
+            # 36700 pour 626802 positions - proportionnel, meme methode).
+            "decay_steps": 50000,
+        },
+        "optimizer": "adamw",
+        "lr_schedule": "cosine",
+        "epochs": 15,
+        "patience": 8,
+        "eval_batch_size": 64,
+        "save_dir": "./checkpoints_chess_nakamura_no_history",
     }
 }
 

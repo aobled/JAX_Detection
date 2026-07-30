@@ -69,12 +69,16 @@ def _value_for_mover(result: str, mover_is_white: bool) -> float:
     return 0.0  # "1/2-1/2" (nulle) ou "*" (inconnu)
 
 
-def _iter_game_examples(game: "chess.pgn.Game"):
+def _iter_game_examples(game: "chess.pgn.Game", include_history: bool = True):
     """
     Genere (position_planes, policy_index, value) pour chaque demi-coup de `game`,
     Blancs et Noirs confondus, sans filtrage par resultat de partie (FR3) - y compris
     les toutes premieres positions (historique < 5 demi-coups, padding a zero gere par
     encode_position).
+
+    include_history: forwarde a encode_position (2026-07-29, test d'ablation historique,
+    voir deferred-work.md) - defaut True, comportement inchange pour les appelants
+    existants.
     """
     result = game.headers.get("Result", "*")
     board = game.board()
@@ -87,7 +91,7 @@ def _iter_game_examples(game: "chess.pgn.Game"):
         # toute la partie - repasser la liste entiere copierait un nombre croissant
         # d'elements a chaque demi-coup (O(n) par appel, O(n^2) sur la partie entiere)
         # pour un resultat identique.
-        planes = encode_position(board, history[-HISTORY_LENGTH:])
+        planes = encode_position(board, history[-HISTORY_LENGTH:], include_history=include_history)
         policy_idx = move_to_index(move, board)
         yield planes, policy_idx, value
 
@@ -119,7 +123,7 @@ def _save_chunk(output_prefix: str, chunk_idx: int, positions: list, policies: l
     _release_freed_memory_to_os()
 
 
-def build_chess_dataset(pgn_paths, output_prefix: str, chunk_size: int = 5000) -> int:
+def build_chess_dataset(pgn_paths, output_prefix: str, chunk_size: int = 5000, include_history: bool = True) -> int:
     """
     Construit le dataset echecs a partir d'une ou plusieurs archives PGN et l'ecrit en
     chunks .npz compresses (POSITION_KEY/POLICY_KEY/VALUE_KEY, source unique AD-18).
@@ -130,6 +134,11 @@ def build_chess_dataset(pgn_paths, output_prefix: str, chunk_size: int = 5000) -
         output_prefix: prefixe des fichiers de sortie - chaque chunk ecrit
             "{output_prefix}_chunk{N}.npz"
         chunk_size: nombre d'exemples (positions) par chunk
+        include_history: forwarde a chess_target_encoding.py::encode_position
+            (2026-07-29, test d'ablation historique, voir deferred-work.md) - si False,
+            les positions ecrites n'ont que NUM_POSITION_PLANES=19 canaux (pas
+            NUM_PLANES=29). Defaut True, comportement inchange pour les appelants
+            existants (ex. les 139 chunks deja generes pour la config CHESS).
 
     Returns: nombre total d'exemples (positions) produits, toutes archives/parties
         confondues.
@@ -173,7 +182,7 @@ def build_chess_dataset(pgn_paths, output_prefix: str, chunk_size: int = 5000) -
                 # est ecartee plutot que de laisser des exemples partiels contaminer le
                 # dataset - une seule partie corrompue n'interrompt jamais l'import complet.
                 try:
-                    game_examples = list(_iter_game_examples(game))
+                    game_examples = list(_iter_game_examples(game, include_history=include_history))
                 except (ValueError, chess.IllegalMoveError) as e:
                     games_skipped += 1
                     print(f"[avertissement] {pgn_path}: partie ignoree ({game.headers.get('Event', '?')}) - {e}")

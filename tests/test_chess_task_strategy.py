@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import contextlib
 import glob
 import io
-import subprocess
 import tempfile
 
 import jax
@@ -180,11 +179,13 @@ def test_dataset_config_chess_entry():
     assert config["task_type"] == "chess_policy_value"
     assert config["num_classes"] == NUM_MOVES
     assert config["model_name"] == "chess_cnn_attention_policy_value"
-    # image_size/num_channels PRESENTS (revu en code review, 2026-07-27) : Trainer.create_train_state
-    # (trainer.py:139) et le fix num_channels (trainer.py:101) les lisent sans garde pour
-    # construire le dummy_input d'init - fournis ici meme si ChessPolicyValueDataset, lui,
-    # derive sa shape reelle de chess_target_encoding.py, pas de la config.
-    assert config["image_size"] == (8, 8)
+    # input_shape PRESENT, image_size ABSENT (2026-07-30, remplace l'ancien couple
+    # image_size+num_channels cote Trainer - voir dataset_configs.py::validate_config) :
+    # Trainer.create_train_state le lit sans garde pour construire le dummy_input d'init.
+    # num_channels reste present separement (role distinct : ChessPolicyValueDataset,
+    # data_management.py, en a besoin pour la forme des tenseurs de position).
+    assert "image_size" not in config, "CHESS ne devrait plus avoir image_size (retire 2026-07-30)"
+    assert config["input_shape"] == (8, 8, NUM_PLANES)
     assert config["num_channels"] == NUM_PLANES
     assert "class_names" not in config, "CHESS ne devrait pas avoir class_names"
     # dropout_rate niche sous tpu/gpu (pas top-level) - bug trouve en code review
@@ -208,39 +209,20 @@ def test_dataset_config_chess_entry():
         "validate_config aurait du rejeter une config sans num_classes/model_name"
     )
 
-    print(f"OK - entree CHESS presente/valide (image_size/num_channels presents, class_names absent, "
-          f"dropout_rate niche sous tpu/gpu), toutes les {len(DATASET_CONFIGS)} configs passent "
+    print(f"OK - entree CHESS presente/valide (input_shape/num_channels presents, image_size/class_names "
+          f"absents, dropout_rate niche sous tpu/gpu), toutes les {len(DATASET_CONFIGS)} configs passent "
           f"validate_config (aucune regression), chemin negatif (config incomplete rejetee) verifie")
 
 
-def test_trainer_change_is_the_single_authorized_deviation():
-    # AC2 amende (2026-07-27, decision Aymeric en code review - voir Dev Notes/Completion
-    # Notes de cette story) : trainer.py n'est plus attendu a zero changement, mais a
-    # EXACTEMENT le fix num_channels autorise, rien d'autre. Verifie le diff plutot que de
-    # faire confiance a la description - il ne doit y avoir qu'une seule ligne de code
-    # reellement changee (hors commentaires).
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    result = subprocess.run(
-        ["git", "diff", "1a85f2583c10770dcbeb84140aaac9fe842781f7", "--", "trainer.py"],
-        cwd=repo_root, capture_output=True, text=True,
-    )
-    assert result.returncode == 0, f"git diff a echoue: {result.stderr}"
-
-    removed_code_lines = [
-        l for l in result.stdout.splitlines()
-        if l.startswith("-") and not l.startswith("---") and l[1:].strip() and not l[1:].strip().startswith("#")
-    ]
-    added_code_lines = [
-        l for l in result.stdout.splitlines()
-        if l.startswith("+") and not l.startswith("+++") and l[1:].strip() and not l[1:].strip().startswith("#")
-    ]
-    assert removed_code_lines == ["-        self.num_channels = 1 if self.grayscale else 3"], (
-        f"trainer.py : lignes de code supprimees inattendues (au-dela du fix autorise) : {removed_code_lines}"
-    )
-    assert added_code_lines == ['+        self.num_channels = config.get("num_channels", 1 if self.grayscale else 3)'], (
-        f"trainer.py : lignes de code ajoutees inattendues (au-dela du fix autorise) : {added_code_lines}"
-    )
-    print("OK - trainer.py ne porte que le fix num_channels explicitement autorise (AC2 amende), rien d'autre")
+# test_trainer_change_is_the_single_authorized_deviation (Story 9.3/9.4) retire le
+# 2026-07-30 : verifiait que trainer.py ne portait qu'un seul ecart autorise a AC2
+# (Epic 9), diffe contre le commit pre-epic. Premisse obsolete depuis le refactor
+# "input_shape" (voir dataset_configs.py::validate_config, meme date) - un changement
+# plus large et deliberement voulu de trainer.py, plus une contrainte AC2 d'epic close.
+# Couverture desormais assuree autrement : test_trainer_create_train_state_for_chess
+# ci-dessous exerce le vrai chemin Trainer avec la config CHESS reelle, et le nombre de
+# parametres attendu (382017) prouve indirectement que input_shape encode bien 29 canaux
+# (une mauvaise valeur donnerait un premier conv de taille differente).
 
 
 def test_trainer_create_train_state_for_chess():
@@ -265,8 +247,10 @@ def test_trainer_create_train_state_for_chess():
     strategy = ChessPolicyValueStrategy(loss_params=config["loss_params"])
     trainer = Trainer(model, config, backend, strategy)
 
-    assert trainer.num_channels == NUM_PLANES, (
-        f"Trainer.num_channels attendu {NUM_PLANES} (config['num_channels']), obtenu {trainer.num_channels}"
+    # "input_shape" (2026-07-30) remplace l'ancien attribut Trainer.num_channels (retire) -
+    # verifie directement la cle de config que create_train_state() consomme desormais.
+    assert config["input_shape"] == (8, 8, NUM_PLANES), (
+        f"config['input_shape'] attendu (8, 8, {NUM_PLANES}), obtenu {config['input_shape']}"
     )
     assert trainer.class_names == [], "Trainer.class_names attendu [] (CHESS n'en a pas, fallback .get())"
 
@@ -275,7 +259,7 @@ def test_trainer_create_train_state_for_chess():
     assert n_params == 382017, f"nombre de parametres inattendu : {n_params} (attendu 382017, Story 9.2)"
 
     print(f"OK - Trainer(config=CHESS).create_train_state() reussit via le vrai chemin main.py "
-          f"(num_channels={trainer.num_channels}, {n_params} parametres, coherent avec Story 9.2)")
+          f"(input_shape={config['input_shape']}, {n_params} parametres, coherent avec Story 9.2)")
 
 
 def test_real_chunks_compatibility_if_present():
@@ -301,7 +285,6 @@ if __name__ == "__main__":
     test_compute_chess_policy_value_loss_exact_values()
     test_end_to_end_strategy_with_real_model()
     test_dataset_config_chess_entry()
-    test_trainer_change_is_the_single_authorized_deviation()
     test_trainer_create_train_state_for_chess()
     test_real_chunks_compatibility_if_present()
     print("\nTous les tests de ChessPolicyValueStrategy/ChessPolicyValueDataset sont passes.")

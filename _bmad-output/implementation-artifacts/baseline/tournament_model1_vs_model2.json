@@ -1,0 +1,1615 @@
+{
+  "stats": {
+    "model1_wins": 0,
+    "model2_wins": 1,
+    "draws": 99,
+    "model1_wins_as_white": 0,
+    "model1_wins_as_black": 0,
+    "model2_wins_as_white": 1,
+    "model2_wins_as_black": 0,
+    "draws_as_model1_white": 50,
+    "draws_as_model1_black": 49
+  },
+  "games": [
+    {
+      "game": 0,
+      "pair": 0,
+      "opening": [
+        "c2c4",
+        "b8a6",
+        "g1h3",
+        "b7b6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 188
+    },
+    {
+      "game": 1,
+      "pair": 0,
+      "opening": [
+        "c2c4",
+        "b8a6",
+        "g1h3",
+        "b7b6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 137
+    },
+    {
+      "game": 2,
+      "pair": 1,
+      "opening": [
+        "e2e3",
+        "c7c6",
+        "g1e2",
+        "g7g6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 123
+    },
+    {
+      "game": 3,
+      "pair": 1,
+      "opening": [
+        "e2e3",
+        "c7c6",
+        "g1e2",
+        "g7g6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 84
+    },
+    {
+      "game": 4,
+      "pair": 2,
+      "opening": [
+        "h2h4",
+        "e7e6",
+        "d2d4",
+        "h7h5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 85
+    },
+    {
+      "game": 5,
+      "pair": 2,
+      "opening": [
+        "h2h4",
+        "e7e6",
+        "d2d4",
+        "h7h5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 117
+    },
+    {
+      "game": 6,
+      "pair": 3,
+      "opening": [
+        "f2f4",
+        "b7b5",
+        "g2g4",
+        "c8a6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 121
+    },
+    {
+      "game": 7,
+      "pair": 3,
+      "opening": [
+        "f2f4",
+        "b7b5",
+        "g2g4",
+        "c8a6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 86
+    },
+    {
+      "game": 8,
+      "pair": 4,
+      "opening": [
+        "c2c4",
+        "g7g5",
+        "d1a4",
+        "b8a6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 161
+    },
+    {
+      "game": 9,
+      "pair": 4,
+      "opening": [
+        "c2c4",
+        "g7g5",
+        "d1a4",
+        "b8a6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 210
+    },
+    {
+      "game": 10,
+      "pair": 5,
+      "opening": [
+        "b1a3",
+        "a7a5",
+        "g2g4",
+        "c7c5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 127
+    },
+    {
+      "game": 11,
+      "pair": 5,
+      "opening": [
+        "b1a3",
+        "a7a5",
+        "g2g4",
+        "c7c5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 101
+    },
+    {
+      "game": 12,
+      "pair": 6,
+      "opening": [
+        "g2g3",
+        "h7h5",
+        "b2b3",
+        "f7f5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 73
+    },
+    {
+      "game": 13,
+      "pair": 6,
+      "opening": [
+        "g2g3",
+        "h7h5",
+        "b2b3",
+        "f7f5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 114
+    },
+    {
+      "game": 14,
+      "pair": 7,
+      "opening": [
+        "b1c3",
+        "b7b6",
+        "a2a3",
+        "e7e5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 84
+    },
+    {
+      "game": 15,
+      "pair": 7,
+      "opening": [
+        "b1c3",
+        "b7b6",
+        "a2a3",
+        "e7e5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 121
+    },
+    {
+      "game": 16,
+      "pair": 8,
+      "opening": [
+        "g2g4",
+        "d7d6",
+        "e2e3",
+        "b8d7"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 117
+    },
+    {
+      "game": 17,
+      "pair": 8,
+      "opening": [
+        "g2g4",
+        "d7d6",
+        "e2e3",
+        "b8d7"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 171
+    },
+    {
+      "game": 18,
+      "pair": 9,
+      "opening": [
+        "b1a3",
+        "g7g6",
+        "a3b1",
+        "b8c6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 109
+    },
+    {
+      "game": 19,
+      "pair": 9,
+      "opening": [
+        "b1a3",
+        "g7g6",
+        "a3b1",
+        "b8c6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 163
+    },
+    {
+      "game": 20,
+      "pair": 10,
+      "opening": [
+        "c2c4",
+        "b7b6",
+        "d1a4",
+        "f7f6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 95
+    },
+    {
+      "game": 21,
+      "pair": 10,
+      "opening": [
+        "c2c4",
+        "b7b6",
+        "d1a4",
+        "f7f6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 133
+    },
+    {
+      "game": 22,
+      "pair": 11,
+      "opening": [
+        "g2g3",
+        "g7g5",
+        "d2d4",
+        "g8h6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 118
+    },
+    {
+      "game": 23,
+      "pair": 11,
+      "opening": [
+        "g2g3",
+        "g7g5",
+        "d2d4",
+        "g8h6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 99
+    },
+    {
+      "game": 24,
+      "pair": 12,
+      "opening": [
+        "c2c3",
+        "d7d6",
+        "a2a4",
+        "b8d7"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 83
+    },
+    {
+      "game": 25,
+      "pair": 12,
+      "opening": [
+        "c2c3",
+        "d7d6",
+        "a2a4",
+        "b8d7"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 107
+    },
+    {
+      "game": 26,
+      "pair": 13,
+      "opening": [
+        "b1a3",
+        "b8a6",
+        "e2e3",
+        "c7c6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 117
+    },
+    {
+      "game": 27,
+      "pair": 13,
+      "opening": [
+        "b1a3",
+        "b8a6",
+        "e2e3",
+        "c7c6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 113
+    },
+    {
+      "game": 28,
+      "pair": 14,
+      "opening": [
+        "f2f3",
+        "d7d6",
+        "h2h4",
+        "c8h3"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 113
+    },
+    {
+      "game": 29,
+      "pair": 14,
+      "opening": [
+        "f2f3",
+        "d7d6",
+        "h2h4",
+        "c8h3"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 127
+    },
+    {
+      "game": 30,
+      "pair": 15,
+      "opening": [
+        "a2a4",
+        "h7h6",
+        "c2c4",
+        "c7c5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 84
+    },
+    {
+      "game": 31,
+      "pair": 15,
+      "opening": [
+        "a2a4",
+        "h7h6",
+        "c2c4",
+        "c7c5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 131
+    },
+    {
+      "game": 32,
+      "pair": 16,
+      "opening": [
+        "a2a4",
+        "e7e5",
+        "d2d3",
+        "d7d6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 156
+    },
+    {
+      "game": 33,
+      "pair": 16,
+      "opening": [
+        "a2a4",
+        "e7e5",
+        "d2d3",
+        "d7d6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 153
+    },
+    {
+      "game": 34,
+      "pair": 17,
+      "opening": [
+        "h2h3",
+        "f7f6",
+        "d2d3",
+        "b7b5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 213
+    },
+    {
+      "game": 35,
+      "pair": 17,
+      "opening": [
+        "h2h3",
+        "f7f6",
+        "d2d3",
+        "b7b5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 72
+    },
+    {
+      "game": 36,
+      "pair": 18,
+      "opening": [
+        "e2e4",
+        "a7a6",
+        "g2g3",
+        "d7d6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 106
+    },
+    {
+      "game": 37,
+      "pair": 18,
+      "opening": [
+        "e2e4",
+        "a7a6",
+        "g2g3",
+        "d7d6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 82
+    },
+    {
+      "game": 38,
+      "pair": 19,
+      "opening": [
+        "d2d3",
+        "b7b5",
+        "g1h3",
+        "h7h6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 88
+    },
+    {
+      "game": 39,
+      "pair": 19,
+      "opening": [
+        "d2d3",
+        "b7b5",
+        "g1h3",
+        "h7h6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 88
+    },
+    {
+      "game": 40,
+      "pair": 20,
+      "opening": [
+        "d2d3",
+        "g7g5",
+        "b1d2",
+        "h7h6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 162
+    },
+    {
+      "game": 41,
+      "pair": 20,
+      "opening": [
+        "d2d3",
+        "g7g5",
+        "b1d2",
+        "h7h6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 93
+    },
+    {
+      "game": 42,
+      "pair": 21,
+      "opening": [
+        "g1f3",
+        "g7g6",
+        "f3h4",
+        "h7h5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 83
+    },
+    {
+      "game": 43,
+      "pair": 21,
+      "opening": [
+        "g1f3",
+        "g7g6",
+        "f3h4",
+        "h7h5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 118
+    },
+    {
+      "game": 44,
+      "pair": 22,
+      "opening": [
+        "d2d3",
+        "h7h6",
+        "g2g3",
+        "b7b6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 103
+    },
+    {
+      "game": 45,
+      "pair": 22,
+      "opening": [
+        "d2d3",
+        "h7h6",
+        "g2g3",
+        "b7b6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 84
+    },
+    {
+      "game": 46,
+      "pair": 23,
+      "opening": [
+        "c2c3",
+        "a7a6",
+        "a2a3",
+        "a8a7"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 116
+    },
+    {
+      "game": 47,
+      "pair": 23,
+      "opening": [
+        "c2c3",
+        "a7a6",
+        "a2a3",
+        "a8a7"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 153
+    },
+    {
+      "game": 48,
+      "pair": 24,
+      "opening": [
+        "b1a3",
+        "f7f5",
+        "b2b4",
+        "b7b6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 113
+    },
+    {
+      "game": 49,
+      "pair": 24,
+      "opening": [
+        "b1a3",
+        "f7f5",
+        "b2b4",
+        "b7b6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 288
+    },
+    {
+      "game": 50,
+      "pair": 25,
+      "opening": [
+        "c2c3",
+        "h7h5",
+        "g1h3",
+        "f7f6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 142
+    },
+    {
+      "game": 51,
+      "pair": 25,
+      "opening": [
+        "c2c3",
+        "h7h5",
+        "g1h3",
+        "f7f6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 81
+    },
+    {
+      "game": 52,
+      "pair": 26,
+      "opening": [
+        "e2e3",
+        "d7d6",
+        "a2a3",
+        "g7g6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 112
+    },
+    {
+      "game": 53,
+      "pair": 26,
+      "opening": [
+        "e2e3",
+        "d7d6",
+        "a2a3",
+        "g7g6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 177
+    },
+    {
+      "game": 54,
+      "pair": 27,
+      "opening": [
+        "c2c4",
+        "c7c6",
+        "g1h3",
+        "h7h5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 169
+    },
+    {
+      "game": 55,
+      "pair": 27,
+      "opening": [
+        "c2c4",
+        "c7c6",
+        "g1h3",
+        "h7h5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 97
+    },
+    {
+      "game": 56,
+      "pair": 28,
+      "opening": [
+        "e2e4",
+        "a7a6",
+        "b2b4",
+        "e7e6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 154
+    },
+    {
+      "game": 57,
+      "pair": 28,
+      "opening": [
+        "e2e4",
+        "a7a6",
+        "b2b4",
+        "e7e6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 186
+    },
+    {
+      "game": 58,
+      "pair": 29,
+      "opening": [
+        "e2e4",
+        "g8h6",
+        "g1f3",
+        "e7e5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 95
+    },
+    {
+      "game": 59,
+      "pair": 29,
+      "opening": [
+        "e2e4",
+        "g8h6",
+        "g1f3",
+        "e7e5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 87
+    },
+    {
+      "game": 60,
+      "pair": 30,
+      "opening": [
+        "c2c4",
+        "b7b6",
+        "g2g4",
+        "h7h6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 204
+    },
+    {
+      "game": 61,
+      "pair": 30,
+      "opening": [
+        "c2c4",
+        "b7b6",
+        "g2g4",
+        "h7h6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 114
+    },
+    {
+      "game": 62,
+      "pair": 31,
+      "opening": [
+        "f2f4",
+        "c7c6",
+        "h2h3",
+        "g8f6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 164
+    },
+    {
+      "game": 63,
+      "pair": 31,
+      "opening": [
+        "f2f4",
+        "c7c6",
+        "h2h3",
+        "g8f6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 109
+    },
+    {
+      "game": 64,
+      "pair": 32,
+      "opening": [
+        "b1a3",
+        "b7b5",
+        "f2f3",
+        "a7a5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 123
+    },
+    {
+      "game": 65,
+      "pair": 32,
+      "opening": [
+        "b1a3",
+        "b7b5",
+        "f2f3",
+        "a7a5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 75
+    },
+    {
+      "game": 66,
+      "pair": 33,
+      "opening": [
+        "e2e3",
+        "g8f6",
+        "f1e2",
+        "f6e4"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 70
+    },
+    {
+      "game": 67,
+      "pair": 33,
+      "opening": [
+        "e2e3",
+        "g8f6",
+        "f1e2",
+        "f6e4"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 137
+    },
+    {
+      "game": 68,
+      "pair": 34,
+      "opening": [
+        "f2f4",
+        "f7f5",
+        "e2e4",
+        "h7h6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 135
+    },
+    {
+      "game": 69,
+      "pair": 34,
+      "opening": [
+        "f2f4",
+        "f7f5",
+        "e2e4",
+        "h7h6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1-0",
+      "winner": "model2",
+      "reason": "checkmate",
+      "n_halfmoves": 79
+    },
+    {
+      "game": 70,
+      "pair": 35,
+      "opening": [
+        "e2e3",
+        "a7a6",
+        "f2f3",
+        "e7e6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 111
+    },
+    {
+      "game": 71,
+      "pair": 35,
+      "opening": [
+        "e2e3",
+        "a7a6",
+        "f2f3",
+        "e7e6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 144
+    },
+    {
+      "game": 72,
+      "pair": 36,
+      "opening": [
+        "b1a3",
+        "e7e5",
+        "d2d3",
+        "b7b5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 138
+    },
+    {
+      "game": 73,
+      "pair": 36,
+      "opening": [
+        "b1a3",
+        "e7e5",
+        "d2d3",
+        "b7b5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 66
+    },
+    {
+      "game": 74,
+      "pair": 37,
+      "opening": [
+        "b2b4",
+        "c7c5",
+        "a2a4",
+        "a7a6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 134
+    },
+    {
+      "game": 75,
+      "pair": 37,
+      "opening": [
+        "b2b4",
+        "c7c5",
+        "a2a4",
+        "a7a6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 134
+    },
+    {
+      "game": 76,
+      "pair": 38,
+      "opening": [
+        "g2g3",
+        "b8a6",
+        "f1h3",
+        "c7c5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 88
+    },
+    {
+      "game": 77,
+      "pair": 38,
+      "opening": [
+        "g2g3",
+        "b8a6",
+        "f1h3",
+        "c7c5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 168
+    },
+    {
+      "game": 78,
+      "pair": 39,
+      "opening": [
+        "g2g3",
+        "g8h6",
+        "g1h3",
+        "h6g4"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 110
+    },
+    {
+      "game": 79,
+      "pair": 39,
+      "opening": [
+        "g2g3",
+        "g8h6",
+        "g1h3",
+        "h6g4"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 123
+    },
+    {
+      "game": 80,
+      "pair": 40,
+      "opening": [
+        "a2a4",
+        "g7g6",
+        "b1c3",
+        "h7h5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 180
+    },
+    {
+      "game": 81,
+      "pair": 40,
+      "opening": [
+        "a2a4",
+        "g7g6",
+        "b1c3",
+        "h7h5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 74
+    },
+    {
+      "game": 82,
+      "pair": 41,
+      "opening": [
+        "g1f3",
+        "c7c6",
+        "f3e5",
+        "g8f6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 128
+    },
+    {
+      "game": 83,
+      "pair": 41,
+      "opening": [
+        "g1f3",
+        "c7c6",
+        "f3e5",
+        "g8f6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 92
+    },
+    {
+      "game": 84,
+      "pair": 42,
+      "opening": [
+        "e2e3",
+        "g8h6",
+        "f2f4",
+        "a7a6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 140
+    },
+    {
+      "game": 85,
+      "pair": 42,
+      "opening": [
+        "e2e3",
+        "g8h6",
+        "f2f4",
+        "a7a6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 80
+    },
+    {
+      "game": 86,
+      "pair": 43,
+      "opening": [
+        "b2b4",
+        "c7c6",
+        "d2d3",
+        "a7a6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 162
+    },
+    {
+      "game": 87,
+      "pair": 43,
+      "opening": [
+        "b2b4",
+        "c7c6",
+        "d2d3",
+        "a7a6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 109
+    },
+    {
+      "game": 88,
+      "pair": 44,
+      "opening": [
+        "c2c3",
+        "a7a6",
+        "b2b3",
+        "d7d5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 99
+    },
+    {
+      "game": 89,
+      "pair": 44,
+      "opening": [
+        "c2c3",
+        "a7a6",
+        "b2b3",
+        "d7d5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 130
+    },
+    {
+      "game": 90,
+      "pair": 45,
+      "opening": [
+        "f2f3",
+        "b7b5",
+        "b1a3",
+        "c8a6"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 109
+    },
+    {
+      "game": 91,
+      "pair": 45,
+      "opening": [
+        "f2f3",
+        "b7b5",
+        "b1a3",
+        "c8a6"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 97
+    },
+    {
+      "game": 92,
+      "pair": 46,
+      "opening": [
+        "g2g3",
+        "b7b5",
+        "b1a3",
+        "f7f5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 162
+    },
+    {
+      "game": 93,
+      "pair": 46,
+      "opening": [
+        "g2g3",
+        "b7b5",
+        "b1a3",
+        "f7f5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 206
+    },
+    {
+      "game": 94,
+      "pair": 47,
+      "opening": [
+        "a2a3",
+        "h7h5",
+        "g1f3",
+        "h5h4"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "stalemate",
+      "n_halfmoves": 124
+    },
+    {
+      "game": 95,
+      "pair": 47,
+      "opening": [
+        "a2a3",
+        "h7h5",
+        "g1f3",
+        "h5h4"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 98
+    },
+    {
+      "game": 96,
+      "pair": 48,
+      "opening": [
+        "g1f3",
+        "b7b6",
+        "e2e4",
+        "c7c5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 239
+    },
+    {
+      "game": 97,
+      "pair": 48,
+      "opening": [
+        "g1f3",
+        "b7b6",
+        "e2e4",
+        "c7c5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 134
+    },
+    {
+      "game": 98,
+      "pair": 49,
+      "opening": [
+        "a2a4",
+        "h7h6",
+        "f2f4",
+        "h6h5"
+      ],
+      "white": "model1",
+      "black": "model2",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 157
+    },
+    {
+      "game": 99,
+      "pair": 49,
+      "opening": [
+        "a2a4",
+        "h7h6",
+        "f2f4",
+        "h6h5"
+      ],
+      "white": "model2",
+      "black": "model1",
+      "result": "1/2-1/2",
+      "winner": null,
+      "reason": "fivefold_repetition",
+      "n_halfmoves": 103
+    }
+  ]
+}

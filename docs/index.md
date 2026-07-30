@@ -29,6 +29,7 @@ _Généré par `bmad-document-project`, 2026-07-12. Point d'entrée principal po
 - [strat_unet_detection.md](./strat_unet_detection.md) — Détection via UNet
 - [strat_video_detection.md](./strat_video_detection.md) — Traitement vidéo
 - [AircraftDetectorUNet.md](./AircraftDetectorUNet.md) — Doc du modèle UNet
+- [ChessCnnAttentionPolicyValue.md](./ChessCnnAttentionPolicyValue.md) — Doc du modèle échecs (CNN + bottleneck d'attention Perceiver-style, Epic 9)
 
 ## Pour la suite (PRD brownfield)
 

@@ -18,7 +18,7 @@ import tempfile
 import numpy as np
 from PIL import Image
 
-from jax_detector_dataset_tools import process_detection_dataset_v2, _generate_fullframe_zoom_variant
+from jax_detector_dataset_tools import process_detector_dataset, _generate_fullframe_zoom_variant
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY, decode_detection_targets
 
 
@@ -54,7 +54,7 @@ def test_chunk_shapes_and_keys():
         target_size = (224, 224)
         _make_fake_dataset(tmp_dir, n_images=n_images)
 
-        process_detection_dataset_v2(
+        process_detector_dataset(
             root_dirs=[tmp_dir],
             output_dir=out_dir,
             split_name="test",
@@ -88,7 +88,7 @@ def test_decode_roundtrip_on_extracted_example():
         target_size = (224, 224)
         _make_fake_dataset(tmp_dir, n_images=2)
 
-        process_detection_dataset_v2(
+        process_detector_dataset(
             root_dirs=[tmp_dir],
             output_dir=out_dir,
             split_name="test",
@@ -198,13 +198,13 @@ def test_zoom_augment_probability_zero_matches_default_behavior():
         target_size = (224, 224)
 
         np.random.seed(1234)
-        process_detection_dataset_v2(
+        process_detector_dataset(
             root_dirs=[tmp_dir], output_dir=out_default, split_name="test",
             target_size=target_size, max_boxes=20, chunk_size=2000, grayscale=True,
         )
 
         np.random.seed(1234)
-        process_detection_dataset_v2(
+        process_detector_dataset(
             root_dirs=[tmp_dir], output_dir=out_explicit, split_name="test",
             target_size=target_size, max_boxes=20, chunk_size=2000, grayscale=True,
             zoom_augment_probability=0.0,
@@ -236,7 +236,7 @@ def test_zoom_augment_probability_one_doubles_entries_and_variant_fills_frame():
         target_size = (224, 224)
         _make_fake_dataset(tmp_dir, n_images=1)
 
-        process_detection_dataset_v2(
+        process_detector_dataset(
             root_dirs=[tmp_dir], output_dir=out_dir, split_name="test",
             target_size=target_size, max_boxes=20, chunk_size=2000, grayscale=True,
             zoom_augment_probability=1.0,
@@ -282,7 +282,7 @@ def test_zoom_augment_excludes_far_box_from_variant_target():
             with open(os.path.join(tmp_dir, f"fake_multi_{idx}.json"), "w") as f:
                 json.dump(annotation, f)
 
-        process_detection_dataset_v2(
+        process_detector_dataset(
             root_dirs=[tmp_dir], output_dir=out_dir, split_name="test",
             target_size=target_size, max_boxes=20, chunk_size=2000, grayscale=True,
             zoom_augment_probability=1.0,
@@ -324,7 +324,7 @@ def test_zoom_augment_degenerate_target_box_no_variant_no_crash():
         with open(os.path.join(tmp_dir, "fake_degenerate.json"), "w") as f:
             json.dump(annotation, f)
 
-        process_detection_dataset_v2(
+        process_detector_dataset(
             root_dirs=[tmp_dir], output_dir=out_dir, split_name="test",
             target_size=target_size, max_boxes=20, chunk_size=2000, grayscale=True,
             zoom_augment_probability=1.0,
@@ -353,7 +353,7 @@ def test_zoom_augment_rgb_path_no_crash():
         target_size = (224, 224)
         _make_fake_dataset(tmp_dir, n_images=1)
 
-        process_detection_dataset_v2(
+        process_detector_dataset(
             root_dirs=[tmp_dir], output_dir=out_dir, split_name="test",
             target_size=target_size, max_boxes=20, chunk_size=2000, grayscale=False,
             zoom_augment_probability=1.0,
@@ -381,7 +381,7 @@ def test_zoom_augment_variant_triggers_chunk_save():
         target_size = (224, 224)
         _make_fake_dataset(tmp_dir, n_images=1)
 
-        process_detection_dataset_v2(
+        process_detector_dataset(
             root_dirs=[tmp_dir], output_dir=out_dir, split_name="test",
             target_size=target_size, max_boxes=20, chunk_size=2, grayscale=True,
             zoom_augment_probability=1.0,

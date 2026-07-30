@@ -119,6 +119,10 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
         # (sophisticated_cnn_*) n'ont pas de **kwargs de secours et leveraient un TypeError
         # si on leur passait un argument inattendu, d'ou le passage conditionnel
         model_kwargs["heatmap_prior"] = config["heatmap_prior"]
+    if "num_bottleneck_tokens" in config:
+        # chess_cnn_attention_policy_value uniquement (test K du bottleneck, 2026-07-27) -
+        # meme discipline de forwarding conditionnel que heatmap_prior ci-dessus
+        model_kwargs["num_bottleneck_tokens"] = config["num_bottleneck_tokens"]
     model = get_model(model_name, **model_kwargs)
     
     # 4. INSTANCIATION DE LA STRATEGIE (Injection de dépendance)

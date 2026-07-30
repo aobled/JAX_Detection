@@ -66,15 +66,24 @@ class TaskStrategy(ABC):
         except Exception as e:
             print(f"   [⚠️] Erreur d'export PKL: {e}")
             
-    @abstractmethod
     def _get_export_path(self, config) -> str:
-        """Retourne le chemin cible pour l'export .pkl."""
-        pass
-        
-    @abstractmethod
+        """Retourne le chemin cible pour l'export .pkl.
+
+        Défaut concret (2026-07-30, audit qualité Winston 2026-07-22, item 1) : les 5
+        sous-classes existantes implémentaient exactement la même logique (nom dérivé de
+        config["dataset_name"], Story 5.0) - la frontière d'abstraction était mal placée,
+        c'était un défaut concret déguisé en méthode abstraite. Une sous-classe qui a
+        vraiment besoin d'un chemin différent peut toujours la surcharger.
+        """
+        return config.get("checkpoint_path") or f"best_model_{config.get('dataset_name', 'unknown').lower()}.pkl"
+
     def get_training_state_path(self, config) -> str:
-        """Retourne le chemin pour la sauvegarde de l'état d'entraînement complet (.pkl lourd)."""
-        pass
+        """Retourne le chemin pour la sauvegarde de l'état d'entraînement complet (.pkl lourd).
+
+        Défaut concret (2026-07-30, audit qualité Winston 2026-07-22, item 1) - même
+        raisonnement que _get_export_path ci-dessus.
+        """
+        return config.get("training_state_path") or f"best_model_training_state_{config.get('dataset_name', 'unknown').lower()}.pkl"
 
 class ClassificationStrategy(TaskStrategy):
     def __init__(self, num_classes: int, label_smoothing: float = 0.0, mixup_alpha: float = 0.0, loss_method: str = "cross_entropy", loss_params: dict = None, metric_method: str = "accuracy", report_method: str = "confusion_matrix"):
@@ -96,12 +105,6 @@ class ClassificationStrategy(TaskStrategy):
     def optimization_mode(self) -> str:
         return "max"
         
-    def _get_export_path(self, config) -> str:
-        return config.get("checkpoint_path") or f"best_model_{config.get('dataset_name', 'unknown').lower()}.pkl"
-
-    def get_training_state_path(self, config) -> str:
-        return config.get("training_state_path") or f"best_model_training_state_{config.get('dataset_name', 'unknown').lower()}.pkl"
-
     def preprocess_batch(self, images, targets, is_training, rng=None):
         targets = jnp.array(targets, dtype=jnp.int32)
         use_onehot = False
@@ -182,12 +185,6 @@ class DetectionStrategy(TaskStrategy):
     def optimization_mode(self) -> str:
         return "max"
         
-    def _get_export_path(self, config) -> str:
-        return config.get("checkpoint_path") or f"best_model_{config.get('dataset_name', 'unknown').lower()}.pkl"
-
-    def get_training_state_path(self, config) -> str:
-        return config.get("training_state_path") or f"best_model_training_state_{config.get('dataset_name', 'unknown').lower()}.pkl"
-
     def preprocess_batch(self, images, targets, is_training, rng=None):
         targets = jnp.array(targets, dtype=jnp.float32)
         return images, targets, False
@@ -293,12 +290,6 @@ class CenterNetDetectionStrategy(TaskStrategy):
     def optimization_mode(self) -> str:
         return "max"
 
-    def _get_export_path(self, config) -> str:
-        return config.get("checkpoint_path") or f"best_model_{config.get('dataset_name', 'unknown').lower()}.pkl"
-
-    def get_training_state_path(self, config) -> str:
-        return config.get("training_state_path") or f"best_model_training_state_{config.get('dataset_name', 'unknown').lower()}.pkl"
-
     def preprocess_batch(self, images, targets, is_training, rng=None):
         # targets est deja un dict {HEATMAP_KEY, SIZE_KEY} (Story 7.5, batche par tf.data) -
         # simple cast float32, pas de mixup/label smoothing (non pertinents pour la detection,
@@ -400,12 +391,6 @@ class KeplerStrategy(TaskStrategy):
     def optimization_mode(self) -> str:
         return "max"
         
-    def _get_export_path(self, config) -> str:
-        return config.get("checkpoint_path") or f"best_model_{config.get('dataset_name', 'unknown').lower()}.pkl"
-
-    def get_training_state_path(self, config) -> str:
-        return config.get("training_state_path") or f"best_model_training_state_{config.get('dataset_name', 'unknown').lower()}.pkl"
-
     def preprocess_batch(self, images, targets, is_training, rng=None):
         # Pour Kepler, on ne fait pas d'augmentation temporelle complexe pour le moment.
         images = jnp.array(images, dtype=jnp.float32)
@@ -415,8 +400,13 @@ class KeplerStrategy(TaskStrategy):
         use_onehot = False
         return images, targets, use_onehot
 
-    def compute_loss(self, outputs, targets, use_onehot_labels=False):
+    def compute_loss(self, outputs, targets, use_onehot_labels=False, **kwargs):
         # Identique à la classification, c'est un problème binaire (Exoplanet ou non)
+        # **kwargs (2026-07-30, audit qualité Winston 2026-07-22, item 3) : signature
+        # alignée sur la méthode abstraite (task_strategies.py:17) et sur
+        # ClassificationStrategy (ligne 125) - latent jusqu'ici (trainer.py n'appelait
+        # qu'avec use_onehot_labels=), mais rompait la promesse de généricité de
+        # l'interface pour tout futur kwarg générique.
         if use_onehot_labels:
             loss = jnp.mean(optax.softmax_cross_entropy(logits=outputs, labels=targets))
         else:
@@ -494,12 +484,6 @@ class ChessPolicyValueStrategy(TaskStrategy):
     @property
     def optimization_mode(self) -> str:
         return "max"
-
-    def _get_export_path(self, config) -> str:
-        return config.get("checkpoint_path") or f"best_model_{config.get('dataset_name', 'unknown').lower()}.pkl"
-
-    def get_training_state_path(self, config) -> str:
-        return config.get("training_state_path") or f"best_model_training_state_{config.get('dataset_name', 'unknown').lower()}.pkl"
 
     def preprocess_batch(self, images, targets, is_training, rng=None):
         # "images" est en realite la position echecs (nom generique herite de la

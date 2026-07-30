@@ -96,15 +96,6 @@ class Trainer:
         # Suppression de task_type (désormais géré par strategy)
         self.model_name = config["model_name"]
         
-        # Image configuration
-        self.grayscale = config.get("grayscale", False)
-        # "num_channels" (2026-07-27, Story 9.3, écart explicite à AC2 - arbitré par
-        # Aymeric) : le domaine échecs a 29 canaux d'entrée (NUM_PLANES,
-        # chess_target_encoding.py), qui ne rentrent pas dans l'hypothèse binaire
-        # grayscale/RGB (1/3). Rétrocompatible : aucune config existante ne définit
-        # "num_channels", donc leur comportement (fallback grayscale/RGB) est inchangé.
-        self.num_channels = config.get("num_channels", 1 if self.grayscale else 3)
-        
         # État d'entraînement
         self.state = None
         self.best_val_metric = float('-inf') if self.strategy.optimization_mode == "max" else float('inf')
@@ -141,12 +132,17 @@ class Trainer:
         Returns:
             TrainStateWithBatchStats
         """
-        image_size = self.config["image_size"]
-        # Kepler 1D : (B, longueur, canaux) ; images 2D : (B, H, W, C)
-        if self.config.get("task_type") == "kepler":
-            dummy_input = jnp.ones((1, image_size[0], self.num_channels), jnp.float32)
-        else:
-            dummy_input = jnp.ones((1, image_size[0], image_size[1], self.num_channels), jnp.float32)
+        # "input_shape" (2026-07-30, remplace l'ancien couple image_size+num_channels/
+        # grayscale + branche if/elif par task_type) : forme complète de l'entrée modele,
+        # hors batch - (H, W, C) pour une image, (longueur, canaux) pour une sequence 1D
+        # (Kepler), (8, 8, NUM_PLANES) pour les echecs, etc. Source unique et 100%
+        # generique - Trainer n'a plus besoin de connaitre la famille de forme de chaque
+        # domaine (aucune branche if/elif ici, contrairement a avant). image_size/
+        # grayscale restent utilises ailleurs (data_management.py, dataset_builder/) pour
+        # le retraitement d'image reel (resize) - role distinct, jamais mélangé avec
+        # celui-ci desormais.
+        input_shape = self.config["input_shape"]
+        dummy_input = jnp.ones((1,) + tuple(input_shape), jnp.float32)
         
         # Initialiser le modèle
         variables = self.model.init(rng, dummy_input, training=True)

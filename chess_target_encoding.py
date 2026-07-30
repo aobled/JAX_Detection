@@ -81,7 +81,7 @@ NUM_HISTORY_PLANES = HISTORY_LENGTH * 2  # 10
 NUM_PLANES = NUM_POSITION_PLANES + NUM_HISTORY_PLANES  # 29
 
 
-def encode_position(board: chess.Board, move_history: list) -> np.ndarray:
+def encode_position(board: chess.Board, move_history: list, include_history: bool = True) -> np.ndarray:
     """
     Encode une position + son historique de coups en planes (8, 8, NUM_PLANES).
 
@@ -91,11 +91,19 @@ def encode_position(board: chess.Board, move_history: list) -> np.ndarray:
             d'atteindre `board` (ex. les N derniers demi-coups de la partie a ce stade).
             Peut contenir moins de HISTORY_LENGTH elements (debut de partie) - le padding
             a zero des creneaux manquants est gere automatiquement ici.
+        include_history: si False, n'encode que les NUM_POSITION_PLANES plans de position
+            courante (retour de shape (8, 8, NUM_POSITION_PLANES), PAS NUM_PLANES) - les
+            10 plans d'historique (source/destination des 5 derniers demi-coups) sont
+            omis, pas mis a zero. Ajoute le 2026-07-29 (test d'ablation "l'historique
+            sert-il a quelque chose ?", voir deferred-work.md) - defaut True, aucun
+            changement de comportement pour les appelants existants qui ne le passent pas.
 
-    Returns: np.ndarray float32, shape (8, 8, NUM_PLANES). Voir docstring de module pour
-        le detail exact plan par plan.
+    Returns: np.ndarray float32, shape (8, 8, NUM_PLANES) si include_history (defaut),
+        (8, 8, NUM_POSITION_PLANES) sinon. Voir docstring de module pour le detail exact
+        plan par plan.
     """
-    planes = np.zeros((BOARD_SIZE, BOARD_SIZE, NUM_PLANES), dtype=np.float32)
+    num_planes = NUM_PLANES if include_history else NUM_POSITION_PLANES
+    planes = np.zeros((BOARD_SIZE, BOARD_SIZE, num_planes), dtype=np.float32)
     us = board.turn
     them = not us
 
@@ -125,17 +133,18 @@ def encode_position(board: chess.Board, move_history: list) -> np.ndarray:
 
     assert idx == NUM_POSITION_PLANES, f"plans de position: attendu {NUM_POSITION_PLANES}, obtenu {idx}"
 
-    padding = [None] * max(0, HISTORY_LENGTH - len(move_history))
-    padded_history = (padding + list(move_history))[-HISTORY_LENGTH:]
-    for move in padded_history:
-        if move is not None:
-            fr, fc = divmod(move.from_square, BOARD_SIZE)
-            tr, tc = divmod(move.to_square, BOARD_SIZE)
-            planes[fr, fc, idx] = 1.0
-            planes[tr, tc, idx + 1] = 1.0
-        idx += 2
+    if include_history:
+        padding = [None] * max(0, HISTORY_LENGTH - len(move_history))
+        padded_history = (padding + list(move_history))[-HISTORY_LENGTH:]
+        for move in padded_history:
+            if move is not None:
+                fr, fc = divmod(move.from_square, BOARD_SIZE)
+                tr, tc = divmod(move.to_square, BOARD_SIZE)
+                planes[fr, fc, idx] = 1.0
+                planes[tr, tc, idx + 1] = 1.0
+            idx += 2
 
-    assert idx == NUM_PLANES, f"total de plans: attendu {NUM_PLANES}, obtenu {idx}"
+    assert idx == num_planes, f"total de plans: attendu {num_planes}, obtenu {idx}"
     return planes
 
 

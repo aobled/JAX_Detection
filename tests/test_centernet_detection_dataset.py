@@ -21,7 +21,7 @@ from PIL import Image
 
 from data_management import CenterNetDetectionDataset
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
-from jax_detector_dataset_tools import process_detection_dataset_v2
+from jax_detector_dataset_tools import process_detector_dataset
 
 
 IMAGE_SIZE = (224, 224)
@@ -50,7 +50,7 @@ def _build_chunk(out_dir):
     src_dir = tempfile.mkdtemp(prefix="test_cnd_src_")
     try:
         _make_fake_dataset(src_dir)
-        process_detection_dataset_v2(
+        process_detector_dataset(
             root_dirs=[src_dir],
             output_dir=out_dir,
             split_name="train",
