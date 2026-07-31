@@ -261,6 +261,159 @@ class ChunkManager:
             augment=augment,
             augmentation_params=augmentation_params
         )
+
+
+def _apply_geometric_and_color_augmentation(
+    img, extra_tensors, extra_pad_modes, extra_interp_methods, extra_rescale_on_zoom,
+    augmentation_params,
+):
+    """
+    Logique d'augmentation géométrique (flip V/H, translation pad+crop, zoom) et
+    couleur (brightness/contrast) partagée entre DetectionDataset et
+    CenterNetDetectionDataset (auparavant dupliquée ~120 lignes à l'identique,
+    avec dérive : voir extra_interp_methods/extra_rescale_on_zoom ci-dessous).
+    AD-17 : les deux classes restent dédiées et dispatchées séparément par
+    task_type - seule cette géométrie commune, indépendante du format de payload
+    (masque binaire vs heatmap+taille), est mutualisée ici.
+
+    `img` utilise toujours pad_mode='REFLECT' et interpolation='bilinear' pour la
+    translation/le zoom (identique historiquement dans les deux classes).
+
+    `extra_tensors` : tenseurs additionnels à transformer en synchronisation avec
+    `img` (ex. [mask] ou [heatmap, size]). `extra_pad_modes`/`extra_interp_methods`/
+    `extra_rescale_on_zoom` sont des listes parallèles (un réglage par tenseur) :
+    - extra_interp_methods : 'nearest' préserve les valeurs exactes (pic heatmap
+      ==1.0, cellule de taille ponctuelle) - nécessaire pour heatmap/size, pas pour
+      un masque binaire classique qui tolère l'interpolation bilinéaire historique
+      de DetectionDataset.
+    - extra_rescale_on_zoom : True uniquement pour la carte `size` de
+      CenterNetDetectionDataset - après zoom, la magnitude stockée (en pixels) doit
+      être rescalée par le facteur de zoom réellement appliqué (après clamp), sinon
+      elle devient fausse silencieusement. Ne s'applique jamais au masque ni au
+      heatmap (valeurs de présence/position, pas de magnitude).
+
+    Retourne (img, extra_tensors) après géométrie ; le clip final (masque/heatmap
+    dans [0,1], jamais sur `size`) reste à la charge de l'appelant.
+    """
+    n_extra = len(extra_tensors)
+    if not (len(extra_pad_modes) == len(extra_interp_methods) == len(extra_rescale_on_zoom) == n_extra):
+        raise ValueError(
+            "extra_tensors, extra_pad_modes, extra_interp_methods et extra_rescale_on_zoom "
+            f"doivent avoir la même longueur (reçu {n_extra}, {len(extra_pad_modes)}, "
+            f"{len(extra_interp_methods)}, {len(extra_rescale_on_zoom)}) - un `zip()` sur des "
+            "listes de longueurs différentes tronquerait silencieusement au lieu d'échouer."
+        )
+
+    all_tensors = [img] + list(extra_tensors)
+
+    # --- 1. Flips (Vertical & Horizontal) ---
+    flip_v_enabled = augmentation_params.get("flip_v", False)
+    if flip_v_enabled:
+        do_flip_v = tf.random.uniform([]) > 0.5
+        all_tensors = [
+            tf.cond(do_flip_v, lambda t=t: tf.image.flip_up_down(t), lambda t=t: t)
+            for t in all_tensors
+        ]
+
+    flip_h_enabled = augmentation_params.get("flip_h", False)
+    if flip_h_enabled:
+        do_flip_h = tf.random.uniform([]) > 0.5
+        all_tensors = [
+            tf.cond(do_flip_h, lambda t=t: tf.image.flip_left_right(t), lambda t=t: t)
+            for t in all_tensors
+        ]
+
+    # --- 2. Translation (Shift) --- décalage entier pad+crop
+    trans_factor = augmentation_params.get("translation_factor", 0.0)
+    if trans_factor > 0.0:
+        do_translate = tf.random.uniform([]) > 0.5
+        shift_x = tf.random.uniform([], -trans_factor, trans_factor)
+        shift_y = tf.random.uniform([], -trans_factor, trans_factor)
+
+        img_h = tf.shape(img)[0]
+        img_w = tf.shape(img)[1]
+
+        def apply_translation(t, sx, sy, pad_mode):
+            px = tf.cast(sx * tf.cast(img_w, tf.float32), tf.int32)
+            py = tf.cast(sy * tf.cast(img_h, tf.float32), tf.int32)
+
+            pad_h = tf.cast(trans_factor * tf.cast(img_h, tf.float32), tf.int32) + 1
+            pad_w = tf.cast(trans_factor * tf.cast(img_w, tf.float32), tf.int32) + 1
+
+            padded = tf.pad(t, paddings=[[pad_h, pad_h], [pad_w, pad_w], [0, 0]], mode=pad_mode)
+            start_y = pad_h - py
+            start_x = pad_w - px
+            return tf.image.crop_to_bounding_box(padded, start_y, start_x, img_h, img_w)
+
+        pad_modes = ["REFLECT"] + list(extra_pad_modes)
+        all_tensors = [
+            tf.cond(
+                do_translate,
+                lambda t=t, pm=pm: apply_translation(t, shift_x, shift_y, pm),
+                lambda t=t: t,
+            )
+            for t, pm in zip(all_tensors, pad_modes)
+        ]
+
+    # --- 3. Zoom (Scale) ---
+    zoom_factor = augmentation_params.get("zoom_factor", 0.0)
+    if zoom_factor > 0.0:
+        do_zoom = tf.random.uniform([]) > 0.5
+        scale = tf.random.uniform([], 1.0 - zoom_factor, 1.0 + zoom_factor)
+
+        def _effective_zoom_scale(cur_scale):
+            # crop_frac est clampe a [0.1, 1.0] - pour cur_scale < 1 (zoom arriere), le
+            # clamp a 1.0 annule tout crop reel, l'image reste inchangee malgre un
+            # cur_scale != 1.0. Le facteur de zoom REELLEMENT applique est donc
+            # 1/crop_frac (apres clamp), pas cur_scale brut.
+            crop_frac = tf.clip_by_value(1.0 / cur_scale, 0.1, 1.0)
+            return 1.0 / crop_frac
+
+        def _zoom_crop_and_resize(t, cur_scale, method):
+            crop_frac = tf.clip_by_value(1.0 / cur_scale, 0.1, 1.0)
+            t_cropped = tf.image.central_crop(t, crop_frac)
+            t_h_local = tf.shape(t)[0]
+            t_w_local = tf.shape(t)[1]
+            target_shape = tf.cast([t_h_local, t_w_local], tf.int32)
+            return tf.image.resize(t_cropped, target_shape, method=method)
+
+        interp_methods = ["bilinear"] + list(extra_interp_methods)
+        rescale_flags = [False] + list(extra_rescale_on_zoom)
+
+        new_tensors = []
+        for t, method, rescale in zip(all_tensors, interp_methods, rescale_flags):
+            if rescale:
+                def _zoomed_and_rescaled(t=t, method=method):
+                    resized = _zoom_crop_and_resize(t, scale, method)
+                    return resized * _effective_zoom_scale(scale)
+                new_t = tf.cond(do_zoom, _zoomed_and_rescaled, lambda t=t: t)
+            else:
+                new_t = tf.cond(
+                    do_zoom,
+                    lambda t=t, method=method: _zoom_crop_and_resize(t, scale, method),
+                    lambda t=t: t,
+                )
+            new_tensors.append(new_t)
+        all_tensors = new_tensors
+
+    img = all_tensors[0]
+    extra_tensors = all_tensors[1:1 + n_extra]
+
+    # --- 4. Augmentation couleur (uniquement sur l'image) ---
+    bright_delta = augmentation_params.get("brightness_delta", 0.0)
+    if bright_delta > 0.0:
+        img = tf.image.random_brightness(img, bright_delta)
+
+    cont_factor = augmentation_params.get("contrast_factor", 0.0)
+    if cont_factor > 0.0:
+        lower_cont = 1.0 - cont_factor
+        lower_cont = max(0.1, lower_cont)  # Prevent contrast going below 0.1
+        upper_cont = 1.0 + cont_factor
+        img = tf.image.random_contrast(img, lower_cont, upper_cont)
+
+    return img, extra_tensors
+
+
 class DetectionDataset:
     """
     Gestionnaire de dataset pour la détection d'objets
@@ -320,94 +473,17 @@ class DetectionDataset:
             # Pour l'instant on fait simple : Flip horizontal uniquement
             
             def augment_fn(img, mask):
-                # --- 1. Flips (Vertical & Horizontal) ---
-                flip_v_enabled = self.augmentation_params.get("flip_v", False)
-                if flip_v_enabled:
-                    do_flip_v = tf.random.uniform([]) > 0.5
-                    img = tf.cond(do_flip_v, lambda: tf.image.flip_up_down(img), lambda: img)
-                    mask = tf.cond(do_flip_v, lambda: tf.image.flip_up_down(mask), lambda: mask)
-                
-                flip_h_enabled = self.augmentation_params.get("flip_h", False)
-                if flip_h_enabled:
-                    do_flip_h = tf.random.uniform([]) > 0.5
-                    img = tf.cond(do_flip_h, lambda: tf.image.flip_left_right(img), lambda: img)
-                    mask = tf.cond(do_flip_h, lambda: tf.image.flip_left_right(mask), lambda: mask)
-                
-                # --- 2. Translation (Shift) ---
-                trans_factor = self.augmentation_params.get("translation_factor", 0.0)
-                if trans_factor > 0.0:
-                    do_translate = tf.random.uniform([]) > 0.5
-                    shift_x = tf.random.uniform([], -trans_factor, trans_factor)
-                    shift_y = tf.random.uniform([], -trans_factor, trans_factor)
-                    
-                    img_h = tf.shape(img)[0]
-                    img_w = tf.shape(img)[1]
-                    
-                    def apply_translation(i, sx, sy):
-                        px = tf.cast(sx * tf.cast(img_w, tf.float32), tf.int32)
-                        py = tf.cast(sy * tf.cast(img_h, tf.float32), tf.int32)
-                        
-                        # Le padding doit s'adapter dynamiquement au trans_factor pour éviter un débordement
-                        pad_h = tf.cast(trans_factor * tf.cast(img_h, tf.float32), tf.int32) + 1
-                        pad_w = tf.cast(trans_factor * tf.cast(img_w, tf.float32), tf.int32) + 1
-                        
-                        padded_img = tf.pad(i, paddings=[[pad_h, pad_h], [pad_w, pad_w], [0, 0]], mode='REFLECT')
-                        start_y = pad_h - py
-                        start_x = pad_w - px
-                        return tf.image.crop_to_bounding_box(padded_img, start_y, start_x, img_h, img_w)
-                    
-                    img = tf.cond(do_translate, lambda: apply_translation(img, shift_x, shift_y), lambda: img)
-                    # Translation identique sur le masque avec fond noir (mode CONSTANT)
-                    def apply_translation_mask(m, sx, sy):
-                        px = tf.cast(sx * tf.cast(img_w, tf.float32), tf.int32)
-                        py = tf.cast(sy * tf.cast(img_h, tf.float32), tf.int32)
-                        
-                        pad_h = tf.cast(trans_factor * tf.cast(img_h, tf.float32), tf.int32) + 1
-                        pad_w = tf.cast(trans_factor * tf.cast(img_w, tf.float32), tf.int32) + 1
-                        
-                        padded_mask = tf.pad(m, paddings=[[pad_h, pad_h], [pad_w, pad_w], [0, 0]], mode='CONSTANT')
-                        start_y = pad_h - py
-                        start_x = pad_w - px
-                        return tf.image.crop_to_bounding_box(padded_mask, start_y, start_x, img_h, img_w)
-
-                    mask = tf.cond(do_translate, lambda: apply_translation_mask(mask, shift_x, shift_y), lambda: mask)
-                
-                # --- 3. Zoom (Scale) ---
-                zoom_factor = self.augmentation_params.get("zoom_factor", 0.0)
-                if zoom_factor > 0.0:
-                    do_zoom = tf.random.uniform([]) > 0.5
-                    scale = tf.random.uniform([], 1.0 - zoom_factor, 1.0 + zoom_factor)
-                    
-                    def apply_zoom(i, cur_scale):
-                        crop_frac = 1.0 / cur_scale
-                        crop_frac = tf.clip_by_value(crop_frac, 0.1, 1.0)
-                        i_cropped = tf.image.central_crop(i, crop_frac)
-                        img_h_local = tf.shape(i)[0]
-                        img_w_local = tf.shape(i)[1]
-                        target_shape = tf.cast([img_h_local, img_w_local], tf.int32)
-                        return tf.image.resize(i_cropped, target_shape)
-                    
-                    img = tf.cond(do_zoom, lambda: apply_zoom(img, scale), lambda: img)
-                    mask = tf.cond(do_zoom, lambda: apply_zoom(mask, scale), lambda: mask)
-                
-                # --- 4. Augmentation couleur (uniquement sur l'image) ---
-                bright_delta = self.augmentation_params.get("brightness_delta", 0.0)
-                if bright_delta > 0.0:
-                    img = tf.image.random_brightness(img, bright_delta)
-                    
-                cont_factor = self.augmentation_params.get("contrast_factor", 0.0)
-                if cont_factor > 0.0:
-                    lower_cont = 1.0 - cont_factor
-                    lower_cont = max(0.1, lower_cont) # Prevent contrast going below 0.1
-                    upper_cont = 1.0 + cont_factor
-                    img = tf.image.random_contrast(img, lower_cont, upper_cont)
-                
+                img, (mask,) = _apply_geometric_and_color_augmentation(
+                    img, [mask],
+                    extra_pad_modes=["CONSTANT"],
+                    extra_interp_methods=["bilinear"],
+                    extra_rescale_on_zoom=[False],
+                    augmentation_params=self.augmentation_params,
+                )
                 # S'assurer que le masque reste strictement binaire ou borné après resize
                 mask = tf.clip_by_value(mask, 0.0, 1.0)
-                
                 return img, mask
 
-                
             ds = ds.map(augment_fn)
             
         ds = ds.batch(self.batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE)
@@ -485,101 +561,17 @@ class CenterNetDetectionDataset:
                 heatmap = targets[HEATMAP_KEY]
                 size = targets[SIZE_KEY]
 
-                # --- 1. Flips (Vertical & Horizontal) --- pas d'interpolation, sûr sur les 3 tenseurs
-                flip_v_enabled = self.augmentation_params.get("flip_v", False)
-                if flip_v_enabled:
-                    do_flip_v = tf.random.uniform([]) > 0.5
-                    img = tf.cond(do_flip_v, lambda: tf.image.flip_up_down(img), lambda: img)
-                    heatmap = tf.cond(do_flip_v, lambda: tf.image.flip_up_down(heatmap), lambda: heatmap)
-                    size = tf.cond(do_flip_v, lambda: tf.image.flip_up_down(size), lambda: size)
-
-                flip_h_enabled = self.augmentation_params.get("flip_h", False)
-                if flip_h_enabled:
-                    do_flip_h = tf.random.uniform([]) > 0.5
-                    img = tf.cond(do_flip_h, lambda: tf.image.flip_left_right(img), lambda: img)
-                    heatmap = tf.cond(do_flip_h, lambda: tf.image.flip_left_right(heatmap), lambda: heatmap)
-                    size = tf.cond(do_flip_h, lambda: tf.image.flip_left_right(size), lambda: size)
-
-                # --- 2. Translation (Shift) --- décalage entier pad+crop, pas d'interpolation
-                trans_factor = self.augmentation_params.get("translation_factor", 0.0)
-                if trans_factor > 0.0:
-                    do_translate = tf.random.uniform([]) > 0.5
-                    shift_x = tf.random.uniform([], -trans_factor, trans_factor)
-                    shift_y = tf.random.uniform([], -trans_factor, trans_factor)
-
-                    img_h = tf.shape(img)[0]
-                    img_w = tf.shape(img)[1]
-
-                    def apply_translation(t, sx, sy, pad_mode):
-                        px = tf.cast(sx * tf.cast(img_w, tf.float32), tf.int32)
-                        py = tf.cast(sy * tf.cast(img_h, tf.float32), tf.int32)
-
-                        pad_h = tf.cast(trans_factor * tf.cast(img_h, tf.float32), tf.int32) + 1
-                        pad_w = tf.cast(trans_factor * tf.cast(img_w, tf.float32), tf.int32) + 1
-
-                        padded = tf.pad(t, paddings=[[pad_h, pad_h], [pad_w, pad_w], [0, 0]], mode=pad_mode)
-                        start_y = pad_h - py
-                        start_x = pad_w - px
-                        return tf.image.crop_to_bounding_box(padded, start_y, start_x, img_h, img_w)
-
-                    img = tf.cond(do_translate, lambda: apply_translation(img, shift_x, shift_y, 'REFLECT'), lambda: img)
-                    # Heatmap/size : fond noir (CONSTANT) - cohérent avec l'invariant "size non-nul
-                    # seulement au centre" (le padding introduit du fond, jamais une fausse valeur)
-                    heatmap = tf.cond(do_translate, lambda: apply_translation(heatmap, shift_x, shift_y, 'CONSTANT'), lambda: heatmap)
-                    size = tf.cond(do_translate, lambda: apply_translation(size, shift_x, shift_y, 'CONSTANT'), lambda: size)
-
-                # --- 3. Zoom (Scale) --- interpolation bilinéaire OK pour l'image seule ;
-                # heatmap/size doivent utiliser method='nearest' pour préserver les valeurs
-                # exactes (pic heatmap == 1.0, cellule de taille ponctuelle) - une interpolation
-                # bilinéaire romprait silencieusement ces deux invariants (Story 7.1/7.3).
-                zoom_factor = self.augmentation_params.get("zoom_factor", 0.0)
-                if zoom_factor > 0.0:
-                    do_zoom = tf.random.uniform([]) > 0.5
-                    scale = tf.random.uniform([], 1.0 - zoom_factor, 1.0 + zoom_factor)
-
-                    def _effective_zoom_scale(cur_scale):
-                        # crop_frac est clampe a [0.1, 1.0] (voir _zoom_crop_and_resize) - pour
-                        # cur_scale < 1 (zoom arriere), le clamp a 1.0 annule tout crop reel,
-                        # l'image reste inchangee malgre un cur_scale != 1.0. Le facteur de zoom
-                        # REELLEMENT applique est donc 1/crop_frac (apres clamp), pas cur_scale
-                        # brut - sinon la taille serait rescalee alors que l'image, elle, ne
-                        # bouge pas (bug trouve par la revue independante de cette story).
-                        crop_frac = tf.clip_by_value(1.0 / cur_scale, 0.1, 1.0)
-                        return 1.0 / crop_frac
-
-                    def _zoom_crop_and_resize(t, cur_scale, method):
-                        crop_frac = tf.clip_by_value(1.0 / cur_scale, 0.1, 1.0)
-                        t_cropped = tf.image.central_crop(t, crop_frac)
-                        t_h_local = tf.shape(t)[0]
-                        t_w_local = tf.shape(t)[1]
-                        target_shape = tf.cast([t_h_local, t_w_local], tf.int32)
-                        return tf.image.resize(t_cropped, target_shape, method=method)
-
-                    def apply_zoom_size(s, cur_scale):
-                        # La carte de taille porte des magnitudes en pixels, pas seulement une
-                        # position - le resize nearest ne fait que redéplacer la valeur stockée
-                        # sans la recalculer. Après zoom, l'objet occupe plus/moins de pixels
-                        # dans l'image zoomée : il faut donc aussi rescaler la valeur elle-même
-                        # par le facteur de zoom REELLEMENT applique (voir _effective_zoom_scale),
-                        # sinon la carte de taille devient fausse silencieusement.
-                        s_resized = _zoom_crop_and_resize(s, cur_scale, 'nearest')
-                        return s_resized * _effective_zoom_scale(cur_scale)
-
-                    img = tf.cond(do_zoom, lambda: _zoom_crop_and_resize(img, scale, 'bilinear'), lambda: img)
-                    heatmap = tf.cond(do_zoom, lambda: _zoom_crop_and_resize(heatmap, scale, 'nearest'), lambda: heatmap)
-                    size = tf.cond(do_zoom, lambda: apply_zoom_size(size, scale), lambda: size)
-
-                # --- 4. Augmentation couleur (uniquement sur l'image) ---
-                bright_delta = self.augmentation_params.get("brightness_delta", 0.0)
-                if bright_delta > 0.0:
-                    img = tf.image.random_brightness(img, bright_delta)
-
-                cont_factor = self.augmentation_params.get("contrast_factor", 0.0)
-                if cont_factor > 0.0:
-                    lower_cont = 1.0 - cont_factor
-                    lower_cont = max(0.1, lower_cont)
-                    upper_cont = 1.0 + cont_factor
-                    img = tf.image.random_contrast(img, lower_cont, upper_cont)
+                # heatmap/size : interpolation 'nearest' (préserve pic heatmap==1.0 et cellule
+                # de taille ponctuelle, Story 7.1/7.3) + padding CONSTANT (fond noir) sur
+                # translation ; size seul est rescalé par le facteur de zoom réellement
+                # appliqué (voir _apply_geometric_and_color_augmentation).
+                img, (heatmap, size) = _apply_geometric_and_color_augmentation(
+                    img, [heatmap, size],
+                    extra_pad_modes=["CONSTANT", "CONSTANT"],
+                    extra_interp_methods=["nearest", "nearest"],
+                    extra_rescale_on_zoom=[False, True],
+                    augmentation_params=self.augmentation_params,
+                )
 
                 # Filet de sécurité : le heatmap reste borné [0,1] (déjà le cas par construction,
                 # cohérent avec DetectionDataset.clip_by_value sur son masque). JAMAIS appliqué à
