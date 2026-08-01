@@ -39,7 +39,6 @@ import tqdm
 from typing import Tuple, Optional
 
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
-from chess_target_encoding import POSITION_KEY, POLICY_KEY, VALUE_KEY, NUM_PLANES, BOARD_SIZE
 
 
 class ChunkManager:
@@ -595,13 +594,15 @@ class CenterNetDetectionDataset:
 class ChessPolicyValueDataset:
     """
     Gestionnaire de dataset pour le domaine échecs (policy+value, AD-17/AD-18, Story 9.3).
-    Charge les chunks générés par dataset_builder/chess_pgn_dataset_tools.py (Story 9.1).
+    Charge les chunks .npz générés côté chess_ai (génération du dataset échecs retirée de
+    ce repo, cf. spec-chess-npz-boundary-cleanup, 2026-08-01 — chess_ai est désormais
+    l'unique source de vérité).
     Classe séparée des loaders existants (AD-17) - ne les modifie ni ne les étend.
 
     Déviation délibérée de la convention "split côté producteur" des autres loaders
     (ChunkManager/DetectionDataset/CenterNetDetectionDataset attendent des chunks
     {output_prefix}_train_chunk*.npz / {output_prefix}_val_chunk*.npz déjà séparés) :
-    chess_pgn_dataset_tools.py (Story 9.1, déjà close) ne produit qu'un seul flux
+    le générateur côté chess_ai ne produit qu'un seul flux
     {output_prefix}_chunk*.npz, sans split. Le split se fait donc ICI, au chargement,
     par fraction de CHUNKS entiers (pas d'exemple par exemple) - limite connue, acceptée
     pour une preuve de généricité (voir Dev Notes de la Story 9.3). Les chunks sont
@@ -616,19 +617,19 @@ class ChessPolicyValueDataset:
     planes - non demandé par le PRD/spine.
     """
     def __init__(self, output_prefix: str, batch_size: int = 32, val_split: float = 0.1, shuffle_seed: int = 42,
-                 num_planes: int = NUM_PLANES):
+                 num_planes: int = 29):
         self.output_prefix = output_prefix
         self.batch_size = batch_size
         # num_planes (2026-07-29, test d'ablation historique, voir deferred-work.md) :
-        # jusqu'ici NUM_PLANES etait code en dur dans output_signature (create_tf_dataset)
+        # jusqu'ici 29 (NUM_PLANES) etait code en dur dans output_signature (create_tf_dataset)
         # au lieu d'etre derive des donnees reelles - cassait silencieusement tout dataset
         # dont les positions n'ont pas exactement 29 canaux (ex. CHESS_NO_HISTORY, 19
-        # canaux). Defaut NUM_PLANES : comportement inchange pour la config CHESS existante.
+        # canaux). Defaut 29 : comportement inchange pour la config CHESS existante.
         self.num_planes = num_planes
 
         def _chunk_index(path):
             # Extrait l'entier de "..._chunk{N}.npz" - tri numerique, jamais lexicographique
-            # (chess_pgn_dataset_tools.py::_save_chunk n'ecrit pas d'index zero-pad).
+            # (le generateur cote chess_ai n'ecrit pas d'index zero-pad).
             stem = os.path.basename(path).rsplit("_chunk", 1)[-1]
             return int(stem[:-len(".npz")])
 
@@ -637,7 +638,7 @@ class ChessPolicyValueDataset:
             error_msg = (
                 f"\n❌ ERREUR: Chunks introuvables pour le domaine échecs !\n"
                 f"   Je m'attendais à trouver {output_prefix}_chunk*.npz\n"
-                f"💡 LANCEZ D'ABORD : python dataset_builder/chess_pgn_dataset_tools.py"
+                f"💡 Génère-les d'abord côté chess_ai (ce repo ne génère plus les .npz échecs)."
             )
             print(error_msg)
             exit(1)
@@ -657,8 +658,8 @@ class ChessPolicyValueDataset:
 
     def create_tf_dataset(self, split='train'):
         """
-        Crée un dataset TensorFlow qui retourne (position, {POLICY_KEY: policy, VALUE_KEY: value})
-        position: (BOARD_SIZE, BOARD_SIZE, NUM_PLANES) ; policy: scalaire int32 ; value: scalaire float32
+        Crée un dataset TensorFlow qui retourne (position, {"policy": policy, "value": value})
+        position: (8, 8, num_planes) ; policy: scalaire int32 ; value: scalaire float32
         """
         chunks = self.train_chunks if split == 'train' else self.val_chunks
         if not chunks:
@@ -668,22 +669,22 @@ class ChessPolicyValueDataset:
         def gen():
             for chunk_path in chunks:
                 with np.load(chunk_path) as data:
-                    positions = data[POSITION_KEY]  # (N, BOARD_SIZE, BOARD_SIZE, NUM_PLANES)
-                    policies = data[POLICY_KEY]      # (N,)
-                    values = data[VALUE_KEY]         # (N,)
+                    positions = data["position"]  # (N, 8, 8, num_planes)
+                    policies = data["policy"]      # (N,)
+                    values = data["value"]         # (N,)
 
                     for pos, pol, val in zip(positions, policies, values):
-                        # Cast explicite en int32 : chess_pgn_dataset_tools.py sauvegarde
-                        # deja POLICY_KEY en int32, mais output_signature ci-dessous
+                        # Cast explicite en int32 : le generateur cote chess_ai sauvegarde
+                        # deja "policy" en int32, mais output_signature ci-dessous
                         # l'exige STRICTEMENT (tf.data.Dataset.from_generator) - defense
                         # explicite plutot que de compter silencieusement sur le producteur.
-                        yield pos, {POLICY_KEY: np.int32(pol), VALUE_KEY: val}
+                        yield pos, {"policy": np.int32(pol), "value": val}
 
         output_signature = (
-            tf.TensorSpec(shape=(BOARD_SIZE, BOARD_SIZE, self.num_planes), dtype=tf.float32),
+            tf.TensorSpec(shape=(8, 8, self.num_planes), dtype=tf.float32),
             {
-                POLICY_KEY: tf.TensorSpec(shape=(), dtype=tf.int32),
-                VALUE_KEY: tf.TensorSpec(shape=(), dtype=tf.float32),
+                "policy": tf.TensorSpec(shape=(), dtype=tf.int32),
+                "value": tf.TensorSpec(shape=(), dtype=tf.float32),
             }
         )
 
@@ -767,7 +768,10 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
             output_prefix=config["output_prefix"],
             batch_size=backend_config["micro_batch_size"],
             val_split=config.get("val_split", 0.1),
-            num_planes=config.get("num_channels", NUM_PLANES),
+            # Defaut 29 = num_channels de la config CHESS (avec historique) - toutes les
+            # configs chess fournissent explicitement num_channels, ce defaut n'est en
+            # pratique jamais utilise.
+            num_planes=config.get("num_channels", 29),
         )
         return dataset_manager.get_dataset()
 

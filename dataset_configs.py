@@ -7,8 +7,6 @@ import os
 
 import numpy as np
 
-from chess_target_encoding import NUM_MOVES, NUM_PLANES, NUM_POSITION_PLANES
-
 # Racine des datasets chunkés (.npz). Local par défaut ; sur Colab, définir
 # JAX_SUPERVISED_TRAINING_DATA_ROOT (ex: /content/drive/MyDrive/jax_supervised_training/data)
 # AVANT d'importer ce module.
@@ -37,7 +35,8 @@ def validate_config(config_name, config):
     # grayscale + branche if/elif par task_type dans trainer.py - source unique, 100%
     # générique, jamais un domaine qui détourne une autre clé comme JAX_KEPLER le faisait
     # avec image_size). (H, W, C) pour une image, (longueur, canaux) pour une séquence 1D,
-    # (8, 8, NUM_PLANES) pour les échecs, etc.
+    # (8, 8, C) pour les échecs, etc. - la forme exacte est spécifique à chaque domaine,
+    # cette fonction ne valide que la structure générique (tuple, entiers positifs).
     if "input_shape" in config:
         shape = config["input_shape"]
         if not isinstance(shape, tuple) or len(shape) < 2 or not all(isinstance(d, int) and d > 0 for d in shape):
@@ -590,18 +589,18 @@ DATASET_CONFIGS = {
         "task_type": "chess_policy_value",
 
         # === Données ===
-        "num_classes": NUM_MOVES,  # taille de la tête policy (AD-22) - PAS un nombre de classes
+        "num_classes": 4672,  # taille de la tête policy (AD-22) - PAS un nombre de classes
         # "image_size" retiré (2026-07-30) : n'a jamais eu de sens pour les échecs, n'était
         # là que pour satisfaire l'ancienne lecture sans garde de Trainer.create_train_state
         # - remplacée par "input_shape" ci-dessous (source unique, générique).
         # "num_channels" : toujours utilisé par ChessPolicyValueDataset (data_management.py,
         # get_datasets()) pour la forme des tenseurs de position - rôle distinct de
         # "input_shape", ne pas retirer.
-        "num_channels": NUM_PLANES,
+        "num_channels": 29,
         # "input_shape" (2026-07-30, remplace l'ancien couple image_size+num_channels côté
         # Trainer, voir trainer.py::create_train_state) : forme complète (hors batch) de
-        # l'entrée modèle - (8, 8, NUM_PLANES) ici.
-        "input_shape": (8, 8, NUM_PLANES),
+        # l'entrée modèle - (8, 8, 29) ici.
+        "input_shape": (8, 8, 29),
         # Pas de "class_names" (n'a pas de sens pour un espace de 4672 coups).
         "model_name": "chess_cnn_attention_policy_value",
         # num_bottleneck_tokens (K) : teste a 32 le 2026-07-28 (cout quasi nul confirme -
@@ -687,14 +686,14 @@ DATASET_CONFIGS = {
         # === Variante d'ablation de CHESS - test "l'historique sert-il a quelque chose ?"
         # (2026-07-29, voir deferred-work.md "test ablation historique"). Copie de CHESS,
         # seules 3 differences : num_channels (19 au lieu de 29), output_prefix (dataset
-        # regenere sans les 10 plans d'historique, chess_target_encoding.py::encode_position
+        # regenere sans les 10 plans d'historique, encode_position (cote chess_ai)
         # avec include_history=False), save_dir (checkpoint distinct). Tout le reste
         # (hyperparametres GPU/TPU, K du bottleneck, etc.) identique a CHESS pour une
         # comparaison directe et isolee sur ce seul facteur.
         "task_type": "chess_policy_value",
-        "num_classes": NUM_MOVES,
-        "num_channels": NUM_POSITION_PLANES,  # 19, pas NUM_PLANES (29) - pas d'historique
-        "input_shape": (8, 8, NUM_POSITION_PLANES),  # forme d'entrée modèle (Trainer, 2026-07-30)
+        "num_classes": 4672,
+        "num_channels": 19,  # 19, pas 29 - pas d'historique
+        "input_shape": (8, 8, 19),  # forme d'entrée modèle (Trainer, 2026-07-30)
         "model_name": "chess_cnn_attention_policy_value",
         "num_bottleneck_tokens": 8,
         "output_prefix": f"{DATA_ROOT}/chunks/chess_no_history/chess",
@@ -738,9 +737,9 @@ DATASET_CONFIGS = {
         # de Carlsen.pgn, 943 250 positions / 9756 parties / 189 chunks (~35% de plus que
         # Carlsen, confondu avec le style du joueur - assume et documente, pas isole).
         "task_type": "chess_policy_value",
-        "num_classes": NUM_MOVES,
-        "num_channels": NUM_POSITION_PLANES,
-        "input_shape": (8, 8, NUM_POSITION_PLANES),  # forme d'entrée modèle (Trainer, 2026-07-30)
+        "num_classes": 4672,
+        "num_channels": 19,
+        "input_shape": (8, 8, 19),  # forme d'entrée modèle (Trainer, 2026-07-30)
         "model_name": "chess_cnn_attention_policy_value",
         "num_bottleneck_tokens": 8,
         "output_prefix": f"{DATA_ROOT}/chunks/nakamura_no_history/nakamura",
@@ -825,8 +824,8 @@ def print_config(dataset_name):
     print("=" * 60)
     print(f"Classes: {config['num_classes']}")
     # class_names/image_size redevenus optionnels (2026-07-27, Story 9.3, voir
-    # validate_config) - CHESS n'a ni l'un ni l'autre (num_classes y porte NUM_MOVES,
-    # la shape vient de chess_target_encoding.py, pas de la config).
+    # validate_config) - CHESS n'a ni l'un ni l'autre (num_classes y porte le littéral
+    # 4672, la shape est un littéral en dur dans la config, pas dérivée d'un module).
     print(f"Noms: {config.get('class_names', 'N/A')}")
     print(f"Image size: {config.get('image_size', 'N/A')}")
     print(f"Modèle: {config['model_name']}")

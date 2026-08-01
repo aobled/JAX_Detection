@@ -4,7 +4,6 @@ import optax
 from abc import ABC, abstractmethod
 from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss, compute_segmentation_loss, compute_centernet_loss, compute_chess_policy_value_loss, compute_chess_policy_loss, compute_chess_value_loss
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
-from chess_target_encoding import POLICY_KEY, VALUE_KEY
 from utils import mixup_batch, smooth_labels
 
 class TaskStrategy(ABC):
@@ -471,8 +470,8 @@ class ChessPolicyValueStrategy(TaskStrategy):
     """
     Stratégie dédiée au domaine échecs (policy+value, AD-17/AD-24, Story 9.3). Première
     stratégie à double tête/double loss de ce projet - teste la généricité réelle du
-    pattern TaskStrategy. outputs/targets sont des dicts {POLICY_KEY, VALUE_KEY}
-    (chess_target_encoding.py, AD-18), jamais un tenseur unique.
+    pattern TaskStrategy. outputs/targets sont des dicts {"policy", "value"}
+    (contrat .npz cote chess_ai, AD-18), jamais un tenseur unique.
     """
     def __init__(self, loss_params: dict = None):
         self.loss_params = loss_params or {}
@@ -488,12 +487,12 @@ class ChessPolicyValueStrategy(TaskStrategy):
     def preprocess_batch(self, images, targets, is_training, rng=None):
         # "images" est en realite la position echecs (nom generique herite de la
         # signature TaskStrategy - meme situation que CenterNetDetectionStrategy).
-        # targets est deja un dict {POLICY_KEY, VALUE_KEY} (batche par tf.data,
+        # targets est deja un dict {"policy", "value"} (batche par tf.data,
         # Story 9.3) - simple cast, pas de mixup/label smoothing (non pertinents ici,
         # meme choix que CenterNetDetectionStrategy.preprocess_batch).
         targets = {
-            POLICY_KEY: jnp.asarray(targets[POLICY_KEY], dtype=jnp.int32),
-            VALUE_KEY: jnp.asarray(targets[VALUE_KEY], dtype=jnp.float32),
+            "policy": jnp.asarray(targets["policy"], dtype=jnp.int32),
+            "value": jnp.asarray(targets["value"], dtype=jnp.float32),
         }
         return images, targets, False
 
@@ -504,8 +503,8 @@ class ChessPolicyValueStrategy(TaskStrategy):
         # Policy top-1 accuracy (primary_metric_name) - meme formule que
         # ClassificationStrategy.compute_metrics. La value head est entrainee (via
         # compute_loss) mais ne gate rien ici (AD-24).
-        predicted = jnp.argmax(outputs[POLICY_KEY], axis=-1)
-        return (predicted == targets[POLICY_KEY]).mean()
+        predicted = jnp.argmax(outputs["policy"], axis=-1)
+        return (predicted == targets["policy"]).mean()
 
     def generate_reports(self, val_ds, final_state, model, config):
         # AD-24/AC3 : detail policy_loss/value_loss visible UNIQUEMENT ici (jamais dans
@@ -519,11 +518,11 @@ class ChessPolicyValueStrategy(TaskStrategy):
                 vars = {'params': final_state.params, 'batch_stats': final_state.batch_stats}
                 outputs = final_state.apply_fn(vars, batch_positions, training=False)
 
-                policy_targets = jnp.asarray(batch_targets[POLICY_KEY], dtype=jnp.int32)
-                value_targets = jnp.asarray(batch_targets[VALUE_KEY], dtype=jnp.float32)
+                policy_targets = jnp.asarray(batch_targets["policy"], dtype=jnp.int32)
+                value_targets = jnp.asarray(batch_targets["value"], dtype=jnp.float32)
 
-                policy_loss = compute_chess_policy_loss(outputs[POLICY_KEY], policy_targets)
-                value_loss = compute_chess_value_loss(outputs[VALUE_KEY], value_targets)
+                policy_loss = compute_chess_policy_loss(outputs["policy"], policy_targets)
+                value_loss = compute_chess_value_loss(outputs["value"], value_targets)
                 policy_weight = self.loss_params.get("policy_weight", 1.0)
                 value_weight = self.loss_params.get("value_weight", 1.0)
 

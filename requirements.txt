@@ -10,7 +10,6 @@ matplotlib
 tqdm
 psutil
 opencv-python-headless
-chess
 
 # --- Dépendances volontairement EXCLUES de ce fichier, et pourquoi ---
 #

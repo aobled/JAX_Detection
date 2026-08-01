@@ -135,7 +135,7 @@ class Trainer:
         # "input_shape" (2026-07-30, remplace l'ancien couple image_size+num_channels/
         # grayscale + branche if/elif par task_type) : forme complète de l'entrée modele,
         # hors batch - (H, W, C) pour une image, (longueur, canaux) pour une sequence 1D
-        # (Kepler), (8, 8, NUM_PLANES) pour les echecs, etc. Source unique et 100%
+        # (Kepler), (8, 8, 29) pour les echecs, etc. Source unique et 100%
         # generique - Trainer n'a plus besoin de connaitre la famille de forme de chaque
         # domaine (aucune branche if/elif ici, contrairement a avant). image_size/
         # grayscale restent utilises ailleurs (data_management.py, dataset_builder/) pour

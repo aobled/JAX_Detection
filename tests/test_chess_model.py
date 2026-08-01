@@ -14,7 +14,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import jax
 import jax.numpy as jnp
 
-from chess_target_encoding import NUM_MOVES, NUM_PLANES, POLICY_KEY, VALUE_KEY
+# Constantes du contrat .npz echecs (cote chess_ai, generation du dataset retiree de
+# ce repo) - litteraux, plus d'import depuis un module local de codec.
+NUM_MOVES = 4672
+NUM_PLANES = 29
+POLICY_KEY = "policy"
+VALUE_KEY = "value"
+
 from model_library import (
     ChessCnnAttentionPolicyValue,
     create_chess_cnn_attention_policy_value,
