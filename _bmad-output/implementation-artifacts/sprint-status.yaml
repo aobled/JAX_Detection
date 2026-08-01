@@ -1,5 +1,5 @@
 # generated: 2026-07-12
-# last_updated: 2026-07-29
+# last_updated: 2026-08-01
 # project: jax_supervised_training
 # project_key: NOKEY
 # tracking_system: file-system
@@ -58,7 +58,7 @@
 #     aircraft_detector_centernet(_lite) ni leurs consommateurs (non-regression JAX_DETECTOR).
 
 generated: 2026-07-12
-last_updated: 2026-07-29
+last_updated: 2026-08-01
 project: jax_supervised_training
 project_key: NOKEY
 tracking_system: file-system
@@ -139,7 +139,7 @@ development_status:
   9-2-nouveau-modele-echecs: done
   9-3-taskstrategy-echecs-loss-composite-et-integration-au-pipeline: done
   9-4-validation-non-regression-jax-detector-par-execution: done
-  epic-9-retrospective: optional
+  epic-9-retrospective: done
 
 action_items:
   - epic: "1-3"
@@ -258,3 +258,19 @@ action_items:
     action: "Etape 5 (optionnelle, non detaillee) : separer rendu Canvas et etat des boites (View/Model) - decision Aymeric 2026-07-24 : chantier clos pour l'instant, gain deja suffisant (1284->1084 lignes, 0 regression sur 4 etapes). Necessiterait une nouvelle session de planification Winston avant toute implementation si repris"
     owner: "Amelia"
     status: backlog
+  - epic: "9"
+    action: "Router via agents specialises - reformule (5e cycle) : Claude propose proactivement l'agent pertinent en cours de travail (Winston/Amelia/Paige/Mary/John selon le sujet) plutot que d'attendre qu'Aymeric le demande"
+    owner: "Claude"
+    status: in-progress
+  - epic: "9"
+    action: "Committer le correctif d'import chess paresseux (2026-07-31), actuellement non commite"
+    owner: "Aymeric"
+    status: open
+  - epic: "9"
+    action: "Quand un domaine importe une dependance tierce de facon inconditionnelle au niveau module, verifier son impact sur tous les domaines (pas seulement lister la dependance dans requirements.txt) - le cout reel de ce point aveugle a ete un crash Colab en production, 4 jours apres que la review l'ait presque attrape"
+    owner: "process (Claude)"
+    status: open
+  - epic: "9"
+    action: "Pour toute story testant des pieces neuves isolement, ajouter systematiquement un test qui exerce le vrai chemin main.py/Trainer avant de considerer la story couverte - 3 occurrences du meme trou sur Epic 9 (9.1 requirements, 9.3 KeyErrors)"
+    owner: "futur cycle"
+    status: open

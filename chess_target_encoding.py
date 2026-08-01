@@ -60,9 +60,39 @@ exclusivement par chunks (plusieurs exemples/fichier, np.savez_compressed cote
 dataset_builder/chess_pgn_dataset_tools.py), jamais par exemple individuel - donc pas
 de variante "single-example" a fournir ici. Toute future ecriture .npz, par lot ou non,
 doit reutiliser ces memes constantes de cle plutot que d'en choisir de nouvelles.
+
+=== Dependance python-chess : optionnelle au chargement du module ===
+
+`import chess` (le package tiers python-chess) n'est PAS fait au niveau module ici,
+volontairement : model_library.py importe POLICY_KEY/VALUE_KEY/BOARD_SIZE de ce module
+de facon inconditionnelle (pour la classe modele echecs), et model_library.py est lui-meme
+importe par main.py pour TOUT task_type (CIFAR10, FIGHTERJET_*, KEPLER, pas seulement
+CHESS). Un `import chess` module-level ferait donc de python-chess une dependance dure
+pour un run de classification qui n'a rien a voir avec les echecs (bug reel constate sur
+Colab, JAX_CLASSIFICATION casse avec ModuleNotFoundError: No module named 'chess').
+
+Consequences de ce choix :
+  - `from __future__ import annotations` (PEP 563) differe l'evaluation des annotations
+    de type - les signatures peuvent utiliser `chess.Board`/`chess.Move` sans que `chess`
+    soit importable au chargement du module.
+  - Chaque fonction qui appelle reellement une API `chess.*` (encode_position,
+    move_to_index, index_to_move, _underpromotion_deltas, _underpromotion_pieces) fait
+    son propre `import chess` local - cout negligeable (sys.modules cache l'import reel).
+  - Les constantes module-level qui derivaient auparavant de valeurs `chess.*`
+    (_PIECE_TYPES, _UNDERPROMOTION_PIECES) sont soit un entier fixe documente
+    (_NUM_PIECE_TYPES), soit calculees localement dans la fonction qui les utilise -
+    jamais au chargement du module.
+  - task_strategies.py/dataset_configs.py/loss_functions.py importent des constantes
+    d'ici de facon inconditionnelle eux aussi ; corriger a la source ici les protege tous
+    sans modification de leur part (verifie : les trois s'importent sans `chess` installe).
+
+Verifie par tests/test_chess_target_encoding_lazy_import.py (simulation chess absent).
 """
 
-import chess
+from __future__ import annotations
+
+import functools
+
 import numpy as np
 
 # Cles .npz - source unique (AD-18, AD-25). Story 9.1 (producteur) et Story 9.3
@@ -74,9 +104,12 @@ VALUE_KEY = "value"
 BOARD_SIZE = 8
 HISTORY_LENGTH = 5  # nombre de demi-coups d'historique (fixe, PRD FR2)
 
-_PIECE_TYPES = (chess.KING, chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN)
+# 6 types de piece (Roi, Dame, Tour, Fou, Cavalier, Pion) - compte fixe, independant de
+# python-chess (jamais amene a changer) : garde `chess` optionnel pour ce calcul de
+# constante, importe seulement ou la valeur des enums est reellement utilisee (encode_position).
+_NUM_PIECE_TYPES = 6
 
-NUM_POSITION_PLANES = 2 * len(_PIECE_TYPES) + 1 + 4 + 1 + 1  # 12 + 1 + 4 + 1 + 1 = 19
+NUM_POSITION_PLANES = 2 * _NUM_PIECE_TYPES + 1 + 4 + 1 + 1  # 12 + 1 + 4 + 1 + 1 = 19
 NUM_HISTORY_PLANES = HISTORY_LENGTH * 2  # 10
 NUM_PLANES = NUM_POSITION_PLANES + NUM_HISTORY_PLANES  # 29
 
@@ -102,6 +135,11 @@ def encode_position(board: chess.Board, move_history: list, include_history: boo
         (8, 8, NUM_POSITION_PLANES) sinon. Voir docstring de module pour le detail exact
         plan par plan.
     """
+    import chess  # local, pas module-level (voir docstring de module)
+
+    piece_types = (chess.KING, chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN)
+    assert len(piece_types) == _NUM_PIECE_TYPES
+
     num_planes = NUM_PLANES if include_history else NUM_POSITION_PLANES
     planes = np.zeros((BOARD_SIZE, BOARD_SIZE, num_planes), dtype=np.float32)
     us = board.turn
@@ -109,7 +147,7 @@ def encode_position(board: chess.Board, move_history: list, include_history: boo
 
     idx = 0
     for color in (us, them):
-        for piece_type in _PIECE_TYPES:
+        for piece_type in piece_types:
             for square in board.pieces(piece_type, color):
                 row, col = divmod(square, BOARD_SIZE)
                 planes[row, col, idx] = 1.0
@@ -166,13 +204,24 @@ _KNIGHT_DELTAS = (
 # capture a gauche, capture a droite) x 3 pieces (Cavalier, Fou, Tour). Une promotion en
 # Dame est un coup de pion normal (distance 1, deja couvert par les 56 coups "dame"), pas
 # une sous-promotion.
-_UNDERPROMOTION_PIECES = (chess.KNIGHT, chess.BISHOP, chess.ROOK)
+@functools.lru_cache(maxsize=1)
+def _underpromotion_pieces() -> tuple:
+    """(Cavalier, Fou, Tour) - import chess local (voir docstring de module), pas de
+    constante module-level pour garder `chess` optionnel au chargement de ce module.
+    lru_cache : calculee une seule fois (comme l'etait l'ancienne constante), pas
+    reallouee a chaque coup encode/decode."""
+    import chess
+    pieces = (chess.KNIGHT, chess.BISHOP, chess.ROOK)
+    assert len(pieces) == 3, "move_to_index/index_to_move codent en dur '* 3' sur ce compte"
+    return pieces
+
 
 NUM_MOVES = 64 * 73  # 4672
 
 
 def _underpromotion_deltas(color: bool) -> tuple:
     """(tout droit, capture gauche, capture droite), en (delta_file, delta_rank) absolu."""
+    import chess
     forward = 1 if color == chess.WHITE else -1
     return ((0, forward), (-forward, forward), (forward, forward))
 
@@ -189,6 +238,8 @@ def move_to_index(move: chess.Move, board: chess.Board) -> int:
     Leve ValueError si from_square == to_square (coup degenere/nul, ex. chess.Move.null())
     ou si `board.piece_at(move.from_square)` est None (move incoherent avec `board`).
     """
+    import chess
+
     from_sq, to_sq = move.from_square, move.to_square
     if from_sq == to_sq:
         raise ValueError(f"coup degenere : from_square == to_square == {from_sq} (coup nul ?)")
@@ -201,7 +252,7 @@ def move_to_index(move: chess.Move, board: chess.Board) -> int:
         piece = board.piece_at(from_sq)
         if piece is None:
             raise ValueError(f"aucune piece en case source {from_sq} - move {move.uci()} incoherent avec board")
-        move_type = 64 + _UNDERPROMOTION_PIECES.index(move.promotion) * 3 + \
+        move_type = 64 + _underpromotion_pieces().index(move.promotion) * 3 + \
             _underpromotion_deltas(piece.color).index((delta_file, delta_rank))
     elif (abs(delta_file), abs(delta_rank)) in ((1, 2), (2, 1)):
         move_type = 56 + _KNIGHT_DELTAS.index((delta_file, delta_rank))
@@ -223,6 +274,8 @@ def index_to_move(index: int, board: chess.Board) -> chess.Move:
     predit par un modele encore non entraine, hors du sous-ensemble legal de la position),
     y compris si `index` est hors de [0, NUM_MOVES) (ex. tete policy mal dimensionnee).
     """
+    import chess
+
     if not (0 <= index < NUM_MOVES):
         raise ValueError(f"index {index} hors de [0, {NUM_MOVES})")
 
@@ -247,7 +300,7 @@ def index_to_move(index: int, board: chess.Board) -> chess.Move:
         delta_file, delta_rank = _underpromotion_deltas(color)[dir_idx]
         to_file = chess.square_file(from_sq) + delta_file
         to_rank = chess.square_rank(from_sq) + delta_rank
-        promotion = _UNDERPROMOTION_PIECES[piece_idx]
+        promotion = _underpromotion_pieces()[piece_idx]
 
     if not (0 <= to_file < 8 and 0 <= to_rank < 8):
         raise ValueError(f"index {index}: case destination hors echiquier (file={to_file}, rank={to_rank})")

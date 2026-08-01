@@ -30,6 +30,7 @@ _Généré par `bmad-document-project`, 2026-07-12. Point d'entrée principal po
 - [strat_video_detection.md](./strat_video_detection.md) — Traitement vidéo
 - [AircraftDetectorUNet.md](./AircraftDetectorUNet.md) — Doc du modèle UNet
 - [ChessCnnAttentionPolicyValue.md](./ChessCnnAttentionPolicyValue.md) — Doc du modèle échecs (CNN + bottleneck d'attention Perceiver-style, Epic 9)
+- [contract-chess-ai-training-interface.md](./contract-chess-ai-training-interface.md) — Contrat d'interface avec le repo séparé `chess_ai` (échecs, split 2026-07-30) — à référencer par toute epic touchant à l'entraînement de modèles échecs
 
 ## Pour la suite (PRD brownfield)
 
