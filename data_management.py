@@ -624,7 +624,9 @@ class ChessPolicyValueDataset:
         # jusqu'ici 29 (NUM_PLANES) etait code en dur dans output_signature (create_tf_dataset)
         # au lieu d'etre derive des donnees reelles - cassait silencieusement tout dataset
         # dont les positions n'ont pas exactement 29 canaux (ex. CHESS_NO_HISTORY, 19
-        # canaux). Defaut 29 : comportement inchange pour la config CHESS existante.
+        # canaux). Defaut 29 : jamais utilise en pratique, CHESS_NO_HISTORY (seule config
+        # echecs restante depuis le retrait de CHESS le 2026-08-02) fournit toujours
+        # num_channels explicitement (voir get_datasets ci-dessous).
         self.num_planes = num_planes
 
         def _chunk_index(path):
@@ -768,9 +770,9 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
             output_prefix=config["output_prefix"],
             batch_size=backend_config["micro_batch_size"],
             val_split=config.get("val_split", 0.1),
-            # Defaut 29 = num_channels de la config CHESS (avec historique) - toutes les
-            # configs chess fournissent explicitement num_channels, ce defaut n'est en
-            # pratique jamais utilise.
+            # Defaut 29 = ancien num_channels de la config CHESS (avec historique, retiree
+            # le 2026-08-02) - CHESS_NO_HISTORY fournit toujours num_channels explicitement,
+            # ce defaut n'est en pratique jamais utilise.
             num_planes=config.get("num_channels", 29),
         )
         return dataset_manager.get_dataset()

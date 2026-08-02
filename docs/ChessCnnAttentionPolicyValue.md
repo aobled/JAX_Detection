@@ -23,10 +23,10 @@ L'entrée est une position d'échecs déjà encodée en plans binaires/continus 
 
 | Variante | Entrée | Config | Résultat mesuré (val PolicyAccuracy, 15 epochs, dataset Carlsen) |
 |---|---|---|---|
-| Avec historique | `(Batch, 8, 8, 29)` | `CHESS` | 24.43% |
+| Avec historique (retirée, voir ci-dessous) | `(Batch, 8, 8, 29)` | ~~`CHESS`~~ | 24.43% |
 | **Sans historique** (**défaut actuel de `chess_game.py --vs-model`**) | `(Batch, 8, 8, 19)` | `CHESS_NO_HISTORY` | 23.68% |
 
-L'écart (0.75 point) est jugé réel mais modeste — retenu comme défaut malgré la légère perte, pour la simplicité (moins de plans à raisonner, pas de gestion d'historique côté consommateurs futurs). Les deux variantes restent disponibles et entraînables (`dataset_configs.py`), aucune n'a été supprimée.
+L'écart (0.75 point) est jugé réel mais modeste — retenu comme défaut malgré la légère perte, pour la simplicité (moins de plans à raisonner, pas de gestion d'historique côté consommateurs futurs). La variante "avec historique" (`CHESS`) a été retirée de `dataset_configs.py` le 2026-08-02 (plus aucun intérêt une fois ce choix acté) ; `CHESS_NO_HISTORY` est désormais la seule config policy+value du domaine échecs.
 
 Chaque case du plateau (8×8 = 64 cases) est donc un "pixel" avec 19 ou 29 canaux selon la variante — le CNN qui suit va le traiter exactement comme `AircraftDetectorUNet` traite un pixel d'image, sauf que la grille est minuscule (8×8 au lieu de 224×224).
 

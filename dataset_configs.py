@@ -582,114 +582,15 @@ DATASET_CONFIGS = {
         "save_dir": "./checkpoints_jax_detector",
     },
 
-    "CHESS": {
-        # === CONFIG DOMAINE ÉCHECS - policy+value (Epic 9, AD-17/AD-22/AD-23/AD-24) ===
-        # Premier domaine du projet qui n'est ni classification ni détection - preuve de
-        # généralisation du pipeline Trainer/TaskStrategy, pas un objectif de qualité de jeu.
-        "task_type": "chess_policy_value",
-
-        # === Données ===
-        "num_classes": 4672,  # taille de la tête policy (AD-22) - PAS un nombre de classes
-        # "image_size" retiré (2026-07-30) : n'a jamais eu de sens pour les échecs, n'était
-        # là que pour satisfaire l'ancienne lecture sans garde de Trainer.create_train_state
-        # - remplacée par "input_shape" ci-dessous (source unique, générique).
-        # "num_channels" : toujours utilisé par ChessPolicyValueDataset (data_management.py,
-        # get_datasets()) pour la forme des tenseurs de position - rôle distinct de
-        # "input_shape", ne pas retirer.
-        "num_channels": 29,
-        # "input_shape" (2026-07-30, remplace l'ancien couple image_size+num_channels côté
-        # Trainer, voir trainer.py::create_train_state) : forme complète (hors batch) de
-        # l'entrée modèle - (8, 8, 29) ici.
-        "input_shape": (8, 8, 29),
-        # Pas de "class_names" (n'a pas de sens pour un espace de 4672 coups).
-        "model_name": "chess_cnn_attention_policy_value",
-        # num_bottleneck_tokens (K) : teste a 32 le 2026-07-28 (cout quasi nul confirme -
-        # +1536 parametres sur 382 017, temps d'epoch quasi identique) mais resultat legerement
-        # EN DESSOUS de K=8 (23.81% vs 24.43% val PolicyAccuracy, meme dataset Carlsen, voir
-        # deferred-work.md "test num_bottleneck_tokens K=8->32") - remis a la valeur par defaut
-        # du modele (8) en consequence. Prochain levier a explorer : dataset multi-joueurs
-        # (deferred-work.md), pas d'autre retouche isolee de K/D.
-        "num_bottleneck_tokens": 8,
-        # Sous-dossier dédié (chunks/chess/chess_*.npz), cohérent avec la convention déjà
-        # utilisée pour JAX_DETECTOR (chunks/jax_detector/jax_detector_targets_*.npz) -
-        # corrigé le 2026-07-27 (Aymeric avait initialement mis les chunks directement
-        # sous chunks/ avec le préfixe "chess", sans sous-dossier). Les 139 chunks déjà
-        # générés (691 779 positions) sont déplacés vers ce nouveau chemin en conséquence.
-        "output_prefix": f"{DATA_ROOT}/chunks/chess/chess",
-        # Fraction des CHUNKS (pas des exemples) réservée à la validation - split côté
-        # chargement, voir ChessPolicyValueDataset (data_management.py, Story 9.3).
-        "val_split": 0.1,
-
-        # === Perte ===
-        # Pas de loss_method/metric_method/report_method : ChessPolicyValueStrategy
-        # (Story 9.3) n'a qu'une seule méthode de perte et une seule métrique, aucun
-        # dispatch interne - même discipline que JAX_DETECTOR ci-dessus.
-        "loss_params": {
-            "policy_weight": 1.0,
-            "value_weight": 1.0,
-        },
-
-        # === Hyperparamètres TPU/GPU ===
-        # dropout_rate niché ici (pas top-level) : main.py:106 le lit via backend_config,
-        # même convention que toutes les autres configs (bug trouvé en code review - une
-        # première version de cette entrée l'avait à tort au niveau racine).
-        # tpu : toujours non tunée empiriquement (aucun run réel sur TPU à ce stade) -
-        # seule la config gpu a été ajustée ci-dessous suite au 1er entraînement réel local.
-        "tpu": {
-            "micro_batch_size": 128,
-            "accum_steps": 1,
-            "learning_rate": 4e-4,
-            "weight_decay": 5e-5,
-            "dropout_rate": 0.1,
-            "warmup_steps": 200,
-            "decay_steps": 10000,
-        },
-        # gpu : ajusté le 2026-07-27 après 2 epochs réelles à micro_batch_size=64
-        # (~835s/epoch, ~85ms/step train vs ~15ms/step val) - l'écart train/val pour un
-        # modèle de 382K paramètres (bottleneck K=8 tokens) pointe vers un coût dominé par
-        # le nombre de lancements de kernels (attention croisée+auto-attention en petits
-        # matmuls), pas par le calcul brut - un step à batch plus large ne coûte donc pas
-        # proportionnellement plus cher, d'où le x4 sur micro_batch_size. learning_rate
-        # x4 en conséquence (règle de scaling linéaire, cf. Goyal et al. 2017) pour ne pas
-        # dégrader l'accuracy avec le nouveau batch. decay_steps recalculé pour couvrir les
-        # 15 epochs réelles au nouveau nombre de steps/epoch (~2448 x 15 ~= 36 700) - la
-        # valeur précédente (10000) était déjà décalée même à batch=64 (~9844 steps/epoch),
-        # le cosine s'aplatissait après ~1 epoch sur 15. accum_steps laissé à 1 : aucune
-        # contrainte mémoire ne justifie l'accumulation de gradient ici (modèle 1.5 Mo).
-        "gpu": {
-            "micro_batch_size": 256,
-            "accum_steps": 1,
-            "learning_rate": 8e-4,
-            "weight_decay": 5e-5,
-            "dropout_rate": 0.1,
-            "warmup_steps": 200,
-            "decay_steps": 36700,
-        },
-
-        # === Entraînement ===
-        "optimizer": "adamw",
-        "lr_schedule": "cosine",
-        "epochs": 15,
-        "patience": 8,
-
-        # === Évaluation ===
-        "eval_batch_size": 64,
-
-        # === Sauvegarde ===
-        # Pas de checkpoint_path/training_state_path explicite : nommage dérivé de
-        # dataset_name (Story 5.0, ChessPolicyValueStrategy._get_export_path, Story 9.3)
-        # -> best_model_chess.pkl / best_model_training_state_chess.pkl
-        "save_dir": "./checkpoints_chess",
-    },
-
     "CHESS_NO_HISTORY": {
-        # === Variante d'ablation de CHESS - test "l'historique sert-il a quelque chose ?"
-        # (2026-07-29, voir deferred-work.md "test ablation historique"). Copie de CHESS,
-        # seules 3 differences : num_channels (19 au lieu de 29), output_prefix (dataset
-        # regenere sans les 10 plans d'historique, encode_position (cote chess_ai)
-        # avec include_history=False), save_dir (checkpoint distinct). Tout le reste
-        # (hyperparametres GPU/TPU, K du bottleneck, etc.) identique a CHESS pour une
-        # comparaison directe et isolee sur ce seul facteur.
+        # === Seule config echecs restante (Epic 9, policy+value) ===
+        # Etait a l'origine une variante d'ablation de "CHESS" (avec historique) - test
+        # "l'historique sert-il a quelque chose ?" (2026-07-29, voir deferred-work.md "test
+        # ablation historique"). "CHESS" et "CHESS_NAKAMURA_NO_HISTORY" retires le 2026-08-02
+        # (nettoyage post-tournoi Carlsen/Nakamura, plus aucun interet - voir deferred-work.md
+        # "tournoi model1 (Carlsen) vs model2 (Nakamura)") : celle-ci devient la config de
+        # reference du domaine echecs. num_channels=19 (pas 29) : sans les 10 plans
+        # d'historique (encode_position cote chess_ai avec include_history=False).
         "task_type": "chess_policy_value",
         "num_classes": 4672,
         "num_channels": 19,  # 19, pas 29 - pas d'historique
@@ -727,55 +628,6 @@ DATASET_CONFIGS = {
         "eval_batch_size": 64,
         "save_dir": "./checkpoints_chess_no_history",
     },
-
-    "CHESS_NAKAMURA_NO_HISTORY": {
-        # === "model2" - test 2026-07-29 : les donnees d'entrainement (joueur source,
-        # volume) influencent-elles reellement la qualite de jeu, ou est-on proche du
-        # hasard ? Voir deferred-work.md "tournoi model1 (Carlsen) vs model2 (Nakamura)".
-        # Copie de CHESS_NO_HISTORY (meme variante sans historique - un seul facteur
-        # teste a la fois, pas deux), seule la source PGN change : Nakamura.pgn au lieu
-        # de Carlsen.pgn, 943 250 positions / 9756 parties / 189 chunks (~35% de plus que
-        # Carlsen, confondu avec le style du joueur - assume et documente, pas isole).
-        "task_type": "chess_policy_value",
-        "num_classes": 4672,
-        "num_channels": 19,
-        "input_shape": (8, 8, 19),  # forme d'entrée modèle (Trainer, 2026-07-30)
-        "model_name": "chess_cnn_attention_policy_value",
-        "num_bottleneck_tokens": 8,
-        "output_prefix": f"{DATA_ROOT}/chunks/nakamura_no_history/nakamura",
-        "val_split": 0.1,
-        "loss_params": {
-            "policy_weight": 1.0,
-            "value_weight": 1.0,
-        },
-        "tpu": {
-            "micro_batch_size": 128,
-            "accum_steps": 1,
-            "learning_rate": 4e-4,
-            "weight_decay": 5e-5,
-            "dropout_rate": 0.1,
-            "warmup_steps": 200,
-            "decay_steps": 13600,  # ~ decay_steps CHESS_NO_HISTORY (10000) x ratio positions
-        },
-        "gpu": {
-            "micro_batch_size": 256,
-            "accum_steps": 1,
-            "learning_rate": 8e-4,
-            "weight_decay": 5e-5,
-            "dropout_rate": 0.1,
-            "warmup_steps": 200,
-            # Recalcule pour ce volume (943 250 positions, pas 691 779) : ~171 chunks train
-            # x ~5000/256 ~= 3333 steps/epoch x 15 epochs ~= 50000 (cf. CHESS_NO_HISTORY,
-            # 36700 pour 626802 positions - proportionnel, meme methode).
-            "decay_steps": 50000,
-        },
-        "optimizer": "adamw",
-        "lr_schedule": "cosine",
-        "epochs": 15,
-        "patience": 8,
-        "eval_batch_size": 64,
-        "save_dir": "./checkpoints_chess_nakamura_no_history",
-    }
 }
 
 
@@ -824,8 +676,8 @@ def print_config(dataset_name):
     print("=" * 60)
     print(f"Classes: {config['num_classes']}")
     # class_names/image_size redevenus optionnels (2026-07-27, Story 9.3, voir
-    # validate_config) - CHESS n'a ni l'un ni l'autre (num_classes y porte le littéral
-    # 4672, la shape est un littéral en dur dans la config, pas dérivée d'un module).
+    # validate_config) - CHESS_NO_HISTORY n'a ni l'un ni l'autre (num_classes y porte le
+    # littéral 4672, la shape est un littéral en dur dans la config, pas dérivée d'un module).
     print(f"Noms: {config.get('class_names', 'N/A')}")
     print(f"Image size: {config.get('image_size', 'N/A')}")
     print(f"Modèle: {config['model_name']}")

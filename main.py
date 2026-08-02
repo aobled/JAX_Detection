@@ -64,10 +64,11 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
     
     # Extraire les paramètres essentiels
     num_classes = config["num_classes"]
-    # class_names optionnel (2026-07-27, Story 9.3) : CHESS n'en a pas (espace de 4672
-    # coups, pas de noms de classe) - consommateurs réels (Trainer, generate_reports
-    # des strategies de classification) le lisent déjà via .get()/directement sur config,
-    # cette variable locale n'est utilisée nulle part ailleurs dans main.py.
+    # class_names optionnel (2026-07-27, Story 9.3) : les configs échecs n'en ont pas
+    # (espace de 4672 coups, pas de noms de classe) - consommateurs réels (Trainer,
+    # generate_reports des strategies de classification) le lisent déjà via
+    # .get()/directement sur config, cette variable locale n'est utilisée nulle part
+    # ailleurs dans main.py.
     class_names = config.get("class_names")
     
     # === 1. GESTION DES DONNÉES ===

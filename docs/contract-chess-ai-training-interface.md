@@ -91,8 +91,8 @@ réinventer.
   produit policy+value pour le modèle combiné existant ; les 2 nouveaux modèles
   pourraient nécessiter un format de label différent (ex. paires de positions à comparer
   pour le modèle 2) — à spécifier avant toute nouvelle entrée `dataset_configs.py`.
-- **Nommage `dataset_configs.py`** : whatever convention suit `CHESS`/`CHESS_NO_HISTORY`/
-  `CHESS_NAKAMURA_NO_HISTORY` existants, à fixer une fois les 2 modèles nommés.
+- **Nommage `dataset_configs.py`** : whatever convention suit `CHESS_NO_HISTORY` existant,
+  à fixer une fois les 2 modèles nommés.
 
 ## 4. Process
 
