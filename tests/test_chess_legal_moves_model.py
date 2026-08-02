@@ -125,6 +125,43 @@ def test_loss_is_finite():
     print(f"OK - compute_chess_legal_moves_loss retourne un scalaire fini ({float(loss):.4f})")
 
 
+def test_pos_weight_default_matches_unweighted_bce():
+    # pos_weight=1.0 (defaut) doit rester exactement equivalent a la BCE non
+    # ponderee d'origine (optax.sigmoid_binary_cross_entropy) - garde de
+    # non-regression pour le comportement des configs qui ne fixent pas
+    # loss_params.pos_weight.
+    import optax
+    logits = jax.random.normal(jax.random.PRNGKey(20), (_BATCH_SIZE, NUM_MOVES))
+    legal_mask = (jax.random.uniform(jax.random.PRNGKey(21), (_BATCH_SIZE, NUM_MOVES)) < 0.01).astype(jnp.float32)
+
+    loss_default = compute_chess_legal_moves_loss(logits, legal_mask)
+    loss_reference = optax.sigmoid_binary_cross_entropy(logits, legal_mask).mean()
+
+    assert bool(jnp.allclose(loss_default, loss_reference, atol=1e-5)), (
+        f"pos_weight=1.0 devrait egaler la BCE non ponderee : {float(loss_default)} vs {float(loss_reference)}"
+    )
+    print(f"OK - pos_weight=1.0 (defaut) egale la BCE non ponderee ({float(loss_default):.4f})")
+
+
+def test_pos_weight_penalizes_missed_positives_more():
+    # Un pos_weight > 1 doit strictement augmenter la loss quand le modele rate
+    # des vrais positifs (logits tres negatifs la ou legal_mask=1) - c'est
+    # exactement le comportement recherche (pousser plus fort vers le rappel).
+    logits = jnp.full((_BATCH_SIZE, NUM_MOVES), -10.0)  # predit "illegal" partout
+    legal_mask = jnp.zeros((_BATCH_SIZE, NUM_MOVES), dtype=jnp.float32).at[:, :25].set(1.0)
+
+    loss_unweighted = compute_chess_legal_moves_loss(logits, legal_mask, pos_weight=1.0)
+    loss_weighted = compute_chess_legal_moves_loss(logits, legal_mask, pos_weight=2.0)
+
+    assert bool(jnp.isfinite(loss_weighted)), f"loss ponderee non finie : {loss_weighted}"
+    assert float(loss_weighted) > float(loss_unweighted), (
+        f"pos_weight=2.0 devrait penaliser plus fort les faux negatifs : "
+        f"{float(loss_weighted)} devrait etre > {float(loss_unweighted)}"
+    )
+    print(f"OK - pos_weight=2.0 penalise plus fort les faux negatifs "
+          f"({float(loss_unweighted):.4f} -> {float(loss_weighted):.4f})")
+
+
 def test_metrics_sane_on_realistic_sparse_mask():
     # Cas nominal (PAS le cas limite tout-a-zero ci-dessous) : ~25 coups legaux sur
     # 4672 (~0.5%, ordre de grandeur reel du dataset chess_legal_moves) - verifie que
@@ -163,6 +200,8 @@ if __name__ == "__main__":
     test_get_model_factory_and_registry()
     test_end_to_end_differentiability()
     test_loss_is_finite()
+    test_pos_weight_default_matches_unweighted_bce()
+    test_pos_weight_penalizes_missed_positives_more()
     test_metrics_sane_on_realistic_sparse_mask()
     test_metrics_no_nan_on_all_zero_mask()
     print("\nTous les tests du modele echecs (coups legaux) sont passes.")

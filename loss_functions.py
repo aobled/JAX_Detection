@@ -592,7 +592,7 @@ def compute_chess_policy_value_loss(outputs, targets, policy_weight=1.0, value_w
     return policy_weight * policy_loss + value_weight * value_loss
 
 
-def compute_chess_legal_moves_loss(logits, legal_mask):
+def compute_chess_legal_moves_loss(logits, legal_mask, pos_weight=1.0):
     """
     Sigmoid BCE par coup - PAS compute_chess_policy_loss (softmax cross-entropy
     contre un seul index) : ici plusieurs coups sont legaux simultanement pour une
@@ -603,6 +603,18 @@ def compute_chess_legal_moves_loss(logits, legal_mask):
     logits: (Batch, 4672) logits bruts. legal_mask: (Batch, 4672) - 1 si le coup
     est legal, 0 sinon (int8 au chargement, cast en float32 par
     ChessLegalMovesStrategy.preprocess_batch avant d'arriver ici).
+
+    pos_weight : multiplie UNIQUEMENT le terme positif (coup reellement legal) -
+    compense le desequilibre de classe (~25 coups legaux sur 4672, le signal
+    "pousse vers legal" est numeriquement noye par la masse de vrais negatifs sans
+    ponderation). pos_weight=1.0 (defaut) = BCE non ponderee, identique au
+    comportement d'origine (optax.sigmoid_binary_cross_entropy). Implemente a la
+    main (pas de pos_weight dans optax.sigmoid_binary_cross_entropy) via
+    log_sigmoid, stable numeriquement (evite l'overflow de log(1+exp(-x)) pour
+    x tres negatif - meme technique que la formulation stable de la BCE standard).
     """
-    return optax.sigmoid_binary_cross_entropy(logits, legal_mask).mean()
+    log_sigmoid_pos = jax.nn.log_sigmoid(logits)       # log(sigmoid(x))
+    log_sigmoid_neg = jax.nn.log_sigmoid(-logits)      # log(1 - sigmoid(x))
+    loss = -(pos_weight * legal_mask * log_sigmoid_pos + (1.0 - legal_mask) * log_sigmoid_neg)
+    return loss.mean()
 

@@ -183,7 +183,14 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
         from task_strategies import ChessLegalMovesStrategy
         # Pas de loss_method/metric_method/report_method : meme discipline que
         # ChessPolicyValueStrategy ci-dessus (une seule methode de perte/metrique).
-        strategy = ChessLegalMovesStrategy()
+        # metric_threshold : optionnel, expose via config suite au balayage de seuil
+        # du 1er run (2026-08-02) - F1=0.60 a seuil 0.3 contre 0.53 au defaut 0.5.
+        # loss_params={"pos_weight": ...} : ponderation de la classe positive dans
+        # la BCE (2e run, 2026-08-02) - voir compute_chess_legal_moves_loss.
+        strategy = ChessLegalMovesStrategy(
+            metric_threshold=config.get("metric_threshold", 0.5),
+            loss_params=loss_params,
+        )
     else:
         raise ValueError(f"task_type '{task_type}' non reconnu.")
 

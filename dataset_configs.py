@@ -643,16 +643,34 @@ DATASET_CONFIGS = {
         "num_bottleneck_tokens": 8,
         "output_prefix": f"{DATA_ROOT}/chunks/chess_legal_moves/chess_legal_moves",
         "val_split": 0.1,
-        # Pas de loss_params : compute_chess_legal_moves_loss n'a qu'un seul terme
-        # (BCE), pas de ponderation policy/value a exposer ici.
+        # metric_threshold : seuil sigmoid pour compute_metrics/generate_reports
+        # (ChessLegalMovesStrategy) - 0.3 retenu suite au balayage de seuil sur le
+        # 1er run (2026-08-02, 4 epochs) : F1=0.6030 a 0.3 contre 0.5285 au defaut
+        # 0.5 (comptage agrege sur les 67840 positions val, pas une moyenne de F1
+        # par batch).
+        "metric_threshold": 0.3,
+        # loss_params.pos_weight : ponderation du terme positif dans la BCE
+        # (compute_chess_legal_moves_loss) - TESTE le 2026-08-02 (3e run, 15 epochs,
+        # pos_weight=2.0) contre le 2e run (15 epochs, pos_weight=1.0 implicite,
+        # F1=0.8578, precision=0.8364/rappel=0.8753) : resultat NEGATIF net
+        # (F1=0.8467, precision=0.7642/rappel=0.9145 - le rappel monte comme prevu
+        # mais la precision recule plus fort). Confirme que le desequilibre de
+        # classe n'etait deja plus le facteur limitant a ce stade (corrige par les
+        # epochs, pas par la loss) - remis a 1.0 (BCE non ponderee, le meilleur
+        # resultat mesure a ce jour) en consequence. Voir deferred-work.md pour le
+        # detail des 3 runs.
+        "loss_params": {
+            "pos_weight": 1.0,
+        },
 
         # === Hyperparamètres GPU/TPU ===
         # Repris des memes ordres de grandeur que l'ancienne config CHESS (num_channels=29,
-        # retiree le 2026-08-02) - jamais tune empiriquement pour cette tache, c'est un test
-        # rapide de plomberie, pas un objectif de qualite. decay_steps recalcule pour
-        # epochs=4 (pas 15) : ~135 chunks train x ~5000 positions/chunk = ~675 000 positions
-        # train -> ~2637 steps/epoch a batch=256 (gpu) x 4 epochs ~= 10500 ;
-        # ~5273 steps/epoch a batch=128 (tpu) x 4 epochs ~= 21000.
+        # retiree le 2026-08-02) - jamais tune empiriquement pour cette tache au-dela du
+        # nombre d'epochs. decay_steps recalcule pour epochs=15 (pas 4, 1er run de
+        # plomberie) a partir des comptages REELS mesures lors de ce 1er run (135 chunks
+        # train / 14 chunks val, 67840 positions val sur 14 chunks -> ~4846 positions/chunk
+        # en moyenne -> ~654 200 positions train) : ~2555 steps/epoch a batch=256 (gpu) x 15
+        # epochs ~= 38300 ; ~5111 steps/epoch a batch=128 (tpu) x 15 epochs ~= 76700.
         "tpu": {
             "micro_batch_size": 128,
             "accum_steps": 1,
@@ -660,7 +678,7 @@ DATASET_CONFIGS = {
             "weight_decay": 5e-5,
             "dropout_rate": 0.1,
             "warmup_steps": 200,
-            "decay_steps": 21000,
+            "decay_steps": 76700,
         },
         "gpu": {
             "micro_batch_size": 256,
@@ -669,17 +687,21 @@ DATASET_CONFIGS = {
             "weight_decay": 5e-5,
             "dropout_rate": 0.1,
             "warmup_steps": 200,
-            "decay_steps": 10500,
+            "decay_steps": 38300,
         },
 
         # === Entraînement ===
-        # epochs=4 volontairement petit : test rapide de bout en bout (le câblage
-        # fonctionne-t-il ?), pas une recherche de qualité de jeu - voir Ask First de
-        # spec-chess-legal-moves.md (pas de run multi-epochs sans confirmation explicite).
+        # epochs=15 (aligne sur CHESS_NO_HISTORY) : le 1er run (4 epochs, test de
+        # plomberie) montrait encore un gain net epoch 3->4 (+2.4pt F1 au seuil 0.5,
+        # pas de plateau clair) - 15 epochs donne une vraie chance de convergence
+        # sans changer plusieurs variables a la fois (pas de pos_weight ajoute ici,
+        # voir deferred-work.md - un seul facteur teste isolement). patience=8
+        # (idem CHESS_NO_HISTORY) : arrete plus tot si le plateau se confirme,
+        # pas d'obligation d'aller jusqu'a 15 si LegalMoveF1 stagne avant.
         "optimizer": "adamw",
         "lr_schedule": "cosine",
-        "epochs": 4,
-        "patience": 4,
+        "epochs": 15,
+        "patience": 8,
 
         # === Évaluation ===
         "eval_batch_size": 64,

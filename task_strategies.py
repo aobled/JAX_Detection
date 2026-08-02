@@ -543,10 +543,15 @@ class ChessLegalMovesStrategy(TaskStrategy):
     est un tenseur unique (B, 4672) - PAS un dict {"policy", "value"} (pas de tete
     value, ChessCnnAttentionLegalMoves, model_library.py).
     """
-    def __init__(self, metric_threshold: float = 0.5):
+    def __init__(self, metric_threshold: float = 0.5, loss_params: dict = None):
         # metric_threshold : seuil sur sigmoid(logits) pour decider "predit legal"
         # (compute_metrics) - n'affecte pas compute_loss (BCE continue, pas de seuil).
         self.metric_threshold = metric_threshold
+        # loss_params : { "pos_weight": float } - meme convention que
+        # ChessPolicyValueStrategy (policy_weight/value_weight) meme si un seul
+        # terme ici. pos_weight=1.0 par defaut (BCE non ponderee, comportement
+        # d'origine avant le 1er run reel du 2026-08-02).
+        self.loss_params = loss_params or {}
 
     @property
     def primary_metric_name(self) -> str:
@@ -564,7 +569,7 @@ class ChessLegalMovesStrategy(TaskStrategy):
         return images, targets, False
 
     def compute_loss(self, outputs, targets, **kwargs):
-        return compute_chess_legal_moves_loss(outputs, targets)
+        return compute_chess_legal_moves_loss(outputs, targets, pos_weight=self.loss_params.get("pos_weight", 1.0))
 
     def _precision_recall_f1(self, outputs, targets):
         # Factorise ici (compute_metrics ET generate_reports en avaient besoin,
