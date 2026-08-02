@@ -591,3 +591,18 @@ def compute_chess_policy_value_loss(outputs, targets, policy_weight=1.0, value_w
 
     return policy_weight * policy_loss + value_weight * value_loss
 
+
+def compute_chess_legal_moves_loss(logits, legal_mask):
+    """
+    Sigmoid BCE par coup - PAS compute_chess_policy_loss (softmax cross-entropy
+    contre un seul index) : ici plusieurs coups sont legaux simultanement pour une
+    meme position (contrat .npz chess_legal_moves, cote chess_ai), chaque coup est
+    donc une decision binaire independante, pas une seule classe correcte parmi
+    4672.
+
+    logits: (Batch, 4672) logits bruts. legal_mask: (Batch, 4672) - 1 si le coup
+    est legal, 0 sinon (int8 au chargement, cast en float32 par
+    ChessLegalMovesStrategy.preprocess_batch avant d'arriver ici).
+    """
+    return optax.sigmoid_binary_cross_entropy(logits, legal_mask).mean()
+

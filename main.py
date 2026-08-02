@@ -121,7 +121,7 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
         # si on leur passait un argument inattendu, d'ou le passage conditionnel
         model_kwargs["heatmap_prior"] = config["heatmap_prior"]
     if "num_bottleneck_tokens" in config:
-        # chess_cnn_attention_policy_value uniquement (test K du bottleneck, 2026-07-27) -
+        # modeles chess_cnn_attention_* uniquement (test K du bottleneck, 2026-07-27) -
         # meme discipline de forwarding conditionnel que heatmap_prior ci-dessus
         model_kwargs["num_bottleneck_tokens"] = config["num_bottleneck_tokens"]
     model = get_model(model_name, **model_kwargs)
@@ -178,6 +178,12 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
         # perte/metrique, Story 9.3) - meme pattern que CenterNetDetectionStrategy
         # ci-dessus (loss_params uniquement, pas loss_method/metric_method/report_method).
         strategy = ChessPolicyValueStrategy(loss_params=loss_params)
+    elif task_type == "chess_legal_moves":
+        print("🎯 Application de la logique d'entraînement : CHESS COUPS LÉGAUX (multi-label)")
+        from task_strategies import ChessLegalMovesStrategy
+        # Pas de loss_method/metric_method/report_method : meme discipline que
+        # ChessPolicyValueStrategy ci-dessus (une seule methode de perte/metrique).
+        strategy = ChessLegalMovesStrategy()
     else:
         raise ValueError(f"task_type '{task_type}' non reconnu.")
 

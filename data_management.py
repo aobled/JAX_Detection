@@ -704,6 +704,102 @@ class ChessPolicyValueDataset:
         return train_ds, val_ds
 
 
+class ChessLegalMovesDataset:
+    """
+    Gestionnaire de dataset pour la tache multi-label "coups legaux" (contrat .npz
+    chess_legal_moves, cote chess_ai). Duplique ChessPolicyValueDataset ci-dessus
+    (meme tri numerique des chunks, meme melange reproductible + split par fraction
+    de CHUNKS entiers - convention deja en place, pas une nouvelle regle) mais
+    retourne (position, legal_mask) au lieu de (position, {"policy", "value"}).
+
+    Classe separee plutot qu'une generalisation de ChessPolicyValueDataset (flag
+    "avec/sans value") : meme discipline que le reste de ce fichier (CHESS_NO_HISTORY
+    est une copie de config, pas un flag sur une classe).
+    """
+    def __init__(self, output_prefix: str, batch_size: int = 32, val_split: float = 0.1, shuffle_seed: int = 42,
+                 num_planes: int = 29, num_moves: int = 4672):
+        self.output_prefix = output_prefix
+        self.batch_size = batch_size
+        self.num_planes = num_planes
+        self.num_moves = num_moves
+
+        def _chunk_index(path):
+            stem = os.path.basename(path).rsplit("_chunk", 1)[-1]
+            return int(stem[:-len(".npz")])
+
+        all_chunks = sorted(glob.glob(f"{output_prefix}_chunk*.npz"), key=_chunk_index)
+        if not all_chunks:
+            error_msg = (
+                f"\n❌ ERREUR: Chunks introuvables pour le domaine échecs (coups légaux) !\n"
+                f"   Je m'attendais à trouver {output_prefix}_chunk*.npz\n"
+                f"💡 Génère-les d'abord côté chess_ai (ce repo ne génère plus les .npz échecs)."
+            )
+            print(error_msg)
+            exit(1)
+
+        shuffled_chunks = list(all_chunks)
+        np.random.RandomState(shuffle_seed).shuffle(shuffled_chunks)
+
+        n_val = 0 if val_split <= 0 else (max(1, int(len(shuffled_chunks) * val_split)) if len(shuffled_chunks) > 1 else 0)
+        self.train_chunks = shuffled_chunks[:-n_val] if n_val else shuffled_chunks
+        self.val_chunks = shuffled_chunks[-n_val:] if n_val else []
+
+        print(f"📦 Chess Legal Moves Dataset: {len(self.train_chunks)} train chunks, "
+              f"{len(self.val_chunks)} val chunks (split côté chargement, val_split={val_split}, "
+              f"mélange reproductible seed={shuffle_seed})")
+
+    def create_tf_dataset(self, split='train'):
+        """
+        Crée un dataset TensorFlow qui retourne (position, legal_mask).
+        position: (8, 8, num_planes) ; legal_mask: (4672,) float32 (cast depuis
+        l'int8 du .npz - sigmoid BCE, ChessLegalMovesStrategy, attend un dtype flottant).
+        """
+        chunks = self.train_chunks if split == 'train' else self.val_chunks
+        if not chunks:
+            raise ValueError(f"Aucun chunk '{split}' disponible pour le domaine échecs (coups légaux) "
+                              f"(output_prefix={self.output_prefix}, val_split trop faible ou trop peu de chunks)")
+
+        def gen():
+            for chunk_path in chunks:
+                with np.load(chunk_path) as data:
+                    positions = data["position"]      # (N, 8, 8, num_planes)
+                    legal_masks = data["legal_mask"]  # (N, 4672) int8
+
+                    # Valide une fois par CHUNK (pas par exemple - cout negligeable) que
+                    # les formes reelles correspondent a la config attendue - sinon
+                    # l'erreur ne surgirait qu'en aval, comme une erreur de shape TF
+                    # opaque au milieu du pipeline tf.data (trouve en revue adversariale).
+                    assert positions.shape[-1] == self.num_planes, (
+                        f"{chunk_path} : position a {positions.shape[-1]} canaux, "
+                        f"attendu {self.num_planes} (num_channels de la config)"
+                    )
+                    assert legal_masks.shape[-1] == self.num_moves, (
+                        f"{chunk_path} : legal_mask a {legal_masks.shape[-1]} coups, "
+                        f"attendu {self.num_moves} (num_classes de la config)"
+                    )
+
+                    for pos, mask in zip(positions, legal_masks):
+                        yield pos, mask.astype(np.float32)
+
+        output_signature = (
+            tf.TensorSpec(shape=(8, 8, self.num_planes), dtype=tf.float32),
+            tf.TensorSpec(shape=(self.num_moves,), dtype=tf.float32),
+        )
+
+        ds = tf.data.Dataset.from_generator(gen, output_signature=output_signature)
+
+        if split == 'train':
+            ds = ds.shuffle(1000)
+
+        ds = ds.batch(self.batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE)
+        return ds
+
+    def get_dataset(self):
+        train_ds = self.create_tf_dataset('train')
+        val_ds = self.create_tf_dataset('val') if self.val_chunks else None
+        return train_ds, val_ds
+
+
 def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
     """
     Fonction factory unifiée pour charger les datasets selon le type de tâche.
@@ -774,6 +870,16 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
             # le 2026-08-02) - CHESS_NO_HISTORY fournit toujours num_channels explicitement,
             # ce defaut n'est en pratique jamais utilise.
             num_planes=config.get("num_channels", 29),
+        )
+        return dataset_manager.get_dataset()
+
+    elif task_type == "chess_legal_moves":
+        dataset_manager = ChessLegalMovesDataset(
+            output_prefix=config["output_prefix"],
+            batch_size=backend_config["micro_batch_size"],
+            val_split=config.get("val_split", 0.1),
+            num_planes=config.get("num_channels", 29),
+            num_moves=config.get("num_classes", 4672),
         )
         return dataset_manager.get_dataset()
 

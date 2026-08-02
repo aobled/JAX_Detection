@@ -628,6 +628,67 @@ DATASET_CONFIGS = {
         "eval_batch_size": 64,
         "save_dir": "./checkpoints_chess_no_history",
     },
+
+    "CHESS_LEGAL_MOVES": {
+        # === Domaine échecs - tâche multi-label "coups légaux" (test de plomberie) ===
+        # Prédit l'ENSEMBLE des coups légaux d'une position (plusieurs "1" simultanés,
+        # espace de 4672 coups), pas le seul coup joué (chess_policy_value ci-dessus) -
+        # sigmoid BCE (ChessLegalMovesStrategy), pas softmax cross-entropy. Dataset déjà
+        # généré côté chess_ai (149 chunks, position (8,8,29) + legal_mask (4672,) int8).
+        "task_type": "chess_legal_moves",
+        "num_classes": 4672,  # taille de la sortie - PAS un nombre de classes (idem CHESS_NO_HISTORY)
+        "num_channels": 29,  # avec historique (contrat .npz chess_legal_moves, cote chess_ai)
+        "input_shape": (8, 8, 29),
+        "model_name": "chess_cnn_attention_legal_moves",
+        "num_bottleneck_tokens": 8,
+        "output_prefix": f"{DATA_ROOT}/chunks/chess_legal_moves/chess_legal_moves",
+        "val_split": 0.1,
+        # Pas de loss_params : compute_chess_legal_moves_loss n'a qu'un seul terme
+        # (BCE), pas de ponderation policy/value a exposer ici.
+
+        # === Hyperparamètres GPU/TPU ===
+        # Repris des memes ordres de grandeur que l'ancienne config CHESS (num_channels=29,
+        # retiree le 2026-08-02) - jamais tune empiriquement pour cette tache, c'est un test
+        # rapide de plomberie, pas un objectif de qualite. decay_steps recalcule pour
+        # epochs=4 (pas 15) : ~135 chunks train x ~5000 positions/chunk = ~675 000 positions
+        # train -> ~2637 steps/epoch a batch=256 (gpu) x 4 epochs ~= 10500 ;
+        # ~5273 steps/epoch a batch=128 (tpu) x 4 epochs ~= 21000.
+        "tpu": {
+            "micro_batch_size": 128,
+            "accum_steps": 1,
+            "learning_rate": 4e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            "decay_steps": 21000,
+        },
+        "gpu": {
+            "micro_batch_size": 256,
+            "accum_steps": 1,
+            "learning_rate": 8e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            "decay_steps": 10500,
+        },
+
+        # === Entraînement ===
+        # epochs=4 volontairement petit : test rapide de bout en bout (le câblage
+        # fonctionne-t-il ?), pas une recherche de qualité de jeu - voir Ask First de
+        # spec-chess-legal-moves.md (pas de run multi-epochs sans confirmation explicite).
+        "optimizer": "adamw",
+        "lr_schedule": "cosine",
+        "epochs": 4,
+        "patience": 4,
+
+        # === Évaluation ===
+        "eval_batch_size": 64,
+
+        # === Sauvegarde ===
+        # save_dir derive de dataset_name (TaskStrategy._get_export_path) ->
+        # best_model_chess_legal_moves.pkl / best_model_training_state_chess_legal_moves.pkl
+        "save_dir": "./checkpoints_chess_legal_moves",
+    },
 }
 
 

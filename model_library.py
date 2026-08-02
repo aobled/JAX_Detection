@@ -976,6 +976,102 @@ def create_chess_cnn_attention_policy_value(num_classes, dropout_rate=0.1, **kwa
     return ChessCnnAttentionPolicyValue(num_moves=num_classes, dropout_rate=dropout_rate, **kwargs)
 
 
+class ChessCnnAttentionLegalMoves(nn.Module):
+    """
+    Duplique le backbone de ChessCnnAttentionPolicyValue ci-dessus (CNN 8x8 sans
+    maxpool -> bottleneck cross-attention Perceiver-style -> auto-attention) mais
+    sans tete value : tache multi-label (predire l'ensemble des coups legaux d'une
+    position, pas le seul coup joue) - copie deliberee plutot qu'un flag sur la
+    classe policy+value (convention deja en place dans ce fichier, cf.
+    CHESS_NO_HISTORY dans dataset_configs.py qui est une copie de CHESS, pas un
+    flag).
+
+    Input : (B, 8, 8, C) - meme contrat .npz echecs (position+historique) que
+    ChessCnnAttentionPolicyValue.
+    Output : (B, num_moves) - logits bruts, UN SEUL tenseur (pas un dict) : sigmoid
+    binary cross-entropy attend des logits par coup, chaque coup etant
+    independamment legal/illegal (pas une seule classe correcte comme la policy).
+    """
+    num_moves: int
+    dropout_rate: float = 0.1
+    token_dim: int = 64
+    num_bottleneck_tokens: int = 8
+    num_heads: int = 4
+
+    @nn.compact
+    def __call__(self, x, training: bool = True):
+        assert self.token_dim % self.num_heads == 0, (
+            f"token_dim ({self.token_dim}) doit etre divisible par num_heads ({self.num_heads})"
+        )
+        assert self.num_moves > 0, (
+            f"num_moves doit etre > 0 (recu {self.num_moves}) - as-tu bien passe num_classes=4672 "
+            f"(contrat .npz echecs, cote chess_ai) plutot qu'un defaut generique de ce fichier (ex. num_classes=2) ?"
+        )
+        assert x.shape[1] == 8 and x.shape[2] == 8, (
+            f"attendu un plateau 8x8 (contrat .npz echecs, cote chess_ai), "
+            f"recu {x.shape[1]}x{x.shape[2]}"
+        )
+
+        # --- BACKBONE CNN 8×8, identique a ChessCnnAttentionPolicyValue ---
+        x = nn.Conv(self.token_dim, (3, 3), padding="SAME", use_bias=False,
+                    kernel_init=nn.initializers.kaiming_normal())(x)
+        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.silu(x)
+
+        for _ in range(2):
+            x = SeparableConv(self.token_dim, (3, 3))(x, training)
+            x = nn.BatchNorm(use_running_average=not training)(x)
+            x = nn.silu(x)
+
+            residual = nn.Conv(self.token_dim, (1, 1), padding="SAME", use_bias=False,
+                                kernel_init=nn.initializers.kaiming_normal())(x)
+            residual = nn.BatchNorm(use_running_average=not training)(residual)
+
+            x = SeparableConv(self.token_dim, (3, 3))(x, training)
+            x = nn.BatchNorm(use_running_average=not training)(x)
+            x = x + residual
+            x = nn.silu(x)
+
+        # --- BOTTLENECK : 64 tokens case (8×8 aplati) -> K tokens appris ---
+        batch_size = x.shape[0]
+        board_tokens = x.reshape(batch_size, x.shape[1] * x.shape[2], self.token_dim)  # (B, 64, D)
+
+        queries = self.param(
+            "bottleneck_queries",
+            nn.initializers.normal(0.02),
+            (self.num_bottleneck_tokens, self.token_dim),
+        )
+        queries = jnp.broadcast_to(
+            queries[None, :, :], (batch_size, self.num_bottleneck_tokens, self.token_dim)
+        )
+
+        tokens = nn.MultiHeadDotProductAttention(num_heads=self.num_heads)(
+            inputs_q=queries, inputs_kv=board_tokens
+        )  # (B, K, D)
+
+        tokens = nn.MultiHeadDotProductAttention(num_heads=self.num_heads)(inputs_q=tokens)  # (B, K, D)
+
+        pooled = jnp.mean(tokens, axis=1)  # (B, D)
+        pooled = nn.Dropout(self.dropout_rate, deterministic=not training)(pooled)
+
+        # --- TETE UNIQUE : logits bruts (B, num_moves) ---
+        # Sigmoid BCE (ChessLegalMovesStrategy) attend des logits, pas une
+        # distribution deja normalisee - pas de tete value (multi-label, pas de
+        # notion de valeur de position ici).
+        legal_move_logits = nn.Dense(self.num_moves)(pooled)
+
+        return legal_move_logits
+
+
+def create_chess_cnn_attention_legal_moves(num_classes, dropout_rate=0.1, **kwargs):
+    """
+    Factory pour ChessCnnAttentionLegalMoves - meme contrat que
+    create_chess_cnn_attention_policy_value ci-dessus (num_classes porte la taille
+    de l'espace de coups, 4672, pas un nombre de classes au sens habituel).
+    """
+    return ChessCnnAttentionLegalMoves(num_moves=num_classes, dropout_rate=dropout_rate, **kwargs)
+
+
 class Kepler1DConvNet(nn.Module):
     """
     Réseau de Neurones Convolutif 1D pour l'analyse de Séries Temporelles.
@@ -1028,6 +1124,7 @@ MODELS = {
     'aircraft_detector_centernet': create_aircraft_detector_centernet, # CenterNet (point central, anchor-free)
     'aircraft_detector_centernet_lite': create_aircraft_detector_centernet_lite, # CenterNet, encoder/decoder en SeparableConv
     'chess_cnn_attention_policy_value': create_chess_cnn_attention_policy_value, # CNN 8x8 + bottleneck attention, policy+value (Epic 9)
+    'chess_cnn_attention_legal_moves': create_chess_cnn_attention_legal_moves, # meme backbone, sans tete value, multi-label coups legaux
     'sophisticated_cnn_128_plus': create_sophisticated_cnn_128_plus,
     'sophisticated_cnn_128_lite': create_sophisticated_cnn_128_lite,
     'sophisticated_cnn_32_plus': create_sophisticated_cnn_32_plus,
@@ -1122,6 +1219,13 @@ def get_model_info(model_name):
             'params': '382,017 mesuré (num_classes=4672, token_dim=64, K=8)',
             'size': 'non mesuré ici (voir checkpoint)',
             'best_for': 'Domaine échecs (policy+value) - preuve de généralisation du pipeline, pas encore entraîné (Story 9.2).'
+        },
+        'chess_cnn_attention_legal_moves': {
+            'name': 'ChessCnnAttentionLegalMoves',
+            'description': 'Même backbone que ChessCnnAttentionPolicyValue, sans tête value - sortie unique (B, 4672) pour prédire l\'ensemble des coups légaux (multi-label, sigmoid BCE).',
+            'params': '381,952 mesuré (num_classes=4672, token_dim=64, K=8) - légèrement moins que policy_value (382,017, une tête en moins)',
+            'size': 'non mesuré ici (voir checkpoint)',
+            'best_for': 'Domaine échecs - test de plomberie sur une tâche multi-label, pas un objectif de qualité de jeu.'
         }
     }
 

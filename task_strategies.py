@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import optax
 from abc import ABC, abstractmethod
-from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss, compute_segmentation_loss, compute_centernet_loss, compute_chess_policy_value_loss, compute_chess_policy_loss, compute_chess_value_loss
+from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss, compute_segmentation_loss, compute_centernet_loss, compute_chess_policy_value_loss, compute_chess_policy_loss, compute_chess_value_loss, compute_chess_legal_moves_loss
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
 from utils import mixup_batch, smooth_labels
 
@@ -534,3 +534,79 @@ class ChessPolicyValueStrategy(TaskStrategy):
                 print("⚠️  val_ds est vide - aucun détail policy/value loss généré")
         except Exception as e:
             print(f"❌ Erreur lors de la génération du rapport échecs: {e}")
+
+
+class ChessLegalMovesStrategy(TaskStrategy):
+    """
+    Tache multi-label : predire l'ensemble des coups legaux d'une position (pas le
+    seul coup joue, contrairement a ChessPolicyValueStrategy ci-dessus). outputs
+    est un tenseur unique (B, 4672) - PAS un dict {"policy", "value"} (pas de tete
+    value, ChessCnnAttentionLegalMoves, model_library.py).
+    """
+    def __init__(self, metric_threshold: float = 0.5):
+        # metric_threshold : seuil sur sigmoid(logits) pour decider "predit legal"
+        # (compute_metrics) - n'affecte pas compute_loss (BCE continue, pas de seuil).
+        self.metric_threshold = metric_threshold
+
+    @property
+    def primary_metric_name(self) -> str:
+        return "LegalMoveF1"
+
+    @property
+    def optimization_mode(self) -> str:
+        return "max"
+
+    def preprocess_batch(self, images, targets, is_training, rng=None):
+        # "images" est en realite la position echecs (nom generique herite de la
+        # signature TaskStrategy). targets = legal_mask (B, 4672), int8 au
+        # chargement (contrat .npz chess_legal_moves) - cast float32 pour la BCE.
+        targets = jnp.asarray(targets, dtype=jnp.float32)
+        return images, targets, False
+
+    def compute_loss(self, outputs, targets, **kwargs):
+        return compute_chess_legal_moves_loss(outputs, targets)
+
+    def _precision_recall_f1(self, outputs, targets):
+        # Factorise ici (compute_metrics ET generate_reports en avaient besoin,
+        # copie-collee au premier jet - trouve en revue adversariale) : F1 sur la
+        # classe "legal", PAS l'accuracy brute bit-a-bit - un plateau a ~20-40
+        # coups legaux sur 4672, "tout illegal" donnerait deja ~99% d'accuracy
+        # sans rien apprendre, inutilisable comme signal ici.
+        predicted = (jax.nn.sigmoid(outputs) >= self.metric_threshold).astype(jnp.float32)
+        true_positives = jnp.sum(predicted * targets)
+        predicted_positives = jnp.sum(predicted)
+        actual_positives = jnp.sum(targets)
+        # Garde division-par-zero (jnp.where, pas de NaN) : un batch peut n'avoir
+        # aucune prediction positive (debut d'entrainement) ou, en theorie, aucun
+        # coup legal (mat/pat, jamais dans les positions initiales mais possible
+        # sur d'autres positions du dataset).
+        precision = jnp.where(predicted_positives > 0, true_positives / predicted_positives, 0.0)
+        recall = jnp.where(actual_positives > 0, true_positives / actual_positives, 0.0)
+        f1 = jnp.where(precision + recall > 0, 2 * precision * recall / (precision + recall), 0.0)
+        return precision, recall, f1
+
+    def compute_metrics(self, outputs, targets):
+        _, _, f1 = self._precision_recall_f1(outputs, targets)
+        return f1
+
+    def generate_reports(self, val_ds, final_state, model, config):
+        # Detail precision/rappel (1 batch validation) - meme convention que
+        # ChessPolicyValueStrategy.generate_reports ci-dessus (jamais logue
+        # epoch-par-epoque par Trainer, uniquement ici en fin d'entrainement).
+        try:
+            batch_consumed = False
+            for batch_positions, batch_targets in val_ds.take(1).as_numpy_iterator():
+                batch_consumed = True
+                vars = {'params': final_state.params, 'batch_stats': final_state.batch_stats}
+                outputs = final_state.apply_fn(vars, batch_positions, training=False)
+                targets = jnp.asarray(batch_targets, dtype=jnp.float32)
+
+                precision, recall, _ = self._precision_recall_f1(outputs, targets)
+
+                print(f"📊 Détail coups légaux (validation, 1 batch) : "
+                      f"precision={float(precision):.4f}, rappel={float(recall):.4f}")
+                break
+            if not batch_consumed:
+                print("⚠️  val_ds est vide - aucun détail précision/rappel généré")
+        except Exception as e:
+            print(f"❌ Erreur lors de la génération du rapport coups légaux: {e}")
