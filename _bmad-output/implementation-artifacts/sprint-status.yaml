@@ -1,5 +1,5 @@
 # generated: 2026-07-12
-# last_updated: 2026-08-01
+# last_updated: 2026-08-04
 # project: jax_supervised_training
 # project_key: NOKEY
 # tracking_system: file-system
@@ -56,9 +56,16 @@
 #     prerequisite auteur unique ; 9-2/9-3 doivent l'importer, jamais le redefinir. AD-21 :
 #     aucune story de cet epic ne modifie CenterNetDetectionStrategy/CenterNetDetectionDataset/
 #     aircraft_detector_centernet(_lite) ni leurs consommateurs (non-regression JAX_DETECTOR).
+# - jax_supervised_training-specific: Epic 10 (distillation depuis la recherche classique,
+#     policy-only) stories MUST run in strict sequence: 10-1 -> 10-2. Story 10-2 porte en
+#     plus une precondition EXTERNE hors du controle de ce repo : les chunks
+#     chess_search_teacher doivent etre generes a l'echelle cote chess_ai (pas seulement
+#     le smoke-test n_games=5) avant de demarrer - a verifier explicitement, pas decouvert
+#     en cours de route (pre-mortem 2026-08-04). Option A actee : reutilisation stricte du
+#     modele/TaskStrategy de l'Epic 9, aucune nouvelle TaskStrategy/modele cette epic.
 
 generated: 2026-07-12
-last_updated: 2026-08-01
+last_updated: 2026-08-04
 project: jax_supervised_training
 project_key: NOKEY
 tracking_system: file-system
@@ -140,6 +147,11 @@ development_status:
   9-3-taskstrategy-echecs-loss-composite-et-integration-au-pipeline: done
   9-4-validation-non-regression-jax-detector-par-execution: done
   epic-9-retrospective: done
+
+  epic-10: in-progress
+  10-1-configuration-et-tolerance-du-chargeur-pour-le-dataset-professeur: done
+  10-2-validation-par-execution-reelle-et-non-regression: in-progress
+  epic-10-retrospective: optional
 
 action_items:
   - epic: "1-3"

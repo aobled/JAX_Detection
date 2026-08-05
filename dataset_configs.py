@@ -711,6 +711,66 @@ DATASET_CONFIGS = {
         # best_model_chess_legal_moves.pkl / best_model_training_state_chess_legal_moves.pkl
         "save_dir": "./checkpoints_chess_legal_moves",
     },
+
+    "CHESS_SEARCH_TEACHER": {
+        # === Domaine échecs - distillation depuis la recherche classique (Epic 10) ===
+        # Reutilise a l'identique le task_type/modele policy+value de CHESS_NO_HISTORY
+        # (Option A, 2026-08-04 - decision Aymeric/Winston, voir
+        # _bmad-output/planning-artifacts/prds/prd-jax_supervised_training-2026-08-04/prd.md) :
+        # dataset chess_ai chess_search_teacher, labellise par chess_search.py (professeur
+        # alpha-beta, jamais appele a l'inference - principe AlphaZero). Aucune cle "value"
+        # dans les .npz (positions d'auto-jeu, pas d'issue de partie completee) - la tete
+        # value existante est neutralisee par ponderation (value_weight=0.0 ci-dessous),
+        # pas supprimee. ATTENTION : num_channels=29 (avec historique, contrat #2.6), PAS
+        # 19 comme CHESS_NO_HISTORY - ce dataset a l'historique, contrairement a
+        # CHESS_NO_HISTORY qui n'en a pas. Aucune config existante ne combinait deja
+        # chess_policy_value + 29 canaux avant celle-ci.
+        "task_type": "chess_policy_value",
+        "num_classes": 4672,
+        "num_channels": 29,  # avec historique (contrat #2.6 chess_ai) - pas un gabarit CHESS_NO_HISTORY
+        "input_shape": (8, 8, 29),
+        "model_name": "chess_cnn_attention_policy_value",
+        "num_bottleneck_tokens": 8,
+        "output_prefix": f"{DATA_ROOT}/chunks/chess_search_teacher/chess_search_teacher",
+        "val_split": 0.1,
+        # value_weight=0.0 : neutralise le terme value de la loss composite existante
+        # (compute_chess_policy_value_loss, AD-24) sans la modifier - aucune cible value
+        # reelle dans ce dataset. value_head_trained derive automatiquement de cette valeur
+        # par get_dataset_config() ci-dessous (voir cette fonction), jamais un litteral
+        # duplique ici.
+        "loss_params": {
+            "policy_weight": 1.0,
+            "value_weight": 0.0,
+        },
+        # Hyperparametres copies de CHESS_NO_HISTORY tels quels (point de depart non tune
+        # pour ce nouveau dataset, meme statut que CHESS_LEGAL_MOVES a sa creation) -
+        # decay_steps non recalcule (volume reel de chunks chess_search_teacher pas encore
+        # connu a ce stade, Open Question PRD).
+        "tpu": {
+            "micro_batch_size": 128,
+            "accum_steps": 1,
+            "learning_rate": 4e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            "decay_steps": 10000,
+        },
+        "gpu": {
+            "micro_batch_size": 256,
+            "accum_steps": 1,
+            "learning_rate": 8e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            "decay_steps": 36700,
+        },
+        "optimizer": "adamw",
+        "lr_schedule": "cosine",
+        "epochs": 15,
+        "patience": 8,
+        "eval_batch_size": 64,
+        "save_dir": "./checkpoints_chess_search_teacher",
+    },
 }
 
 
@@ -738,11 +798,24 @@ def get_dataset_config(dataset_name):
     # Par défaut, classification si non spécifié
     if "task_type" not in config:
         config["task_type"] = "classification"
-    
+
+    # value_head_trained (Epic 10, 2026-08-04) : dérivé automatiquement de
+    # loss_params.value_weight plutôt qu'un littéral séparé par config - élimine tout
+    # risque de désynchronisation entre les deux si l'un est modifié sans l'autre.
+    # Scope volontairement restreint aux configs qui déclarent déjà value_weight
+    # (CHESS_NO_HISTORY, CHESS_SEARCH_TEACHER) - ne pollue pas les configs sans tête
+    # value (CHESS_LEGAL_MOVES, domaines non-échecs). Consommé par le checkpoint "export
+    # pur" (TaskStrategy.export_model, sérialise ce dict tel quel) - traçabilité pour tout
+    # futur consommateur (contrat #2.3), sans modification de export_model/trainer.py.
+    if "loss_params" in config and "value_weight" in config["loss_params"]:
+        # > 0 (pas != 0) : un value_weight negatif serait une erreur de config (inverse le
+        # signal de la loss), jamais une "tete entrainee" legitime - revue de code 2026-08-04.
+        config["value_head_trained"] = config["loss_params"]["value_weight"] > 0
+
     # Valider la configuration
     if not validate_config(dataset_name, config):
         raise ValueError(f"Configuration invalide pour {dataset_name}")
-    
+
     return config
 
 

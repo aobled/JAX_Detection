@@ -11,6 +11,7 @@ inputDocuments:
   - _bmad-output/planning-artifacts/architecture/architecture-jax_supervised_training-2026-07-15/ARCHITECTURE-SPINE.md
   - _bmad-output/planning-artifacts/prds/prd-jax_supervised_training-2026-07-27/prd.md
   - _bmad-output/planning-artifacts/architecture/architecture-chess-2026-07-27/ARCHITECTURE-SPINE.md
+  - _bmad-output/planning-artifacts/prds/prd-jax_supervised_training-2026-08-04/prd.md
 ---
 
 # Refactor jax_supervised_training — Epic Breakdown
@@ -1295,3 +1296,134 @@ So that NFR1/AD-21 (contrainte dure) est prouvé, pas supposé.
 **Given** les Stories 9.1 à 9.3 complétées
 **When** cette story conclut l'Epic 9
 **Then** FR1 à FR6 sont confirmés couverts et le domaine échecs est entraînable de bout en bout via `Trainer`
+
+## Requirements Inventory — Epic 10 (distillation depuis la recherche classique, policy-only)
+
+Source : `_bmad-output/planning-artifacts/prds/prd-jax_supervised_training-2026-08-04/prd.md` (status: final) et `_bmad-output/planning-artifacts/architecture/architecture-chess-2026-07-27/ARCHITECTURE-SPINE.md` (AD-17/AD-22/AD-24/AD-25 hérités, read-only — aucune nouvelle AD cette epic, voir Additional Requirements ci-dessous). Suite directe de l'Epic 9 côté échecs : un nouveau dataset produit côté `chess_ai` (`chess_search_teacher`, distillation depuis `chess_search.py`, principe AlphaZero — la recherche sert de professeur à l'entraînement, jamais à l'inférence) est branché sur le pipeline `Trainer`/`TaskStrategy` existant, en réutilisant strictement le modèle et la `TaskStrategy` échecs de l'Epic 9 (Option A, actée avec Aymeric le 2026-08-04 — alternative à un nouveau modèle/`TaskStrategy` sans tête value, écartée pour ce premier test).
+
+### Functional Requirements
+
+FR1 : Nouvelle entrée `CHESS_SEARCH_TEACHER` dans `DATASET_CONFIGS` (`dataset_configs.py`), réutilisant sans modification `task_type="chess_policy_value"` et `model_name="chess_cnn_attention_policy_value"` (Epic 9) — `num_classes=4672`, `num_channels=29`, `input_shape=(8,8,29)` (contrat §2.6, pas un gabarit copié d'une config sœur — aucune config active ne combine déjà ce modèle/task_type avec 29 canaux), `output_prefix` dédié (`chunks/chess_search_teacher/`).
+FR2 : `loss_params={"policy_weight":1.0,"value_weight":0.0}` neutralise le terme value de la loss composite existante (`compute_chess_policy_value_loss`, AD-24) sans la modifier.
+FR3 : `ChessPolicyValueDataset.create_tf_dataset` (`data_management.py`) tolère un chunk `.npz` sans clé `value` (substitue une valeur constante 0.0), sans changer le comportement des datasets qui la fournissent déjà (`CHESS_NO_HISTORY`) — corrige un `KeyError` certain sinon (`data["value"]` lu sans garde aujourd'hui).
+FR4 : La config sauvegardée avec tout checkpoint échecs porte un champ `value_head_trained` (`True`/`False` selon `loss_params.value_weight`), y compris rétroactivement pour la logique d'export des checkpoints déjà entraînés avec une vraie value — traçabilité pour tout futur consommateur (`chess_ai` ou autre), cohérent avec le principe déjà acté au contrat d'interface §2.3.
+FR5 : Aucune régression sur `JAX_DETECTOR`/`CHESS_NO_HISTORY`/`CHESS_LEGAL_MOVES` et leurs `TaskStrategy`/loaders associés, vérifiée par exécution réelle.
+FR6 : `CHESS_SEARCH_TEACHER` s'entraîne de bout en bout via `Trainer` sans erreur, validé par exécution réelle (`PolicyAccuracy` mesurable et non constante en validation).
+FR7 : `docs/contract-chess-ai-training-interface.md` documente cette capacité (nom de config, réutilisation `chess_policy_value`, statut `value_head_trained`) et la copie est reportée côté `chess_ai/docs/` avant clôture.
+
+### NonFunctional Requirements
+
+Aucune NFR distincte formulée dans ce PRD (posture qualitative/interne, cf. §7 Success Metrics du PRD) — la non-régression, traitée en NFR1 pour l'Epic 9, est couverte directement par FR5 ci-dessus pour cette epic.
+
+### Additional Requirements (Architecture)
+
+- **Héritage (read-only, Epic 9)** : AD-17 (`ChessPolicyValueStrategy`/chargeur dédiés, 2 points de dispatch réels), AD-22 (espace policy fixe, `NUM_MOVES` source unique), AD-24 (loss composite zero-touch `Trainer`, `policy_weight*policy_loss + value_weight*value_loss`, `primary_metric_name=PolicyAccuracy`), AD-25 (format d'exemple minimal, aucune dépendance à un moteur d'échecs externe côté producteur — respecté ici aussi : `chess_search.py` n'intervient que côté `chess_ai`, jamais importé par `jax_supervised_training`).
+- **Nouveau (epic-level, pas de nouvel AD formel dans la spine — décision Aymeric 2026-08-04, portée jugée trop petite pour justifier une révision de spine)** : le champ `value_head_trained` dans la config exportée du checkpoint est une extension d'un mécanisme déjà existant (config embarquée avec `params`/`batch_stats`), pas un nouveau pattern — voir FR4.
+- **Naming** : `task_type="chess_policy_value"` (réutilisé, pas nouveau), `model_name="chess_cnn_attention_policy_value"` (réutilisé), entrée `dataset_configs.py`=`CHESS_SEARCH_TEACHER` (nouvelle).
+- **Stack** : aucune nouvelle dépendance — réutilise entièrement la stack Epic 9.
+
+### UX Design Requirements
+
+N/A — aucun contrat UX applicable, même raisonnement que l'Epic 9 (projet solo, aucune interface modifiée).
+
+### Guardrails identifiés (pré-mortem, 2026-08-04)
+
+Issus d'une passe de pré-mortem sur la structure d'epic, avant découpage en stories — à reporter dans les Acceptance Criteria des stories concernées :
+
+- **Absence de NaN garantie même avec `value_weight=0.0`** (FR2/FR6) : `0.0 × NaN = NaN` en IEEE754 — pondérer à zéro ne neutralise pas un `value_loss` qui deviendrait NaN pour une autre raison ; ça empoisonnerait silencieusement toute la loss (policy comprise). AC dédiée requise, pas seulement le cas nominal.
+- **Chunks `chess_search_teacher` générés à l'échelle côté `chess_ai` = pré-condition explicite de clôture** (FR6), pas une clause en passant — à vérifier avant de considérer l'epic proche de la clôture, pas découvert a posteriori.
+- **Séquencement en au moins 2 stories**, pas une story monolithique : (1) config + chargeur + flag `value_head_trained`, testable avec un `.npz` factice minimal (sans attendre les vrais chunks) ; (2) validation par exécution réelle (FR6), dépend explicitement de (1) *et* de la disponibilité des chunks côté `chess_ai`.
+- **FR4 "rétroactif" clarifié** : seuls les futurs runs échecs (après cette epic) portent `value_head_trained` — aucun checkpoint `.pkl` déjà sur disque n'est modifié/migré.
+- **Critère de "déception" et coût d'un retour en arrière (party mode 2026-08-04)** : le jugement sur `CHESS_SEARCH_TEACHER` est qualitatif (jouer contre le modèle, comparer au comportement actuel), pas un seuil chiffré — décision assumée d'Aymeric, pas une lacune. Corollaire : pas de "rollback" formel nécessaire si le résultat déçoit — l'entrée `dataset_configs.py` est additive et isolée (FR5), il suffit de ne plus l'utiliser. Ce corollaire dépend entièrement de FR5 (non-régression) tenue dans les faits, pas seulement en intention.
+
+### FR Coverage Map
+
+FR1: Epic 10 — Entrée `dataset_configs.py` dédiée
+FR2: Epic 10 — Neutralisation de la tête value par pondération
+FR3: Epic 10 — Tolérance du chargeur de données à une value absente
+FR4: Epic 10 — Traçabilité `value_head_trained` dans le checkpoint exporté
+FR5: Epic 10 — Non-régression des domaines existants
+FR6: Epic 10 — Validation par exécution réelle
+FR7: Epic 10 — Synchronisation du contrat d'interface
+
+## Epic List
+
+### Epic 10: Distillation depuis la recherche classique (policy-only)
+
+Un nouveau dataset échecs (`chess_search_teacher`, professeur = `chess_search.py`, principe AlphaZero) est branché sur le pipeline `Trainer`/`TaskStrategy` en réutilisant strictement le modèle et la `TaskStrategy` de l'Epic 9, tête value neutralisée par pondération plutôt que supprimée (Option A). Standalone : ne dépend d'aucun epic futur, ne modifie aucun domaine existant.
+**FRs covered:** FR1, FR2, FR3, FR4, FR5, FR6, FR7
+**Note d'implémentation (pré-mortem 2026-08-04) :** au moins 2 stories, pas une story monolithique — (1) config `CHESS_SEARCH_TEACHER` + tolérance du chargeur + flag `value_head_trained`, testable avec un `.npz` factice minimal, sans attendre les vrais chunks (FR1-FR4) ; (2) validation par exécution réelle + non-régression, dépend explicitement de (1) *et* de la disponibilité des chunks `chess_search_teacher` générés à l'échelle côté `chess_ai` — pré-condition de clôture à vérifier avant de démarrer, pas découverte a posteriori (FR5-FR7). Voir "Guardrails identifiés" ci-dessus pour les AC anti-NaN et la clarification FR4.
+
+### Story 10.1: Configuration et tolérance du chargeur pour le dataset professeur
+
+As a mainteneur du pipeline d'entraînement,
+I want une entrée `CHESS_SEARCH_TEACHER` dans `dataset_configs.py`, un `ChessPolicyValueDataset` tolérant à l'absence de `value`, et un champ `value_head_trained` tracé dans tout checkpoint échecs exporté,
+So that le dataset `chess_search_teacher` (chess_ai) est consommable par le pipeline existant sans nouveau modèle ni nouvelle `TaskStrategy`, et que la fiabilité de la tête value reste traçable pour tout futur consommateur.
+
+**Acceptance Criteria:**
+
+**Given** `DATASET_CONFIGS` existant
+**When** l'entrée `CHESS_SEARCH_TEACHER` est ajoutée
+**Then** elle réutilise inchangés `task_type="chess_policy_value"`/`model_name="chess_cnn_attention_policy_value"`, avec `num_classes=4672`/`num_channels=29`/`input_shape=(8,8,29)`, `output_prefix` dédié (`chunks/chess_search_teacher/`) et `loss_params={"policy_weight":1.0,"value_weight":0.0}` — FR1, FR2
+
+**Given** `validate_config()`
+**When** `CHESS_SEARCH_TEACHER` est validée
+**Then** elle passe sans aucune modification de `validate_config()` (mêmes clés requises que les configs échecs existantes) — FR1
+
+**Given** un chunk `.npz` factice minimal (2-3 exemples, clés `position`+`policy` uniquement, sans `value`) construit pour le test
+**When** `ChessPolicyValueDataset.create_tf_dataset` le charge
+**Then** il produit un batch avec `value=0.0` pour chaque exemple, sans `KeyError` — FR3
+
+**Given** un chunk `.npz` existant réel (`CHESS_NO_HISTORY`, avec clé `value`)
+**When** il est chargé après cette story
+**Then** ses vraies valeurs `value` sont chargées à l'identique d'avant cette story — non-régression vérifiée par exécution réelle — FR3, FR5
+
+**Given** un batch avec `value=0.0` pour tous les exemples (dummy)
+**When** `compute_chess_policy_value_loss` est appelé avec `value_weight=0.0`
+**Then** `value_loss` n'est jamais `NaN` (tête value bornée par `tanh`, cible constante 0.0) et le gradient de la tête value est nul — garde-fou pré-mortem 2026-08-04 (`0.0 × NaN = NaN` sinon), FR2
+
+**Given** tout run échecs (existant ou nouveau) dont `loss_params.value_weight == 0`
+**When** le checkpoint est exporté (format "export pur" `params`/`batch_stats`/`config`)
+**Then** sa config embarquée porte `value_head_trained=False` ; un run avec `value_weight > 0` (ex. `CHESS_NO_HISTORY`) porte `value_head_trained=True` — FR4
+
+**Given** un checkpoint déjà entraîné et sauvegardé sur disque avant cette story
+**When** cette story est complétée
+**Then** ce fichier `.pkl` n'est ni modifié ni régénéré — seuls les futurs exports portent le nouveau champ (clarification pré-mortem 2026-08-04) — FR4
+
+**Given** `ClassificationStrategy`/`DetectionStrategy`/`CenterNetDetectionStrategy`/`KeplerStrategy`/`ChessLegalMovesStrategy`
+**When** cette story est complétée
+**Then** aucune n'est modifiée — FR5
+
+### Story 10.2: Validation par exécution réelle et non-régression
+
+As a mainteneur du pipeline,
+I want valider par exécution réelle que `CHESS_SEARCH_TEACHER` s'entraîne de bout en bout et que les domaines échecs/détection existants ne régressent pas, une fois les chunks `chess_search_teacher` disponibles à l'échelle côté `chess_ai`,
+So that l'epic se clôture sur preuve, pas sur lecture de code.
+
+**Précondition explicite (garde-fou pré-mortem 2026-08-04)** : les chunks `chess_search_teacher` doivent être générés **à l'échelle** côté `chess_ai` (pas seulement le smoke-test `n_games=5` de `chess_search_teacher_dataset_tools.py`) — à vérifier avant de démarrer cette story, pas découvert en cours de route.
+
+**Acceptance Criteria:**
+
+**Given** les chunks `chess_search_teacher` générés à l'échelle côté `chess_ai` (précondition vérifiée)
+**When** un run réel est lancé sur `CHESS_SEARCH_TEACHER` via `Trainer`
+**Then** il complète au moins une epoch sans exception — FR6
+
+**Given** ce run
+**When** `PolicyAccuracy` est loguée en validation
+**Then** elle progresse de façon mesurable au fil des steps (pas un plateau constant proche du hasard, ~1/4672) — FR6
+
+**Given** `CHESS_NO_HISTORY` (24.43% val `PolicyAccuracy` déjà mesuré, `docs/contract-chess-ai-training-interface.md`)
+**When** le run `CHESS_SEARCH_TEACHER` est rapporté
+**Then** sa `PolicyAccuracy` finale est comparée, même approximativement, à cette référence dans le rapport de fin d'entraînement — point de comparaison informatif (party mode 2026-08-04), pas un seuil de blocage : le critère de succès reste qualitatif (voir PRD §7 SM-C1), pas ce chiffre
+
+**Given** `JAX_DETECTOR`/`CHESS_NO_HISTORY`/`CHESS_LEGAL_MOVES`
+**When** au moins un est ré-exécuté après cette epic
+**Then** son comportement est identique à avant (comparaison à une baseline) — FR5, AD-21 hérité
+
+**Given** `docs/contract-chess-ai-training-interface.md`
+**When** cette story conclut l'epic
+**Then** il documente `CHESS_SEARCH_TEACHER` (nom de config, réutilisation `chess_policy_value`, statut `value_head_trained`) et la copie est reportée côté `chess_ai/docs/` — FR7
+
+**Given** les Stories 10.1 et 10.2 complétées
+**When** cette story conclut l'Epic 10
+**Then** FR1 à FR7 sont confirmés couverts et `CHESS_SEARCH_TEACHER` est entraînable de bout en bout via `Trainer`

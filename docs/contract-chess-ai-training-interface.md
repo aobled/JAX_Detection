@@ -1,6 +1,6 @@
 # Contrat d'interface : `jax_supervised_training` ↔ `chess_ai`
 
-**Statut : mis à jour (2026-08-01), à faire évoluer des deux côtés.** Ce document n'est pas un
+**Statut : mis à jour (2026-08-04), à faire évoluer des deux côtés.** Ce document n'est pas un
 PRD ni une epic — c'est la surface d'interface entre deux repos indépendants qui doit
 rester identique des deux côtés, contrairement au reste du code échecs qui, lui, est
 dupliqué et volontairement laissé libre de diverger (voir `chess_ai/HANDOFF.md`).
@@ -72,27 +72,91 @@ une seule passe) est le précédent architectural explicitement visé par HANDOF
 composer les 2 futurs modèles échecs. À réutiliser comme référence de conception, pas à
 réinventer.
 
+### 2.5 Dataset dédié "compréhension des coups légaux" (Modèle 1, Epic 2 `chess_ai`)
+
+**Tranché et implémenté côté `chess_ai` (Story 2.2, 2026-08-02)** — voir §3 pour la
+résolution du rôle du modèle lui-même ; ce qui suit est le contrat de données concret.
+
+- **Clé `.npz` et label** : `LEGAL_MASK_KEY = "legal_mask"` (constante dans
+  `chess_target_encoding.py`, à réutiliser telle quelle, jamais un littéral choisi
+  localement) — masque multi-label `int8`, shape `(NUM_MOVES,)` = `(4672,)`, 1 par coup
+  légal de la position, 0 sinon. Réutilise l'espace d'action §2.2 tel quel (pas un espace
+  réduit ou différent). Aucun `VALUE_KEY` n'est écrit pour ce dataset.
+- **Encodage position** : `encode_position(..., include_legal_hint=False)` — variante qui
+  remplace le plan "cases de destination des coups légaux" (plan 18) par un plan dédié
+  "case cible de la prise en passant", pour ne pas donner la réponse en entrée d'un modèle
+  censé apprendre la légalité. **Les constantes de plan pour cette variante,
+  `NUM_POSITION_PLANES_NO_HINT` et `NUM_PLANES_NO_HINT`, valent 19 et 29 —
+  numériquement identiques aux `NUM_POSITION_PLANES`/`NUM_PLANES` existants (§2.1), ce
+  n'est pas une erreur ni un shape réduit.** Les deux variantes ont donc le même
+  `num_channels` que le dataset policy+value existant à `include_history` égal — ce qui
+  les distingue, c'est le **contenu** sémantique du plan 18 (indice légalité vs. case de
+  prise en passant), jamais sa position ni la forme du tableau. Ne pas supposer un
+  `num_channels` différent côté `jax_supervised_training` pour ce dataset.
+- **Sortie de fichiers** : préfixe dédié (`chess_legal_moves`), jamais le préfixe `chess`
+  existant — aucune collision avec le dataset policy+value (AD-4 côté `chess_ai`).
+
+### 2.6 Dataset dédié "distillation depuis la recherche classique" (Epic 3 `chess_ai`)
+
+**Implémenté côté `chess_ai` (Story 3.1, 2026-08-04)** — voir §3 pour le contexte de
+décision (pourquoi cette direction plutôt que la pipeline composée §2.4/§3) ; ce qui suit
+est le contrat de données concret.
+
+- **Clé `.npz` et label** : `POLICY_KEY = "policy"` (constante existante, réutilisée
+  telle quelle — pas un nouveau littéral) — `int32`, un index dans l'espace d'action
+  existant §2.2 (`NUM_MOVES=4672`), le coup choisi par `chess_search.py::select_search_move`
+  (recherche alpha-bêta + évaluateur matériel, profondeur 4, aucun réseau de neurones,
+  jamais appelé à l'inférence — seulement à la génération de ce dataset). Aucun
+  `VALUE_KEY` n'est écrit pour ce dataset (positions d'auto-jeu, pas d'issue de partie
+  complétée naturellement à leur associer).
+- **Encodage position** : chemin par défaut **inchangé** (`include_legal_hint=True`,
+  `NUM_POSITION_PLANES`/`NUM_PLANES` existants, §2.1) — **aucune nouvelle variante de
+  plans pour ce dataset**, contrairement à §2.5.
+- **Sortie de fichiers** : préfixe dédié (`chess_search_teacher`), distinct des deux
+  préfixes existants (`chess`, `chess_legal_moves`) — aucune collision (AD-4 côté
+  `chess_ai`).
+
 ## 3. Ce qui reste ouvert (à trancher côté PRD `chess_ai`, puis à reporter ici)
 
-- **Modèle 1 "candidats de coups"** (équivalent "detection") : `model_name`/`task_type`
-  exacts, forme de sortie (distribution sur un sous-ensemble de coups ? score par coup
-  légal ? top-K ?) — non tranché. **Le rôle exact du modèle lui-même est encore en débat**
-  (discuté le 2026-08-01, non tranché) : `board.legal_moves` (`python-chess`) donne déjà
-  gratuitement l'ensemble des coups légaux, un modèle entraîné dessus n'apporterait rien
-  si "candidats" veut dire "légaux". La piste jugée plus intéressante par Aymeric :
-  apprendre au modèle à *respecter les règles* comme étape avant de choisir un coup
-  (le modèle "comprend" ce qu'il fait, pas juste un signal légalité redondant) — à
-  pressure-tester côté `chess_ai` (`bmad-forge-idea` recommandé) avant de spécifier un
-  format de dataset ici.
+**Direction opérationnelle actuelle (Epic 3 `chess_ai`, 2026-08-03/04) — supersède la
+pipeline composée ci-dessous pour le court terme :** plutôt que de composer Modèle 1
+(légalité) + Modèle 2 (stratégie), la piste retenue est un **modèle unique**, entraîné par
+distillation depuis `chess_search.py` (recherche classique, professeur à l'entraînement
+uniquement, jamais à l'inférence — principe AlphaZero) — voir §2.6 pour le contrat de
+données, et `chess_ai/_bmad-output/planning-artifacts/brief-model-without-search-2026-08-03.md`
+pour le raisonnement complet (pourquoi pas de composition avec Modèle 1 — légalité déjà
+native via `python-chess`/`include_legal_hint`, §2.1/§2.5 — et pourquoi pas un algorithme
+génétique). La pipeline composée (Modèle 1 + Modèle 2) ci-dessous reste **suspendue, pas
+abandonnée** — à reconsidérer si les résultats du modèle unique déçoivent. Les bullets
+Modèle 1/Modèle 2 qui suivent restent factuellement exacts (le rôle de Modèle 1 reste
+tranché tel que documenté ; celui de Modèle 2 reste réellement non tranché) — seule la
+priorité/direction change.
+
+- **Modèle 1 "compréhension des coups légaux"** (anciennement "candidats de coups") :
+  **rôle tranché (PRD `chess_ai` du 2026-08-02, epic "Legal-Moves-Understanding
+  Dataset")** — ce n'est pas un modèle de "candidats" (qui serait redondant avec
+  `board.legal_moves`), c'est un modèle entraîné à *apprendre* la légalité d'un coup à
+  partir d'une position, sans recevoir l'indice légal en entrée (voir §2.5) — la brique de
+  base d'un futur pipeline composé (position → modèle légalité → modèle stratégie),
+  toujours pas scopée elle-même ici (Temps 3, non commencé). Forme de sortie : un
+  multi-label `(4672,)` (une probabilité de légalité par coup de l'espace d'action §2.2),
+  pas un top-K ni une distribution normalisée — c'est directement dérivé du format
+  `legal_mask` §2.5. `model_name`/`task_type` exacts côté `dataset_configs.py` restent à
+  fixer (voir bullet nommage ci-dessous), mais la nature du modèle et son dataset ne sont
+  plus en débat.
 - **Modèle 2 "stratégie/évaluateur"** (équivalent "classification") : `model_name`/
   `task_type` exacts, forme de sortie (évaluation d'une position candidate ? classement
-  de plusieurs candidats ?) — non tranché.
-- **Labels/dataset requis pour chacun** : le dataset actuel (`chess_pgn_dataset_tools.py`)
-  produit policy+value pour le modèle combiné existant ; les 2 nouveaux modèles
-  pourraient nécessiter un format de label différent (ex. paires de positions à comparer
-  pour le modèle 2) — à spécifier avant toute nouvelle entrée `dataset_configs.py`.
-- **Nommage `dataset_configs.py`** : whatever convention suit `CHESS_NO_HISTORY` existant,
-  à fixer une fois les 2 modèles nommés.
+  de plusieurs candidats ?) — **toujours non tranché**, hors scope de l'epic qui a résolu
+  le Modèle 1.
+- **Labels/dataset requis pour le Modèle 2** : le dataset actuel
+  (`chess_pgn_dataset_tools.py`) produit policy+value pour le modèle combiné existant ; le
+  Modèle 1 a désormais son propre dataset (§2.5) ; le Modèle 2 pourrait nécessiter un
+  format de label différent (ex. paires de positions à comparer) — toujours à spécifier
+  avant toute nouvelle entrée `dataset_configs.py` pour ce modèle.
+- **Nommage `dataset_configs.py`** : whatever convention suit `CHESS`/`CHESS_NO_HISTORY`/
+  `CHESS_NAKAMURA_NO_HISTORY` existants, à fixer une fois les 2 modèles nommés (le
+  Modèle 1 a maintenant un dataset stable à référencer ; le nom d'entrée
+  `dataset_configs.py` lui-même reste une décision côté `jax_supervised_training`).
 
 ## 4. Process
 
@@ -113,5 +177,5 @@ Ce contrat est l'unique document que les deux PRD ont besoin de référencer en
 commun ; il n'y a pas de PRD ou d'epic partagée entre les deux repos.
 
 À chaque décision prise côté `chess_ai` sur §3, reporter le résultat ici (ou dans la
-copie côté `chess_ai` si elle existe déjà) avant de démarrer l'epic côté
+copie côté `jax_supervised_training` si elle existe déjà) avant de démarrer l'epic côté
 `jax_supervised_training`.

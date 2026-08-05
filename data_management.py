@@ -645,6 +645,30 @@ class ChessPolicyValueDataset:
             print(error_msg)
             exit(1)
 
+        # Scan leger (cles uniquement via NpzFile.files, jamais les tableaux - quasi
+        # gratuit meme sur des centaines de chunks) execute UNE FOIS a la construction,
+        # plutot qu'un warning par chunk repete a chaque epoch dans gen() ci-dessous
+        # (bruit de log signale par Aymeric, 2026-08-05). Detecte aussi une incoherence
+        # (certains chunks avec "value", d'autres sans) qui serait un vrai bug de
+        # generateur cote chess_ai - jamais tolere silencieusement.
+        chunks_missing_value = [
+            c for c in all_chunks
+            if "value" not in np.load(c).files
+        ]
+        if chunks_missing_value and len(chunks_missing_value) != len(all_chunks):
+            raise ValueError(
+                f"{len(chunks_missing_value)}/{len(all_chunks)} chunks de "
+                f"{output_prefix} n'ont pas la clé 'value', les autres si - dataset "
+                f"incohérent (régression probable côté générateur chess_ai). "
+                f"Premier chunk concerné : {os.path.basename(chunks_missing_value[0])}"
+            )
+        self.has_value = (len(chunks_missing_value) == 0)
+        if not self.has_value:
+            print(f"ℹ️  {len(all_chunks)}/{len(all_chunks)} chunks sans clé 'value' - "
+                  f"value factice (0.0) utilisée pour tous (dataset sans issue de "
+                  f"partie complétée, ex. chess_search_teacher - attendu, voir "
+                  f"loss_params.value_weight de la config)")
+
         # Melange reproductible (graine fixe) avant le split - evite le biais "toujours
         # les derniers chunks numeriquement" d'un simple tri croissant + slice de queue.
         shuffled_chunks = list(all_chunks)
@@ -673,7 +697,25 @@ class ChessPolicyValueDataset:
                 with np.load(chunk_path) as data:
                     positions = data["position"]  # (N, 8, 8, num_planes)
                     policies = data["policy"]      # (N,)
-                    values = data["value"]         # (N,)
+                    # "value" absente pour les datasets professeur (ex. chess_search_teacher,
+                    # contrat #2.6 - positions d'auto-jeu, pas d'issue de partie completee) :
+                    # value factice a 0.0 plutot qu'un KeyError (Epic 10, 2026-08-04). Ne
+                    # change rien pour les datasets qui fournissent deja "value"
+                    # (CHESS_NO_HISTORY) - meme forme/dtype produits dans les deux cas.
+                    # self.has_value deja verifie chunk par chunk une seule fois dans
+                    # __init__ (coherence garantie, exception levee sinon) - pas la peine
+                    # de re-verifier ni de reavertir a chaque epoch ici (revue de code,
+                    # 2026-08-05).
+                    if self.has_value:
+                        values = data["value"]  # (N,)
+                        if len(values) != len(positions):
+                            raise ValueError(
+                                f"{chunk_path}: 'value' a {len(values)} exemples, "
+                                f"'position' en a {len(positions)} - chunk malforme, "
+                                f"jamais tronque silencieusement via zip()"
+                            )
+                    else:
+                        values = np.zeros(len(positions), dtype=np.float32)
 
                     for pos, pol, val in zip(positions, policies, values):
                         # Cast explicite en int32 : le generateur cote chess_ai sauvegarde
