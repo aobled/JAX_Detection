@@ -798,29 +798,47 @@ class TrainingVisualizer:
         ax2.fill_between(epochs, train_acc, val_acc, color='tab:red', alpha=0.15, label='Overfitting zone')
         ax2.plot(epochs, val_acc, '-', color='tab:blue', label='Val Acc', linewidth=2.5)
         
-        # Plot Learning Rate (échelle log)
+        # Plot Learning Rate (échelle log) - spine quasi superposée à ax2 (18pt au lieu
+        # de 60pt) pour gagner de la largeur, distinguées surtout par la couleur des
+        # ticks/labels. Un petit écart (pas 0) reste volontaire : à 0, les labels de
+        # ticks des deux axes partagent exactement la même colonne de pixels et peuvent
+        # se chevaucher texte-sur-texte quand une valeur Accuracy et une valeur LR
+        # tombent à des hauteurs proches (revue adversariale 2026-08-07) - 18pt les
+        # sépare horizontalement sans revenir à l'écart complet d'origine.
         ax3 = ax.twinx()
-        ax3.spines['right'].set_position(('outward', 60))
+        ax3.spines['right'].set_position(('outward', 18))
         ax3.set_yscale('log')
         ax3.plot(epochs, lr, color='lightgreen', label='LR', linewidth=2)
-        ax3.set_ylabel('Learning Rate', color='green')
-        
+        ax3.set_ylabel('Learning Rate', color='green', fontsize=11)
+        ax3.yaxis.set_label_coords(1.09, 0.25)
+
         # Ajuster les limites de LR
         if lr:
             lr_min, lr_max = min(lr), max(lr)
             ax3.set_ylim(bottom=lr_min/1.05, top=lr_max*1.05)
             ax3.yaxis.set_major_locator(LogLocator(base=10.0))
-        
-        # Couleurs des ticks
+
+        # Couleurs des ticks - which='both' pour ax3 : sans ça, seuls les ticks majeurs
+        # (décades rondes, ex. 10^-4) passent en vert - les ticks mineurs intermédiaires
+        # (ex. 6×10^-4, générés automatiquement par l'échelle log) restent noirs, car
+        # tick_params ne cible que which='major' par défaut
         ax.tick_params(axis='y', colors='tab:orange')
         ax2.tick_params(axis='y', colors='tab:blue')
-        ax3.tick_params(axis='y', colors='green')
-        
+        ax3.tick_params(axis='y', colors='green', which='both')
+
         # Labels et légendes
         ax.set_xlabel("Epochs", fontsize=12)
         ax.set_ylabel(f'Loss (final: {train_loss[-1]:.4f})', color='tab:orange', fontsize=11)
         ax2.set_ylabel('Accuracy %', color='tab:blue', fontsize=11)
-        ax2.legend(loc='lower right', fontsize=10)
+        # Coordonnées 1.05/1.09 et 0.75/0.25 calées à l'oeil pour figsize=(14, 7) /
+        # fontsize=11 (valeurs fixes de cette méthode) - à revérifier si l'une des deux
+        # change un jour, rien ne les recalcule automatiquement.
+        ax2.yaxis.set_label_coords(1.05, 0.75)
+        # upper left plutôt que lower right : les deux axes de droite superposés
+        # occupent maintenant toute la marge droite (LR log peut couvrir plusieurs
+        # décades, jusqu'en bas du graphique) - lower right entrait en collision avec
+        # les labels de ticks LR bas de plage en fin d'entraînement
+        ax2.legend(loc='upper left', fontsize=10)
         ax.grid(True, alpha=0.3)
         
         # Limites de l'axe x
