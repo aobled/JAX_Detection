@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import optax
 
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
+from utils import smooth_labels
 
 def compute_grid_loss(pred_grid, gt_boxes, lambda_coord=5.0, lambda_noobj=0.5):
     """
@@ -557,7 +558,7 @@ def compute_centernet_loss(outputs, targets, heatmap_weight=1.0, size_weight=0.1
     return heatmap_weight * heatmap_loss + size_weight * size_loss
 
 
-def compute_chess_policy_loss(policy_logits, policy_targets):
+def compute_chess_policy_loss(policy_logits, policy_targets, label_smoothing=0.0):
     """
     Cross-entropy simple contre l'index du coup joue (labels entiers, pas one-hot -
     FR3 : aucun filtrage par resultat, aucun masquage des coups illegaux - AD-22,
@@ -566,7 +567,22 @@ def compute_chess_policy_loss(policy_logits, policy_targets):
     compute_centernet_loss (Story 9.3, AD-24).
 
     policy_logits: (Batch, 4672) logits bruts. policy_targets: (Batch,) int32.
+
+    label_smoothing (2026-08-08, chess-search-teacher-strategy.md Option 3) : 0.0 par
+    defaut -> comportement strictement inchange (cross-entropy sparse contre l'index
+    entier, optax.softmax_cross_entropy_with_integer_labels). Si > 0, reutilise
+    smooth_labels (utils.py, deja valide sur FIGHTERJET_CLASSIFICATION) pour construire
+    une cible dense assouplie, puis bascule sur optax.softmax_cross_entropy (version
+    dense - la variante sparse n'accepte pas une distribution). Motivation : le coup
+    choisi par la recherche alpha-beta (professeur) est traite comme LA seule bonne
+    reponse a 100%, alors que plusieurs coups sont souvent quasi equivalents -
+    label_smoothing encode explicitement cette incertitude plutot que de forcer une
+    confiance totale sur un seul index.
     """
+    if label_smoothing > 0:
+        num_classes = policy_logits.shape[-1]
+        smoothed_targets = smooth_labels(policy_targets, num_classes, label_smoothing)
+        return optax.softmax_cross_entropy(policy_logits, smoothed_targets).mean()
     return optax.softmax_cross_entropy_with_integer_labels(policy_logits, policy_targets).mean()
 
 
@@ -578,15 +594,19 @@ def compute_chess_value_loss(value_pred, value_targets):
     return jnp.mean((value_pred - value_targets) ** 2)
 
 
-def compute_chess_policy_value_loss(outputs, targets, policy_weight=1.0, value_weight=1.0):
+def compute_chess_policy_value_loss(outputs, targets, policy_weight=1.0, value_weight=1.0, label_smoothing=0.0):
     """
     Combine compute_chess_policy_loss et compute_chess_value_loss en une loss unique
     ponderee - exactement sur le modele de compute_centernet_loss ci-dessus (AD-24).
     Ne cable aucune strategie d'entrainement (ChessPolicyValueStrategy, Story 9.3).
 
     outputs/targets: dict {"policy": ..., "value": ...} (contrat .npz cote chess_ai, AD-18).
+
+    label_smoothing : simple relai vers compute_chess_policy_loss (voir sa docstring) -
+    ne touche jamais value_loss (MSE, pas une classification, label smoothing sans
+    objet ici).
     """
-    policy_loss = compute_chess_policy_loss(outputs["policy"], targets["policy"])
+    policy_loss = compute_chess_policy_loss(outputs["policy"], targets["policy"], label_smoothing=label_smoothing)
     value_loss = compute_chess_value_loss(outputs["value"], targets["value"])
 
     return policy_weight * policy_loss + value_weight * value_loss

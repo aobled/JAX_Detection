@@ -1,5 +1,5 @@
 # generated: 2026-07-12
-# last_updated: 2026-08-04
+# last_updated: 2026-08-09
 # project: jax_supervised_training
 # project_key: NOKEY
 # tracking_system: file-system
@@ -148,10 +148,10 @@ development_status:
   9-4-validation-non-regression-jax-detector-par-execution: done
   epic-9-retrospective: done
 
-  epic-10: in-progress
+  epic-10: done
   10-1-configuration-et-tolerance-du-chargeur-pour-le-dataset-professeur: done
-  10-2-validation-par-execution-reelle-et-non-regression: in-progress
-  epic-10-retrospective: optional
+  10-2-validation-par-execution-reelle-et-non-regression: done
+  epic-10-retrospective: done
 
 action_items:
   - epic: "1-3"
@@ -277,7 +277,8 @@ action_items:
   - epic: "9"
     action: "Committer le correctif d'import chess paresseux (2026-07-31), actuellement non commite"
     owner: "Aymeric"
-    status: open
+    status: done
+    note: "Devenu sans objet (retro Epic 10, 2026-08-09) : chess_target_encoding.py entierement retire de ce repo le 2026-08-01 (frontiere chess_ai), rien a committer ici."
   - epic: "9"
     action: "Quand un domaine importe une dependance tierce de facon inconditionnelle au niveau module, verifier son impact sur tous les domaines (pas seulement lister la dependance dans requirements.txt) - le cout reel de ce point aveugle a ete un crash Colab en production, 4 jours apres que la review l'ait presque attrape"
     owner: "process (Claude)"
@@ -285,4 +286,21 @@ action_items:
   - epic: "9"
     action: "Pour toute story testant des pieces neuves isolement, ajouter systematiquement un test qui exerce le vrai chemin main.py/Trainer avant de considerer la story couverte - 3 occurrences du meme trou sur Epic 9 (9.1 requirements, 9.3 KeyErrors)"
     owner: "futur cycle"
+    status: done
+    note: "Applique structurellement sur Epic 10 (retro 2026-08-09) : Story 10.1 (pieces isolees) et 10.2 (execution reelle) scindees expres pour ca."
+  - epic: "10"
+    action: "Trancher le perimetre du mecanisme de reprise d'entrainement (voir deferred-work.md, verdict Aymeric retro 2026-08-09) avant de corriger quoi que ce soit dessus - soit le reparer completement (off-by-one + historique + schedule-safe), soit documenter un usage restreint (recuperation config identique uniquement)"
+    owner: "Aymeric/Winston"
+    status: open
+  - epic: "10"
+    action: "Committer l'etat de travail accumule de l'Epic 10 (dataset_configs.py, loss_functions.py, data_management.py, main.py, contrat d'interface, stories, deferred-work.md)"
+    owner: "Claude"
+    status: in-progress
+  - epic: "10"
+    action: "Continuer a router proactivement vers les agents specialises (item Epic 9 reconduit, mieux tenu ce cycle - a maintenir, pas encore un reflexe systematique)"
+    owner: "Claude"
+    status: in-progress
+  - epic: "10"
+    action: "Pour tout futur run long, verifier explicitement l'absence de checkpoint avant de changer decay_steps/epochs/l'architecture - le mecanisme de reprise actuel le rend obligatoire dans tous les cas, pas seulement pour une comparaison propre"
+    owner: "Aymeric"
     status: open

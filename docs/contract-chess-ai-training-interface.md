@@ -1,6 +1,6 @@
 # Contrat d'interface : `jax_supervised_training` ↔ `chess_ai`
 
-**Statut : mis à jour (2026-08-04), à faire évoluer des deux côtés.** Ce document n'est pas un
+**Statut : mis à jour (2026-08-09), à faire évoluer des deux côtés.** Ce document n'est pas un
 PRD ni une epic — c'est la surface d'interface entre deux repos indépendants qui doit
 rester identique des deux côtés, contrairement au reste du code échecs qui, lui, est
 dupliqué et volontairement laissé libre de diverger (voir `chess_ai/HANDOFF.md`).
@@ -105,16 +105,36 @@ est le contrat de données concret.
 - **Clé `.npz` et label** : `POLICY_KEY = "policy"` (constante existante, réutilisée
   telle quelle — pas un nouveau littéral) — `int32`, un index dans l'espace d'action
   existant §2.2 (`NUM_MOVES=4672`), le coup choisi par `chess_search.py::select_search_move`
-  (recherche alpha-bêta + évaluateur matériel, profondeur 4, aucun réseau de neurones,
-  jamais appelé à l'inférence — seulement à la génération de ce dataset). Aucun
-  `VALUE_KEY` n'est écrit pour ce dataset (positions d'auto-jeu, pas d'issue de partie
-  complétée naturellement à leur associer).
+  (recherche alpha-bêta + évaluateur matériel, aucun réseau de neurones, jamais appelé à
+  l'inférence — seulement à la génération de ce dataset). Aucun `VALUE_KEY` n'est écrit
+  pour ce dataset (positions d'auto-jeu, pas d'issue de partie complétée naturellement à
+  leur associer).
+  - **Profondeur de recherche du professeur : pas une valeur figée par ce contrat, côté
+    `chess_ai` uniquement.** Documentée à "profondeur 4" à l'écriture initiale de cette
+    section (2026-08-04) ; passée à **profondeur 12** depuis (2026-08-07, décision
+    `chess_ai` en revue de code — une profondeur trop proche de celle de l'auto-jeu
+    rendrait le professeur redondant avec le coup déjà joué, videtant le signal de
+    distillation). N'affecte que la *qualité* du label, jamais le schéma `.npz`
+    (clé/shape/dtype inchangés) — ne pas supposer une profondeur particulière côté
+    `jax_supervised_training`, qui n'en a de toute façon aucune connaissance directe.
 - **Encodage position** : chemin par défaut **inchangé** (`include_legal_hint=True`,
   `NUM_POSITION_PLANES`/`NUM_PLANES` existants, §2.1) — **aucune nouvelle variante de
   plans pour ce dataset**, contrairement à §2.5.
 - **Sortie de fichiers** : préfixe dédié (`chess_search_teacher`), distinct des deux
   préfixes existants (`chess`, `chess_legal_moves`) — aucune collision (AD-4 côté
   `chess_ai`).
+- **Statut côté `jax_supervised_training` (Epic 10, confirmé par exécution réelle,
+  2026-08-04 à 2026-08-09)** : entrée `CHESS_SEARCH_TEACHER` dans `dataset_configs.py`,
+  réutilise à l'identique `task_type="chess_policy_value"` et
+  `model_name="chess_cnn_attention_policy_value"` (Epic 9, aucun nouveau modèle) — seule
+  la tête value est neutralisée par pondération (`loss_params.value_weight=0.0`, jamais
+  supprimée), `value_head_trained=False` dérivé automatiquement de cette valeur. Entraîné
+  de bout en bout via `Trainer` sans erreur, `PolicyAccuracy` progresse mesurablement.
+  Meilleur résultat obtenu (10 000 parties/1 402 252 positions, profondeur 12,
+  `token_dim=192`/`dropout=0.35`/`label_smoothing=0.2`) : **28.00% val `PolicyAccuracy`**
+  — dépasse la référence `CHESS_NO_HISTORY` (24.43%, §2.1). Détail complet de la campagne
+  de tuning : `_bmad-output/implementation-artifacts/chess-search-teacher-strategy.md`
+  (`jax_supervised_training`).
 
 ## 3. Ce qui reste ouvert (à trancher côté PRD `chess_ai`, puis à reporter ici)
 

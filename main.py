@@ -124,6 +124,11 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
         # modeles chess_cnn_attention_* uniquement (test K du bottleneck, 2026-07-27) -
         # meme discipline de forwarding conditionnel que heatmap_prior ci-dessus
         model_kwargs["num_bottleneck_tokens"] = config["num_bottleneck_tokens"]
+    if "token_dim" in config:
+        # modeles chess_cnn_attention_* uniquement (test capacite token_dim, recherche
+        # technique 2026-08-06) - meme discipline de forwarding conditionnel que
+        # num_bottleneck_tokens ci-dessus
+        model_kwargs["token_dim"] = config["token_dim"]
     model = get_model(model_name, **model_kwargs)
     
     # 4. INSTANCIATION DE LA STRATEGIE (Injection de dépendance)

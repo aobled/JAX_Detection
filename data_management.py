@@ -686,6 +686,16 @@ class ChessPolicyValueDataset:
         """
         Crée un dataset TensorFlow qui retourne (position, {"policy": policy, "value": value})
         position: (8, 8, num_planes) ; policy: scalaire int32 ; value: scalaire float32
+
+        gen() yield un CHUNK entier par itération (pas un exemple), suivi d'un
+        .unbatch() - pas un exemple par exemple comme avant (2026-08-07, diagnostic
+        Winston, deferred-work.md 2026-08-05 : pipeline CPU-bound, ~1,26M
+        franchissements Python/epoch sur le dataset chess_search_teacher depth=12,
+        ramenes a ~127 par cette regle). RAM negligeable pour ce domaine (~1,1 Mo/chunk
+        chess, contrairement a un dataset d'images ou garder un chunk entier en
+        memoire serait risque - voir deferred-work.md pour la mise en garde generale).
+        Le point d'insertion de .unbatch() (avant .shuffle()) preserve exactement le
+        buffer de melange par-exemple d'avant (1000 exemples individuels), pas par chunk.
         """
         chunks = self.train_chunks if split == 'train' else self.val_chunks
         if not chunks:
@@ -696,7 +706,12 @@ class ChessPolicyValueDataset:
             for chunk_path in chunks:
                 with np.load(chunk_path) as data:
                     positions = data["position"]  # (N, 8, 8, num_planes)
-                    policies = data["policy"]      # (N,)
+                    # Cast explicite en int32 (une fois par chunk, pas par exemple) :
+                    # le generateur cote chess_ai sauvegarde deja "policy" en int32,
+                    # mais output_signature ci-dessous l'exige STRICTEMENT
+                    # (tf.data.Dataset.from_generator) - defense explicite plutot que
+                    # de compter silencieusement sur le producteur.
+                    policies = data["policy"].astype(np.int32)  # (N,)
                     # "value" absente pour les datasets professeur (ex. chess_search_teacher,
                     # contrat #2.6 - positions d'auto-jeu, pas d'issue de partie completee) :
                     # value factice a 0.0 plutot qu'un KeyError (Epic 10, 2026-08-04). Ne
@@ -707,7 +722,7 @@ class ChessPolicyValueDataset:
                     # de re-verifier ni de reavertir a chaque epoch ici (revue de code,
                     # 2026-08-05).
                     if self.has_value:
-                        values = data["value"]  # (N,)
+                        values = data["value"].astype(np.float32)  # (N,)
                         if len(values) != len(positions):
                             raise ValueError(
                                 f"{chunk_path}: 'value' a {len(values)} exemples, "
@@ -717,22 +732,18 @@ class ChessPolicyValueDataset:
                     else:
                         values = np.zeros(len(positions), dtype=np.float32)
 
-                    for pos, pol, val in zip(positions, policies, values):
-                        # Cast explicite en int32 : le generateur cote chess_ai sauvegarde
-                        # deja "policy" en int32, mais output_signature ci-dessous
-                        # l'exige STRICTEMENT (tf.data.Dataset.from_generator) - defense
-                        # explicite plutot que de compter silencieusement sur le producteur.
-                        yield pos, {"policy": np.int32(pol), "value": val}
+                    yield positions, {"policy": policies, "value": values}
 
         output_signature = (
-            tf.TensorSpec(shape=(8, 8, self.num_planes), dtype=tf.float32),
+            tf.TensorSpec(shape=(None, 8, 8, self.num_planes), dtype=tf.float32),
             {
-                "policy": tf.TensorSpec(shape=(), dtype=tf.int32),
-                "value": tf.TensorSpec(shape=(), dtype=tf.float32),
+                "policy": tf.TensorSpec(shape=(None,), dtype=tf.int32),
+                "value": tf.TensorSpec(shape=(None,), dtype=tf.float32),
             }
         )
 
         ds = tf.data.Dataset.from_generator(gen, output_signature=output_signature)
+        ds = ds.unbatch()
 
         if split == 'train':
             ds = ds.shuffle(1000)

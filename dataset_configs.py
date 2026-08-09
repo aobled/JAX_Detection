@@ -730,7 +730,34 @@ DATASET_CONFIGS = {
         "num_channels": 29,  # avec historique (contrat #2.6 chess_ai) - pas un gabarit CHESS_NO_HISTORY
         "input_shape": (8, 8, 29),
         "model_name": "chess_cnn_attention_policy_value",
-        "num_bottleneck_tokens": 8,
+        # 16 au lieu de 8 : test de capacite (recherche technique 2026-08-06, voir
+        # _bmad-output/planning-artifacts/research/technical-chesscnnattention-bottleneck-capacity-chess-search-teacher-research-2026-08-06.md).
+        # Leviers moins cher a tester que token_dim (cout lineaire en N vs quadratique
+        # en hidden dim) - protocole : observer le Train Accuracy, pas seulement Val,
+        # pour distinguer sous-capacite de plafond intrinseque a la tache/au professeur.
+        # Resultat 2026-08-06 : Train Accuracy inchange (31.18% -> 31.05%) malgre 8->16 -
+        # ce levier precis ne semble pas la cause. num_bottleneck_tokens reste a 16
+        # (pas de raison de revenir a 8), on teste maintenant token_dim (levier plus
+        # significatif d'apres la comparaison Leela BT4, cf. doc de recherche).
+        #
+        # token_dim 128 -> 256 (2026-08-07) : justifie par un gap train/val quasi nul
+        # (~0.1pt) observe en cours de route sur le run depth=12 (vs 4.4-7.2pt sur
+        # dim=128/depth=8) - le volume de donnees x2 semblait absorber la capacite
+        # sans surapprendre. Resultat final (2026-08-08) : Val 26.16%->27.63% (+1.47pt
+        # seulement) pour 2,52x plus de params (875K->2,2M) et un gap qui explose
+        # (1.33pt->11.64pt final, 32.49% en Simpson) - mauvais rapport cout/benefice,
+        # voir _bmad-output/implementation-artifacts/chess-search-teacher-strategy.md
+        # (doc dedie, options pour combler ce gap).
+        #
+        # token_dim 256 -> 192 (2026-08-08, decision Aymeric/Winston, Option 5 de la
+        # strategie ci-dessus) : point intermediaire jamais teste, entre le gap sain
+        # de 128 et le meilleur Val de 256 - recherche d'un compromis avant d'investir
+        # dans les leviers de regularisation (weight_decay/dropout/label_smoothing,
+        # options 1/2/3 du meme document). 192 % num_heads(4) == 0, contrainte
+        # respectee. Checkpoints best_model_chess_search_teacher-token_dim_{128,256}.pkl
+        # conserves cote chess_ai avant ce changement (Aymeric, 2026-08-08).
+        "num_bottleneck_tokens": 16,
+        "token_dim": 192,
         "output_prefix": f"{DATA_ROOT}/chunks/chess_search_teacher/chess_search_teacher",
         "val_split": 0.1,
         # value_weight=0.0 : neutralise le terme value de la loss composite existante
@@ -738,35 +765,117 @@ DATASET_CONFIGS = {
         # reelle dans ce dataset. value_head_trained derive automatiquement de cette valeur
         # par get_dataset_config() ci-dessous (voir cette fonction), jamais un litteral
         # duplique ici.
+        # label_smoothing=0.2 (2026-08-08, Option 3 de chess-search-teacher-strategy.md,
+        # decision Aymeric/Winston) : 0.1 (defaut standard de la litterature) initialement
+        # propose, revu a 0.2 avant le premier run - le dropout venait de montrer que meme
+        # un changement substantiel (0.25->0.35) ne deplace le Val que de ~0.2pt ici, donc
+        # 0.1 risquait de se noyer dans ce meme bruit sans trancher clairement "ca marche"
+        # vs "ca ne marche pas". 0.2 reste dans la plage couramment testee (pas un pari
+        # extreme). compute_chess_policy_loss (loss_functions.py) relaie ce parametre via
+        # **self.loss_params (ChessPolicyValueStrategy, task_strategies.py) - aucun autre
+        # code touche a ce mecanisme de plomberie deja en place pour
+        # policy_weight/value_weight. Ne touche jamais value_loss (MSE, label smoothing
+        # sans objet). Teste : label_smoothing=0.0 (absent du dict, comme avant) reste
+        # bit-a-bit identique a l'ancienne formule (verifie par test).
         "loss_params": {
             "policy_weight": 1.0,
             "value_weight": 0.0,
+            "label_smoothing": 0.2,
         },
         # Hyperparametres copies de CHESS_NO_HISTORY tels quels (point de depart non tune
-        # pour ce nouveau dataset, meme statut que CHESS_LEGAL_MOVES a sa creation) -
-        # decay_steps non recalcule (volume reel de chunks chess_search_teacher pas encore
-        # connu a ce stade, Open Question PRD).
+        # pour ce nouveau dataset, meme statut que CHESS_LEGAL_MOVES a sa creation).
+        #
+        # CORRECTIF 2026-08-07 (diagnostic Winston) : decay_steps ci-dessous EST bien la
+        # valeur active, pas un repli mort comme un commentaire precedent l'affirmait a
+        # tort. _count_real_train_samples (trainer.py:45) cherche des fichiers
+        # "{output_prefix}_train_chunk*.npz", mais chess_ai ne produit qu'un seul flux
+        # "{output_prefix}_chunk*.npz" sans split fichier (ChessPolicyValueDataset,
+        # data_management.py:602-613 - split fait au chargement par fraction de chunks).
+        # Le glob ne matche donc jamais rien pour AUCUNE config echecs
+        # (CHESS_SEARCH_TEACHER/CHESS_NO_HISTORY/CHESS_LEGAL_MOVES, meme convention a
+        # fichier unique partout) - recalcul automatique jamais fonctionnel sur ce
+        # domaine, decay_steps code en dur toujours reellement utilise en pratique.
+        # Valeurs ci-dessous recalculees a la main pour epochs=25 et le volume reel du
+        # dataset depth=12 (1 402 252 positions, voir note plus bas) : train ~=
+        # 1 402 252*0.9 ~= 1 262 027 -> gpu (batch=256) 4929 steps/epoch x 25 = 123225 ;
+        # tpu (batch=128) 9859 steps/epoch x 25 = 246475. Fix generique de
+        # _count_real_train_samples pour le domaine echecs differe (deferred-work.md).
+        #
+        # ATTENTION volume/profondeur du professeur, 2026-08-07 (decision chess_ai,
+        # revue de code) : dataset regenere a depth=12 (etait depth=8) - depth=8 etait
+        # quasi-redondant avec le coup deja joue par l'auto-jeu (meme profondeur, meme
+        # position), videant le professeur de tout signal reel ; depth=12 garantit un
+        # professeur distinct. Volume : 10 000 parties, 141 fichiers, 1 402 252
+        # positions (~2x le volume depth=8 du 2026-08-05/06/07, qui donnait ~628K
+        # positions train / 2454 steps/epoch). CONSEQUENCE : le PolicyAccuracy de ce
+        # nouveau dataset n'est PAS comparable terme a terme aux baselines depth=8
+        # ci-dessus (31.18%/31.05%/35.28%/35.53%) - un professeur plus profond trouve
+        # des coups moins "evidents", plus durs a imiter ; une accuracy plus basse ici
+        # ne signifierait pas une regression du modele. Nouvelle baseline a partir de
+        # ce run, pas une suite directe des runs precedents.
+        #
+        # dropout_rate 0.1 -> 0.25 (2026-08-07) : test de regularisation suite au run
+        # token_dim=64->128 (voir doc de recherche technique 2026-08-06) - ce run a
+        # confirme token_dim comme vrai levier de capacite (Val 29.3%->35.3%) mais avec
+        # un gap train/val qui se creuse nettement en fin de run (1.9pt -> 7.2pt final,
+        # Val qui plafonne epoch 13-15 pendant que Train continue). Un seul levier
+        # change a la fois (discipline suivie sur num_bottleneck_tokens et token_dim
+        # avant ca) : token_dim/num_bottleneck_tokens inchanges ici.
+        #
+        # weight_decay 5e-5 -> 5e-4 (2026-08-08, Option 1) : teste seul sur token_dim=192,
+        # effet nul dans le bruit (Train +0.11pt, Val +0.06pt, Gap +0.05pt - voir
+        # chess-search-teacher-strategy.md). Remis a 5e-5 (valeur d'origine) : pas de
+        # raison de garder un changement sans effet mesure pendant qu'on isole le
+        # prochain levier (dropout ci-dessous) - un seul changement a la fois par
+        # rapport a la derniere base propre (dim=192/wd=5e-5).
+        #
+        # dropout_rate 0.25 -> 0.35 (2026-08-08, Option 2) : le levier precedent
+        # (0.1->0.25, run 2026-08-07 dim=128/depth=8) avait deja montre le meme
+        # symptome que weight_decay - gap qui se referme (7.23->4.37pt) mais Val qui
+        # bouge a peine (+0.25pt) - attentes modestes assumees pour ce test, pas un
+        # levier cense faire progresser le Val, plutot un point de donnees peu couteux
+        # avant d'investir dans le label smoothing (Option 3, code non encore ecrit).
+        # decay_steps ci-dessous : repli jamais utilise en pratique pour le domaine
+        # echecs (trainer.py:171-180 le recalcule automatiquement depuis le vrai
+        # volume sur disque x epochs - _count_real_train_samples ne matche jamais les
+        # chunks echecs, deferred-work.md 2026-08-07). Valeurs recalculees a la main
+        # pour epochs=25 et le volume depth=12 (1 402 252 positions) : gpu (batch=256)
+        # 4929 steps/epoch x 25 = 123225 ; tpu (batch=128) 9859 steps/epoch x 25 = 246475.
+        #
+        # 2026-08-08 : un test epochs=35/decay_steps recalcule (172515/345065) a ete
+        # tente sur la meilleure config connue (dim=192/dropout=0.35/label_smoothing=0.2,
+        # Val=28.00%) pour voir si Val avait encore de la marge (pas de palier net a
+        # l'epoch 25). Test INVALIDE : lance par reprise depuis le checkpoint de l'ancien
+        # schedule (123225) sans le vider d'abord - en plus du bug d'off-by-one deja
+        # connu (deferred-work.md), le changement de decay_steps en reprise cree une
+        # vraie discontinuite de LR (le checkpoint etait converge sous l'ancien schedule,
+        # le nouveau schedule calcule un LR plus haut/moins decru au meme step) - le
+        # modele n'a jamais retrouve son optimum (patience=8 declenchee epoch 32, jamais
+        # au-dessus de 0.2800). Resultat non concluant, PAS un signe que plus d'epochs
+        # n'aiderait pas - juste un test contamine. Non retente (Aymeric prefere garder
+        # la config propre connue plutot que refaire un test proprement, decision
+        # explicite). Revert a epochs=25/decay_steps 123225/246475 ci-dessous.
         "tpu": {
             "micro_batch_size": 128,
             "accum_steps": 1,
             "learning_rate": 4e-4,
             "weight_decay": 5e-5,
-            "dropout_rate": 0.1,
+            "dropout_rate": 0.35,
             "warmup_steps": 200,
-            "decay_steps": 10000,
+            "decay_steps": 246475,
         },
         "gpu": {
             "micro_batch_size": 256,
             "accum_steps": 1,
             "learning_rate": 8e-4,
             "weight_decay": 5e-5,
-            "dropout_rate": 0.1,
+            "dropout_rate": 0.35,
             "warmup_steps": 200,
-            "decay_steps": 36700,
+            "decay_steps": 123225,
         },
         "optimizer": "adamw",
         "lr_schedule": "cosine",
-        "epochs": 15,
+        "epochs": 25,
         "patience": 8,
         "eval_batch_size": 64,
         "save_dir": "./checkpoints_chess_search_teacher",

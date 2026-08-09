@@ -1,0 +1,45 @@
+flowchart TB
+    X0["Plateau (B, 8, 8, 29)<br/>29 canaux = position + historique<br/>(contrat .npz échecs, côté chess_ai)"]
+
+    subgraph BACKBONE["Backbone CNN 8×8 — 44 480 params (11.6%)"]
+        NOTE_BB["ℹ️ SANS maxpool : pooler détruirait<br/>l'identité des 64 cases, nécessaire<br/>à la tête policy (AD-22)"]
+        C0["Conv 3×3, 29→64ch, no bias<br/>+ BatchNorm + silu<br/>16 832 params"]
+        C0 --> RB1["Bloc résiduel #1<br/>SeparableConv 3×3 (64ch) + BN + silu<br/>→ skip Conv 1×1 (64ch) + BN<br/>→ SeparableConv 3×3 (64ch) + BN<br/>→ add + silu<br/>13 824 params"]
+        RB1 --> RB2["Bloc résiduel #2 (identique)<br/>13 824 params"]
+        RB2 --> XF["Feature map (B, 8, 8, 64)<br/>RF théorique = 11 (5 convs 3×3)<br/>couvre tout le plateau 8×8"]
+    end
+    X0 --> C0
+
+    subgraph BOTTLENECK["Bottleneck Perceiver-style — 33 792 params (8.8%)"]
+        NOTE_BN["ℹ️ 1 seul bloc (k=1 cross-attn, l=1 self-attn) —<br/>Perceiver IO de référence en empile plusieurs"]
+        RESHAPE["Reshape → (B, 64, 64)<br/>64 tokens-case (8×8 aplati)<br/>dim = token_dim = 64"]
+        Q["Param appris bottleneck_queries<br/>(K=8, token_dim=64)<br/>512 params"]
+        RESHAPE --> CROSS["Cross-attention<br/>MultiHeadDotProductAttention, 4 têtes<br/>Q=queries apprises · KV=64 tokens-case<br/>16 640 params"]
+        Q --> CROSS
+        CROSS --> TOK8["8 tokens latents (B, 8, 64)"]
+        TOK8 --> SELF["Auto-attention<br/>MultiHeadDotProductAttention, 4 têtes<br/>Q=K=V=les 8 tokens<br/>16 640 params"]
+        SELF --> TOK8B["8 tokens latents (B, 8, 64)"]
+        TOK8B --> POOL["Mean pool sur les 8 tokens → (B, 64)"]
+        POOL --> DROP["Dropout 0.1 (actif si training=True)"]
+    end
+    XF --> RESHAPE
+
+    subgraph HEADS["Têtes — 303 745 params (79.5% du total !)"]
+        NOTE_HD["⚠️ La tête policy à elle seule pèse<br/>~8× plus que tout le reste du modèle"]
+        POLICY["Dense 64→4672<br/>logits bruts policy<br/>303 680 params (79.5% du modèle)"]
+        VALUE["Dense 64→1 + tanh<br/>value ∈ [-1, 1] — 65 params<br/>(neutralisée : value_weight=0.0<br/>sur CHESS_SEARCH_TEACHER)"]
+    end
+    DROP --> POLICY
+    DROP --> VALUE
+
+    OUT["{policy: (B, 4672), value: (B,)}<br/>✅ Total mesuré : 382 017 params<br/>(confirmé chess_search_teacher.png,<br/>run 2026-08-05, K=8 / token_dim=64)"]
+    POLICY --> OUT
+    VALUE --> OUT
+
+    REF["Point de comparaison domaine :<br/>Leela Chess Zero BT4 (transformer échecs spécialisé)<br/>64 tokens JAMAIS compressés, hidden=1024, 32 têtes<br/>— vs ce modèle : 64→8 tokens, hidden=64, 4 têtes"]
+    OUT -.compare à.-> REF
+
+    E1["🔬 Test 1 (2026-08-06) : K 8→16<br/>Train Accuracy INCHANGÉ (31.18%→31.05%)<br/>→ ce levier précis ne semble pas la cause"]
+    E2["🔬 Test 2 (en cours) : token_dim 64→128, K=16<br/>Impact estimé ≈874K params total<br/>(tête policy → ~602 688 params —<br/>le poste dominant reste le même)"]
+    E1 --> E2
+    BOTTLENECK -.expérimentation.-> E1
