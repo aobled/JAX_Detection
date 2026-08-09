@@ -295,7 +295,8 @@ action_items:
   - epic: "10"
     action: "Committer l'etat de travail accumule de l'Epic 10 (dataset_configs.py, loss_functions.py, data_management.py, main.py, contrat d'interface, stories, deferred-work.md)"
     owner: "Claude"
-    status: in-progress
+    status: done
+    note: "Commit b4ada63 (2026-08-09)."
   - epic: "10"
     action: "Continuer a router proactivement vers les agents specialises (item Epic 9 reconduit, mieux tenu ce cycle - a maintenir, pas encore un reflexe systematique)"
     owner: "Claude"
