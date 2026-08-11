@@ -1,0 +1,47 @@
+flowchart TB
+    X0["Séquence de tokens (B, L)<br/>L=404 (fixe, calculé depuis le dataset réel — AD-28)<br/>BOS + historique de coups, PAD à GAUCHE<br/>(ChessMoveTokenDataset, data_management.py)"]
+
+    subgraph EMBED["Embedding — 598 272 params (30.0%)"]
+        NOTE_EMB["⚠️ À lui seul, aussi lourd que TOUT le corps<br/>transformer (4 blocs, 40.0%) — vocab=4674<br/>(num_moves+BOS+PAD, AD-30) × d_model=128"]
+        E["nn.Embed(4674 → 128)<br/>598 272 params"]
+    end
+    X0 --> E
+
+    subgraph BODY["Décodeur causal — 4 blocs identiques, 795 072 params (39.9%)"]
+        NOTE_BODY["ℹ️ Masque = causal (nn.make_causal_mask)<br/>combiné au masque de padding<br/>(tokens != PAD_TOKEN_ID) — dérivé du tenseur<br/>d'entrée, jamais un 2e tenseur acheminé<br/>via Strategy/Trainer (AD-28)"]
+        L1["Bloc #1 : LN → MHDPA (4 têtes, masqué) → +résiduel<br/>→ LN → Dense 128→512 → gelu → Dense 512→128 → +résiduel<br/>198 768 params"]
+        L1 --> L2["Bloc #2 (identique)<br/>198 768 params"]
+        L2 --> L3["Bloc #3 (identique)<br/>198 768 params"]
+        L3 --> L4["Bloc #4 (identique)<br/>198 768 params"]
+        L4 --> LNF["LayerNorm final<br/>256 params"]
+    end
+    E --> L1
+
+    subgraph READOUT["Lecture — indice -1 (AD-28)"]
+        NOTE_RO["ℹ️ Padding à GAUCHE ⇒ le dernier token<br/>du tenseur est TOUJOURS le dernier token RÉEL,<br/>quelle que soit la longueur réelle de la séquence.<br/>Jamais un pooling moyen (contrairement au<br/>bottleneck Perceiver de chess_cnn_attention_*)."]
+        LAST["hidden_states[:, -1, :]<br/>(B, 128)"]
+    end
+    LNF --> LAST
+
+    subgraph HEAD["Tête policy — 602 688 params (30.2%)"]
+        NOTE_HD["⚠️ Quasi identique en taille à l'embedding —<br/>AUCUNE tête value (AD-26, contrairement à<br/>chess_cnn_attention_policy_value) : ce domaine<br/>est policy-only par construction, pas une<br/>neutralisation par poids nul (CHESS_SEARCH_TEACHER)"]
+        POLICY["Dense 128→4672<br/>logits bruts, sans masquage des coups<br/>illégaux (AD-22 hérité)<br/>602 688 params"]
+    end
+    LAST --> POLICY
+
+    OUT["policy_logits (B, 4672)<br/>✅ TOTAL réel mesuré : 1 994 304 params<br/>(model.init(), pas une estimation à la main)<br/>compute_chess_policy_loss, label_smoothing=0.2"]
+    POLICY --> OUT
+
+    REF["Points de comparaison domaine :<br/>chess_cnn_attention_policy_value (CHESS_SEARCH_TEACHER) —<br/>1 482 305 params, encodeur bidirectionnel Perceiver-style<br/>sur PLAN 8×8, PAS causal, PAS de séquence<br/>— vs ce modèle : décodeur causal sur SÉQUENCE de coups,<br/>1re utilisation d'un masque causal dans ce codebase"]
+    OUT -.compare à.-> REF
+
+    E1["🔬 Run 1 (2026-08-10) : dataset spike 20 parties<br/>(3190 positions) — Train 33.5%/Val 0.35% epoch 6<br/>→ surapprentissage sévère par manque de volume,<br/>early stopping épargné par patience=5"]
+    E2["🔬 Ajustement (Aymeric, 2026-08-10) : dropout 0.1→0.3,<br/>label_smoothing 0.0→0.2 — atténue le symptôme,<br/>ne s'attaque pas à la cause (volume)"]
+    E3["🔬 Run 2 (2026-08-10) : dataset régénéré 137×<br/>(416 306 positions), batch 256→128 (OOM sur run 1<br/>à 256, O(B×H×L²) avec L=404), decay_steps/warmup_steps<br/>recalculés depuis le vrai volume — 15 epochs<br/>✅ Val PolicyAccuracy plafonne à 5.54% (epoch 15),<br/>Train 7.30% — gap sain (1.76pt), PAS d'explosion<br/>(254× le hasard 1/4672 — signal réel, pas du bruit)"]
+    E4["🔬 ADOPTÉ pour Run 3 (Aymeric/Winston, 2026-08-10 —<br/>PAS ENCORE LANCÉ, en attente de la régénération dataset) :<br/>num_layers 4→6, d_model 128→192 (mirroring token_dim=192<br/>de CHESS_SEARCH_TEACHER) → 4 468 672 params mesurés<br/>(2.24×, model.init() config production, forward pass<br/>vérifié batch=128 ET 256)<br/>Rationale : profondeur = reconstruction d'état implicite<br/>compositionnelle (absente des modèles position→coup) ;<br/>embedding+tête tombent à 40.3% du total (vs 60.2%<br/>à 4/128) — capacité ajoutée va au corps du réseau,<br/>pas à l'overhead vocab fixe (4674 tokens)."]
+    E5["🔬 Run 3 (préparation) : régénération ~10 000 parties<br/>cible (échelle CHESS_SEARCH_TEACHER, taille réelle pas<br/>encore connue), batch tpu 128→256 (à tester sur Colab,<br/>mémoire par cœur TPU différente d'une carte locale —<br/>aucun historique d'OOM à cette échelle pour ce modèle),<br/>batch gpu conservé à 128 (seule valeur validée sans OOM<br/>localement, PAS re-testée avec le modèle 6/192 plus gros).<br/>⚠️ decay_steps (43905) PROVISOIRE — à recalculer dès<br/>que le volume réel du nouveau dataset est connu<br/>(dataset_configs.py, commentaire dédié)."]
+    E1 --> E2 --> E3 --> E4 --> E5
+    BODY -.expérimentation.-> E1
+
+    NOTE_WEIGHTTYING["💡 Option ouverte, pas encore décidée (AD-30 spine,<br/>architecture-chess-move-token-2026-08-10, Deferred) :<br/>weight-tying embedding↔tête — les deux pèsent déjà<br/>598K/603K params (quasi identiques), soit 60.2% du<br/>modèle actuel à eux deux. Espaces PAS strictement<br/>identiques (entrée 4674 avec BOS/PAD, sortie 4672<br/>stricte, AD-30) — tying possible mais demande de<br/>restreindre la projection aux 4672 premières lignes<br/>de la table d'embedding, pas un Dense libre."]
+    HEAD -.- NOTE_WEIGHTTYING

@@ -63,9 +63,21 @@
 #     le smoke-test n_games=5) avant de demarrer - a verifier explicitement, pas decouvert
 #     en cours de route (pre-mortem 2026-08-04). Option A actee : reutilisation stricte du
 #     modele/TaskStrategy de l'Epic 9, aucune nouvelle TaskStrategy/modele cette epic.
+# - jax_supervised_training-specific: Epic 11 (CHESS_MOVE_TOKEN, spike transformer causal)
+#     stories MUST run in strict sequence (AD-17/AD-27/AD-28/AD-29, spine
+#     architecture-chess-move-token-2026-08-10): 11-1 -> 11-2 -> 11-3 -> 11-4. Story 11-1
+#     (config + ChessMoveTokenDataset, BOS_TOKEN_ID/PAD_TOKEN_ID) est un prerequisite
+#     auteur unique - 11-2/11-3 doivent importer ces constantes, jamais les redefinir.
+#     11-3 porte le fix dtype critique (AD-29, trouve en revue adversariale du spine) :
+#     Trainer recoit dtype=jnp.int32 pour ce task_type, sinon le cast float16 par defaut
+#     corrompt silencieusement les tokens. AD-21 herite : aucune story de cet epic ne
+#     modifie CHESS_SEARCH_TEACHER/CHESS_LEGAL_MOVES/CHESS_NO_HISTORY/JAX_DETECTOR ni
+#     trainer.py. Priorite explicite Aymeric (2026-08-10) : vitesse d'experimentation vers
+#     un premier run entrainable, decisions reversibles selon resultats - pas de PRD dedie,
+#     epics.md source = spine seul.
 
 generated: 2026-07-12
-last_updated: 2026-08-04
+last_updated: 2026-08-10
 project: jax_supervised_training
 project_key: NOKEY
 tracking_system: file-system
@@ -152,6 +164,13 @@ development_status:
   10-1-configuration-et-tolerance-du-chargeur-pour-le-dataset-professeur: done
   10-2-validation-par-execution-reelle-et-non-regression: done
   epic-10-retrospective: done
+
+  epic-11: done
+  11-1-configuration-et-chargeur-csr-pour-le-dataset-spike: done
+  11-2-modele-transformer-causal-chess-move-token-transformer: done
+  11-3-taskstrategy-chess-move-token-dispatch-et-fix-dtype-critique: done
+  11-4-validation-par-execution-reelle-et-non-regression: done
+  epic-11-retrospective: backlog
 
 action_items:
   - epic: "1-3"
@@ -305,3 +324,51 @@ action_items:
     action: "Pour tout futur run long, verifier explicitement l'absence de checkpoint avant de changer decay_steps/epochs/l'architecture - le mecanisme de reprise actuel le rend obligatoire dans tous les cas, pas seulement pour une comparaison propre"
     owner: "Aymeric"
     status: open
+  - epic: "11"
+    action: "Epic realisee en autonomie (Winston/Claude, 2026-08-10, Aymeric absent ~30min) - CA (spine) + create-epics-and-stories + implementation directe des 4 stories, sans checkpoint intermediaire (autonomie explicitement accordee). A relire au retour d'Aymeric avant retro."
+    owner: "Claude"
+    status: done
+  - epic: "11"
+    action: "Bug critique trouve en revue adversariale du spine (AD-29) : trainer.py caste INCONDITIONNELLEMENT toute entree en float16 (main.py:35-41) avant tout hook Strategy (trainer.py:313/430) - aurait corrompu silencieusement les tokens (espace 0-4673, float16 exact seulement jusqu'a ~2048) sans ce fix. Trouve AVANT implementation (revue de spine), pas en cours de debug."
+    owner: "Claude (reviewer subagent)"
+    status: done
+  - epic: "11"
+    action: "2e bug critique trouve PENDANT l'implementation (pas anticipe par la revue du spine) : Trainer.create_train_state (trainer.py:145) construit son dummy d'init en float32 code en dur, hors du chemin couvert par AD-29 - nn.Embed.init() aurait leve ValueError. Fix : le modele caste lui-meme en int32 (AD-33, ajoute au spine deja finalise). Retenu pour la retro : la revue de spine (lecture + subagents) n'a pas suffi a elle seule, l'execution reelle a trouve un 2e bug que la lecture seule avait manque - argument pour toujours executer, pas seulement relire."
+    owner: "futur cycle"
+    status: open
+  - epic: "11"
+    action: "validate_config (dataset_configs.py) relachee de len(input_shape)>=2 a >=1 pour supporter un domaine sequence sans dimension canal - changement verifie strictement monotone (aucune config existante n'a input_shape de longueur 1), sans risque pour les domaines existants."
+    owner: "Claude"
+    status: done
+  - epic: "11"
+    action: "Smoke-test reel (1 epoch, dataset spike complet, CPU) execute plutot que le run complet 10 epochs configure (~44min estimees) - decision de prudence sur l'execution locale lourde sans supervision (Aymeric absent). PolicyAccuracy Val=0.0069 des la 1ere epoch (signal positif, tres au-dessus du hasard ~0.00021) - pipeline valide de bout en bout, mais AUCUN jugement porte sur le succes du spike (CAP-4/CAP-5, decision chess_ai, necessite un run complet + comparaison + rematch self-play)."
+    owner: "Aymeric"
+    status: open
+  - epic: "11"
+    action: "Lancer le run complet CHESS_MOVE_TOKEN (epochs=10 configures, ou plus si Aymeric veut pousser la convergence) puis transmettre le resultat cote chess_ai pour statuer sur CAP-4 (comparaison a best_model_chess_search_teacher.pkl) et CAP-5 (rematch self-play, taux de nulles-par-repetition) - epic jax_supervised_training terminee (plomberie), verdict spike encore ouvert."
+    owner: "Aymeric"
+    status: open
+  - epic: "11"
+    action: "Run 2 (416306 positions, 15 epochs) termine, plateau confirme : Val PolicyAccuracy 5.54% (254x le hasard), gap train/val sain (1.76pt, pas d'explosion). Volume de donnees confirme comme facteur limitant principal - prochaine regeneration ciblee ~10000 parties cote chess_ai (echelle CHESS_SEARCH_TEACHER, meme professeur/profondeur)."
+    owner: "Aymeric"
+    status: done
+  - epic: "11"
+    action: "Diagramme chess-move-token.mmd cree (_bmad-output/planning-artifacts/, meme convention que chess-cnn-attention-policy-value.mmd) - architecture reellement entrainee documentee avec params reels (model.init(), pas estimes). Trouvaille : embedding+tete policy = 60.2% du modele (598K+603K sur 1.99M total), corps transformer seulement 39.9% - rend le weight-tying (AD-30, deferre) plus attractif que prevu au design initial."
+    owner: "Claude"
+    status: done
+  - epic: "11"
+    action: "Aymeric confirme : num_layers 4->6, d_model 128->192 applique (dataset_configs.py, CHESS_MOVE_TOKEN) - 4468672 params reels (2.24x, model.init() config production), forward pass verifie batch=128 et 256. tpu.micro_batch_size 128->256 (a tester Colab), gpu reste 128. decay_steps (43905) marque PROVISOIRE dans le code - a recalculer avec le volume reel une fois la regeneration ~10000 parties terminee cote chess_ai."
+    owner: "Claude"
+    status: done
+  - epic: "11"
+    action: "Recalculer decay_steps/warmup_steps (dataset_configs.py, CHESS_MOVE_TOKEN) une fois le nouveau dataset regenere cote chess_ai connu (taille reelle, tpu batch=256 vs gpu batch=128) - PROVISOIRE tant que ce n'est pas fait, ne pas lancer le Run 3 sans ce recalcul (meme piege que Run 1->Run 2)."
+    owner: "Aymeric/Claude"
+    status: open
+  - epic: "11"
+    action: "Idee Aymeric : architecture(s) specialisee(s) par phase de partie (ouverture/milieu/fin), chacune avec espace de sortie/objectif adapte (l'ouverture n'a pas besoin des 4672 coups, la fin de partie a besoin d'un objectif eviter-le-nul/conclure, pas juste imiter le professeur). Avis Winston : PAS un cul-de-sac, precedent reel dans les moteurs classiques (livres d'ouverture/tablebases), mais premature avant d'avoir pousse le modele unique plus loin. Prochaine etape peu couteuse recommandee avant d'investir : decouper PolicyAccuracy par numero de coup/phase sur le modele ACTUEL pour valider empiriquement l'hypothese de difficulte differentielle par phase."
+    owner: "Aymeric/Winston"
+    status: backlog
+  - epic: "11"
+    action: "3e probleme reel trouve par Aymeric lui-meme (nvtop, run reel en cours) : GPU 60%->0% ~5s par step, debit tres faible. Diagnostic Winston : padding dynamique PAR BATCH (AD-28 1ere version) -> forme (B,L) variable a chaque step -> Trainer._train_step (@jax.jit) recompile a quasiment chaque step (cache par forme). Fix : longueur fixe globale calculee depuis les vraies donnees (302 = max historique + BOS), pas un litteral en dur. Confirme par re-execution reelle : 1 seule compilation (step 1 a 5.84s), puis stable ~1.1it/s, epoch 264s->86.7s (CPU, ~3x). A retenir pour la retro : un utilisateur qui observe l'outil systeme (nvtop) pendant un run a trouve un probleme que ni la revue de spine ni mes propres smoke-tests CPU n'avaient diagnostique correctement (le symptome etait deja visible dans mes logs, juste pas nomme)."
+    owner: "Winston + Aymeric"
+    status: done

@@ -853,6 +853,146 @@ class ChessLegalMovesDataset:
         return train_ds, val_ds
 
 
+# Tokens spéciaux du domaine chess_move_token (Epic 11, AD-30 — spine
+# architecture-chess-move-token-2026-08-10). Source unique : tout autre module
+# (model_library.py) importe ces constantes, ne les redéfinit jamais comme littéraux
+# indépendants. Espace d'entrée (embedding) = NUM_MOVES(4672) + 2 = 4674 ; la tête de
+# sortie policy reste strictement sur les 4672 classes existantes (AD-22 hérité),
+# BOS/PAD n'y apparaissent jamais.
+CHESS_MOVE_TOKEN_BOS = 4672
+CHESS_MOVE_TOKEN_PAD = 4673
+
+
+class ChessMoveTokenDataset:
+    """
+    Gestionnaire de dataset pour le domaine chess_move_token (Epic 11, spike — AD-27/
+    AD-28/AD-30, spine architecture-chess-move-token-2026-08-10). Contrairement à tous
+    les chargeurs échecs ci-dessus, le dataset spike est un FICHIER UNIQUE (pas de
+    convention `_chunk*.npz`) au format CSR : `move_tokens` (tokens à plat, toutes
+    positions concaténées) + `move_token_offsets` (bornes N+1 pour N positions).
+
+    Retourne (sequence, policy) — pas un dict {"policy", "value"} comme
+    ChessPolicyValueDataset : ce domaine n'a pas de tête value (AD-26).
+    """
+    def __init__(self, npz_path: str, batch_size: int = 32, val_split: float = 0.1, shuffle_seed: int = 42):
+        self.npz_path = npz_path
+        self.batch_size = batch_size
+
+        if not os.path.exists(npz_path):
+            error_msg = (
+                f"\n❌ ERREUR: Dataset spike chess_move_token introuvable !\n"
+                f"   Je m'attendais à trouver {npz_path}\n"
+                f"💡 Génère-le d'abord côté chess_ai (chess_move_token_spike_dataset.py)."
+            )
+            print(error_msg)
+            exit(1)
+
+        # Fichier unique et petit (spike, 3190 positions/~310K tokens) - chargé
+        # entièrement en mémoire une fois, contrairement aux chargeurs chunkés
+        # ci-dessus (pas de contrainte de streaming pertinente ici).
+        with np.load(npz_path) as data:
+            self.policy = data["policy"].astype(np.int32)                      # (N,)
+            self.move_tokens = data["move_tokens"].astype(np.int32)            # (T,) à plat
+            self.move_token_offsets = data["move_token_offsets"].astype(np.int64)  # (N+1,) bornes CSR
+
+        n_examples = len(self.policy)
+        assert len(self.move_token_offsets) == n_examples + 1, (
+            f"{npz_path} : move_token_offsets a {len(self.move_token_offsets)} entrées, "
+            f"attendu {n_examples + 1} (N+1 bornes CSR pour {n_examples} positions) - "
+            f"dataset spike malformé"
+        )
+
+        # Mélange reproductible des EXEMPLES (pas de chunks - un seul fichier, AD-27)
+        # avant le split fraction train/val - même convention que
+        # ChessPolicyValueDataset/ChessLegalMovesDataset (évite le biais d'ordre déjà
+        # documenté le 2026-07-27), au grain de l'exemple plutôt que du chunk.
+        indices = np.arange(n_examples)
+        np.random.RandomState(shuffle_seed).shuffle(indices)
+
+        n_val = 0 if val_split <= 0 else (max(1, int(n_examples * val_split)) if n_examples > 1 else 0)
+        self.train_indices = indices[:-n_val] if n_val else indices
+        self.val_indices = indices[-n_val:] if n_val else np.array([], dtype=np.int64)
+
+        # Longueur de séquence FIXE et GLOBALE (pas un padding dynamique par batch,
+        # contrairement à la 1ère version d'AD-28) - trouvé par exécution réelle
+        # (Aymeric, 2026-08-10, nvtop) : `Trainer._train_step` est `@jax.jit`
+        # (trainer.py:229) et cache par FORME d'entrée - un padding par-batch (forme
+        # `(B, L)` avec L variable, ancien `padded_shapes=([None], [])`) déclenchait
+        # une recompilation XLA a quasiment CHAQUE step (GPU a 0% pendant ~5s,
+        # visible dans nvtop, ~3.7s/it au lieu de quelques dizaines de ms). Calculée
+        # depuis les VRAIES données (pas un littéral 301 en dur, qui deviendrait
+        # silencieusement faux si le dataset spike changeait) : max(longueur
+        # d'historique) + 1 pour le BOS préfixé (voir create_tf_dataset). Une seule
+        # forme de batch pour tout le run -> une seule compilation JIT.
+        history_lengths = self.move_token_offsets[1:] - self.move_token_offsets[:-1]
+        self.max_seq_len = int(history_lengths.max()) + 1  # +1 = BOS
+
+        print(f"📦 Chess Move-Token Dataset (spike) : {len(self.train_indices)} positions train, "
+              f"{len(self.val_indices)} positions val (split côté chargement, val_split={val_split}, "
+              f"mélange reproductible seed={shuffle_seed}), longueur de séquence fixe={self.max_seq_len} "
+              f"(historique max + BOS, une seule compilation JIT pour tout le run)")
+
+    def create_tf_dataset(self, split='train'):
+        """
+        Crée un dataset TensorFlow qui retourne (sequence, policy).
+        sequence: (L,) int32, longueur variable, paddée à GAUCHE par batch (AD-28) ;
+        policy: scalaire int32 (index du coup joué, espace 4672).
+        """
+        indices = self.train_indices if split == 'train' else self.val_indices
+        if len(indices) == 0:
+            raise ValueError(f"Aucune position '{split}' disponible pour chess_move_token "
+                              f"(npz_path={self.npz_path}, val_split trop faible ou trop peu de positions)")
+
+        def gen():
+            for i in indices:
+                start, end = self.move_token_offsets[i], self.move_token_offsets[i + 1]
+                history = self.move_tokens[start:end]
+                # BOS préfixé à l'historique (AD-30) AVANT le reverse de la recette de
+                # padding à gauche ci-dessous (AD-28) - il se retrouve donc juste après
+                # le padding une fois la séquence batchée, jamais tronqué.
+                sequence = np.concatenate(([CHESS_MOVE_TOKEN_BOS], history)).astype(np.int32)
+                yield sequence, self.policy[i]
+
+        output_signature = (
+            tf.TensorSpec(shape=(None,), dtype=tf.int32),
+            tf.TensorSpec(shape=(), dtype=tf.int32),
+        )
+        ds = tf.data.Dataset.from_generator(gen, output_signature=output_signature)
+
+        if split == 'train':
+            ds = ds.shuffle(1000)
+
+        # Recette de padding à GAUCHE (AD-28) - tf.data.Dataset.padded_batch ne padde
+        # nativement qu'à droite (vérifié) : on inverse chaque séquence avant padding
+        # (donc "avant" en ordre inversé = "après" une fois re-inversée), on padde, puis
+        # on re-inverse le batch obtenu. Le dernier token réel est ainsi toujours à
+        # l'indice -1 du tenseur, quelle que soit la longueur réelle de la séquence.
+        #
+        # padded_shapes=([self.max_seq_len], []) - longueur FIXE et GLOBALE (pas
+        # `[None]`, qui padderait dynamiquement à la longueur max DU BATCH COURANT
+        # uniquement) - voir le commentaire sur self.max_seq_len (__init__) : une
+        # forme de batch variable ferait recompiler `Trainer._train_step` (@jax.jit)
+        # à quasiment chaque step (trouvé par exécution réelle, GPU à 0% ~5s entre
+        # chaque step dans nvtop). Toutes les séquences réelles sont <= max_seq_len
+        # par construction (calculé depuis les mêmes données) - jamais tronquées.
+        ds = ds.map(lambda seq, label: (tf.reverse(seq, axis=[0]), label))
+        ds = ds.padded_batch(
+            self.batch_size,
+            padded_shapes=([self.max_seq_len], []),
+            padding_values=(np.int32(CHESS_MOVE_TOKEN_PAD), np.int32(0)),
+            drop_remainder=True,
+        )
+        ds = ds.map(lambda seq_batch, label_batch: (tf.reverse(seq_batch, axis=[1]), label_batch))
+
+        ds = ds.prefetch(tf.data.AUTOTUNE)
+        return ds
+
+    def get_dataset(self):
+        train_ds = self.create_tf_dataset('train')
+        val_ds = self.create_tf_dataset('val') if len(self.val_indices) else None
+        return train_ds, val_ds
+
+
 def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
     """
     Fonction factory unifiée pour charger les datasets selon le type de tâche.
@@ -933,6 +1073,16 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
             val_split=config.get("val_split", 0.1),
             num_planes=config.get("num_channels", 29),
             num_moves=config.get("num_classes", 4672),
+        )
+        return dataset_manager.get_dataset()
+
+    elif task_type == "chess_move_token":
+        # "output_prefix" porte ici le chemin LITTÉRAL du fichier spike unique (pas un
+        # préfixe de glob `_chunk*.npz` comme les autres domaines échecs) - AD-27.
+        dataset_manager = ChessMoveTokenDataset(
+            npz_path=config["output_prefix"],
+            batch_size=backend_config["micro_batch_size"],
+            val_split=config.get("val_split", 0.1),
         )
         return dataset_manager.get_dataset()
 

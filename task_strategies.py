@@ -615,3 +615,71 @@ class ChessLegalMovesStrategy(TaskStrategy):
                 print("⚠️  val_ds est vide - aucun détail précision/rappel généré")
         except Exception as e:
             print(f"❌ Erreur lors de la génération du rapport coups légaux: {e}")
+
+
+class ChessMoveTokenStrategy(TaskStrategy):
+    """
+    Tâche policy-only sur historique de coups (Epic 11, spike — AD-26, spine
+    architecture-chess-move-token-2026-08-10) : prédit le coup suivant à partir de la
+    séquence de coup-tokens (move_tokens) jouée jusqu'à la position courante. outputs
+    est un tenseur unique (B, 4672) — PAS un dict {"policy", "value"} (aucune tête
+    value, ChessMoveTokenTransformer, model_library.py) — même forme que
+    ChessLegalMovesStrategy ci-dessus, pas ChessPolicyValueStrategy.
+
+    compute_loss délègue intégralement à compute_chess_policy_loss (déjà existante,
+    loss_functions.py) — aucune nouvelle fonction de loss créée (AD-26).
+    """
+    def __init__(self, loss_params: dict = None):
+        # loss_params : { "label_smoothing": float } - meme convention que les
+        # stratégies échecs ci-dessus (dict passé à l'instanciation).
+        self.loss_params = loss_params or {}
+
+    @property
+    def primary_metric_name(self) -> str:
+        return "PolicyAccuracy"
+
+    @property
+    def optimization_mode(self) -> str:
+        return "max"
+
+    def preprocess_batch(self, images, targets, is_training, rng=None):
+        # "images" est en realite la sequence de move-tokens (nom generique herite de
+        # la signature TaskStrategy - meme situation que ChessPolicyValueStrategy).
+        # targets = index du coup joue (B,), deja int32 au chargement
+        # (ChessMoveTokenDataset) - cast defensif, meme discipline que les autres
+        # strategies echecs.
+        targets = jnp.asarray(targets, dtype=jnp.int32)
+        return images, targets, False
+
+    def compute_loss(self, outputs, targets, **kwargs):
+        return compute_chess_policy_loss(
+            outputs, targets, label_smoothing=self.loss_params.get("label_smoothing", 0.0)
+        )
+
+    def compute_metrics(self, outputs, targets):
+        # Policy top-1 accuracy (primary_metric_name) - meme formule que
+        # ChessPolicyValueStrategy.compute_metrics ci-dessus.
+        predicted = jnp.argmax(outputs, axis=-1)
+        return (predicted == targets).mean()
+
+    def generate_reports(self, val_ds, final_state, model, config):
+        try:
+            batch_consumed = False
+            for batch_sequences, batch_targets in val_ds.take(1).as_numpy_iterator():
+                batch_consumed = True
+                vars = {'params': final_state.params, 'batch_stats': final_state.batch_stats}
+                outputs = final_state.apply_fn(vars, batch_sequences, training=False)
+                targets = jnp.asarray(batch_targets, dtype=jnp.int32)
+
+                policy_loss = compute_chess_policy_loss(
+                    outputs, targets, label_smoothing=self.loss_params.get("label_smoothing", 0.0)
+                )
+                acc = self.compute_metrics(outputs, targets)
+
+                print(f"📊 Détail chess_move_token (validation, 1 batch) : "
+                      f"policy_loss={float(policy_loss):.4f}, PolicyAccuracy={float(acc):.4f}")
+                break
+            if not batch_consumed:
+                print("⚠️  val_ds est vide - aucun détail chess_move_token généré")
+        except Exception as e:
+            print(f"❌ Erreur lors de la génération du rapport chess_move_token: {e}")

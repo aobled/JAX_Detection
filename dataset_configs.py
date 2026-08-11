@@ -29,18 +29,24 @@ def validate_config(config_name, config):
         if not isinstance(config["image_size"], tuple) or len(config["image_size"]) != 2:
             errors.append(f"image_size doit être un tuple (H, W)")
 
-    # Vérifier que input_shape est un tuple d'au moins 2 entiers positifs - forme
+    # Vérifier que input_shape est un tuple d'au moins 1 entier positif - forme
     # complète (hors batch) que Trainer.create_train_state() utilise pour construire son
     # entrée factice (2026-07-30, remplace l'ancien couple image_size+num_channels/
     # grayscale + branche if/elif par task_type dans trainer.py - source unique, 100%
     # générique, jamais un domaine qui détourne une autre clé comme JAX_KEPLER le faisait
-    # avec image_size). (H, W, C) pour une image, (longueur, canaux) pour une séquence 1D,
-    # (8, 8, C) pour les échecs, etc. - la forme exacte est spécifique à chaque domaine,
-    # cette fonction ne valide que la structure générique (tuple, entiers positifs).
+    # avec image_size). (H, W, C) pour une image, (longueur, canaux) pour une séquence 1D
+    # avec canaux (Kepler), (8, 8, C) pour les échecs, (longueur,) pour une séquence
+    # d'identifiants sans dimension canal (chess_move_token, Epic 11 - un décodeur
+    # transformer n'a besoin que de (B, L), pas de dimension canal) - la forme exacte
+    # est spécifique à chaque domaine, cette fonction ne valide que la structure
+    # générique (tuple, entiers positifs). Borne basse relâchée de 2 à 1 (2026-08-10,
+    # Epic 11) : changement strictement monotone (accepte plus qu'avant), aucune config
+    # existante n'a de input_shape de longueur 1 aujourd'hui - comportement de
+    # validation inchangé pour tous les domaines déjà en place (AD-21 hérité).
     if "input_shape" in config:
         shape = config["input_shape"]
-        if not isinstance(shape, tuple) or len(shape) < 2 or not all(isinstance(d, int) and d > 0 for d in shape):
-            errors.append("input_shape doit être un tuple d'au moins 2 entiers positifs, ex. (H, W, C)")
+        if not isinstance(shape, tuple) or len(shape) < 1 or not all(isinstance(d, int) and d > 0 for d in shape):
+            errors.append("input_shape doit être un tuple d'au moins 1 entier positif, ex. (H, W, C) ou (longueur,)")
 
     # Vérifier que les paramètres requis sont présents. "image_size" retiré de cette
     # liste (2026-07-27, décision Aymeric, Story 9.3) puis remplacé par "input_shape"
@@ -879,6 +885,142 @@ DATASET_CONFIGS = {
         "patience": 8,
         "eval_batch_size": 64,
         "save_dir": "./checkpoints_chess_search_teacher",
+    },
+
+    "CHESS_MOVE_TOKEN": {
+        # === SPIKE / PROVISOIRE (Epic 11, 2026-08-10) — statut expérimental ===
+        # NE PAS traiter comme une config stable au même titre que CHESS_SEARCH_TEACHER/
+        # CHESS_LEGAL_MOVES/CHESS_NO_HISTORY tant que le spike côté chess_ai n'est pas
+        # jugé concluant (CAP-4 ET CAP-5, chess_ai/_bmad-output/specs/
+        # spec-chess-move-token-poc/SPEC.md - Success signal). Voir le spine dédié
+        # (_bmad-output/planning-artifacts/architecture/architecture-chess-move-token-2026-08-10/
+        # ARCHITECTURE-SPINE.md, AD-26 à AD-33) et docs/spike-chess-move-token-dataset-schema.md
+        # pour le contrat de données. Décision Aymeric/Winston 2026-08-10 : priorité
+        # vitesse d'expérimentation, décisions ci-dessous réversibles selon résultats.
+        #
+        # Transformer causal (décodeur) sur l'historique de coups (move_tokens) d'une
+        # partie - prédit le coup suivant (même espace policy 4672 que le reste du
+        # domaine échecs, AD-22 hérité). PAS le modèle chess_cnn_attention_* existant :
+        # entrée séquentielle (pas un plan 8x8), aucune tête value (AD-26).
+        "task_type": "chess_move_token",
+        "num_classes": 4672,
+        # input_shape=(1,) : forme du dummy d'INIT uniquement (Trainer.create_train_state,
+        # trainer.py:145 - jnp.ones((1,)+input_shape)) - PAS la longueur réelle des
+        # séquences (longueur FIXE calculée depuis les vraies données par le chargeur,
+        # AD-28 - une seule forme de batch pour tout le run, une seule compilation
+        # JIT). Un décodeur transformer n'a aucun paramètre dont la forme dépend de la
+        # longueur de séquence (Embed/Dense/Attention sont tous par-token) - une longueur
+        # factice de 1 suffit à initialiser correctement tous les params.
+        "input_shape": (1,),
+        "model_name": "chess_move_token_transformer",
+        # num_layers/d_model/num_heads : hyperparamètres du transformer - forwardés
+        # conditionnellement par main.py comme token_dim/num_bottleneck_tokens pour les
+        # modèles chess_cnn_attention_*. d_model % num_heads == 0, validé par le modèle
+        # à l'appel.
+        #
+        # num_layers 4->6 / d_model 128->192 (Aymeric/Winston, 2026-08-10, après le Run
+        # 2 - 416 306 positions, 15 epochs, Val PolicyAccuracy plafonne à 5.54%, gap
+        # train/val sain 1.76pt) : 1 994 304 -> 4 468 672 params (2.24x, mesuré via
+        # model.init(), voir chess-move-token.mmd). d_model=192 reprend le token_dim
+        # convergent de CHESS_SEARCH_TEACHER (pas un nouveau chiffre inventé).
+        # num_layers privilégié sur d_model comme premier levier : contrairement à
+        # chess_cnn_attention_policy_value (position déjà encodée en plans), ce modèle
+        # doit reconstruire l'état du jeu depuis la séquence brute avant de pouvoir
+        # l'exploiter - une tâche compositionnelle que la profondeur sert mieux que la
+        # largeur seule. Bonus mesuré : à ce ratio, embedding+tête policy tombent à
+        # 40.3% du total (contre 60.2% à 4/128) - la capacité ajoutée va au corps du
+        # réseau, pas à l'overhead fixe du vocabulaire (4674 tokens).
+        "num_layers": 6,
+        "d_model": 192,
+        "num_heads": 4,
+        # output_prefix porte ici le chemin LITTÉRAL du fichier spike unique (pas un
+        # préfixe de glob `_chunk*.npz` comme les autres domaines échecs, AD-27) -
+        # ChessMoveTokenDataset (data_management.py) le consomme comme tel.
+        "output_prefix": f"{DATA_ROOT}/chunks/chess_move_token_spike/chess_move_token_spike.npz",
+        "val_split": 0.1,
+        # loss_params.label_smoothing 0.0 -> 0.2 (Aymeric, 2026-08-10, apres le 1er run
+        # 10 epochs) : reponse au surapprentissage observe (Train PolicyAccuracy=33.5%
+        # vs Val=0.35% a l'epoch 6, Val Loss qui augmente des l'epoch 1 - signature
+        # classique, 2871 exemples pour ~2M parametres). Meme valeur que
+        # CHESS_SEARCH_TEACHER (coincidence de convergence, pas copie). Cause racine
+        # = volume de donnees (dataset spike, 20 parties) - une regeneration a plus
+        # grande echelle est en cours cote chess_ai ; ce reglage attenue le symptome
+        # en attendant, ne le resout pas.
+        "loss_params": {
+            "label_smoothing": 0.2,
+        },
+
+        # === Hyperparamètres GPU/TPU ===
+        # HISTORIQUE (pour comprendre les valeurs ci-dessous, pas à ré-appliquer) :
+        # Run 1 (20 parties/3190 positions) -> surapprentissage sévère (Train 33.5%/Val
+        # 0.35%). Run 2 (régénération 137x, 416 306 positions, batch=128 après un OOM
+        # réel à 256 - self-attention O(B×H×L²), L=404 - decay_steps=43905/15 epochs) ->
+        # plateau propre, Val PolicyAccuracy 5.54%, gap sain 1.76pt (voir
+        # chess-move-token.mmd, E1-E3). Conclusion Aymeric/Winston 2026-08-10 :
+        # volume de données = facteur limitant principal, PAS un problème d'architecture.
+        #
+        # ⚠️ RUN 3 EN PRÉPARATION (Aymeric va relancer la génération côté chess_ai, cible
+        # ~10 000 parties - échelle CHESS_SEARCH_TEACHER - taille réelle pas encore
+        # connue) : `decay_steps` ci-dessous (43905, calculé pour 374 676 positions train
+        # @ batch=128/256) est DONC PROVISOIRE - à recalculer dès que le volume réel du
+        # nouveau dataset est connu (steps/epoch = train_positions // micro_batch_size,
+        # x epochs). Ne pas lancer tel quel sur le nouveau dataset sans ce recalcul -
+        # même piège que le passage Run 1 -> Run 2 (schedule LR qui decay au minimum
+        # bien avant la fin du run si le volume change sans recalcul).
+        #
+        # micro_batch_size : gpu reste à 128 (seule valeur validée sans OOM localement,
+        # à ce jour avec l'ancien modèle 4/128 - PAS encore re-testée avec le nouveau
+        # modèle 6/192, plus gros). tpu -> 256 (Aymeric, à tester sur Colab - mémoire par
+        # cœur TPU différente d'une carte locale, aucun historique d'OOM à cette échelle
+        # pour ce modèle).
+        #
+        # max_seq_len recalculé automatiquement par ChessMoveTokenDataset depuis les
+        # vraies données à chaque chargement (AD-28) - rien à changer ici, une seule
+        # compilation JIT quel que soit le dataset.
+        #
+        # dropout_rate=0.3 / label_smoothing=0.2 (voir loss_params ci-dessus) : hérités
+        # du Run 1 (réponse au surapprentissage sur 2871 exemples), CONSERVÉS tels
+        # quels pour le Run 3 malgré le changement simultané de volume ET de capacité -
+        # décision assumée de ne pas isoler un seul facteur cette fois (contrainte
+        # pratique Colab/temps de session, pas une négligence) ; à réévaluer si le Run 3
+        # montre un gap qui se creuse anormalement.
+        "tpu": {
+            "micro_batch_size": 256,
+            "accum_steps": 1,
+            "learning_rate": 3e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.3,
+            "warmup_steps": 200,
+            "decay_steps": 43905,  # PROVISOIRE - à recalculer avec le volume réel du Run 3 (voir note ci-dessus)
+        },
+        "gpu": {
+            "micro_batch_size": 128,
+            "accum_steps": 1,
+            "learning_rate": 3e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.3,
+            "warmup_steps": 200,
+            "decay_steps": 43905,  # PROVISOIRE - à recalculer avec le volume réel du Run 3 (voir note ci-dessus)
+        },
+
+        # === Entraînement ===
+        # epochs=10 -> 15 / patience=5 -> 8 (Aymeric, 2026-08-10, régénération à plus
+        # grande échelle) : alignés sur la convention des autres domaines échecs
+        # (CHESS_NO_HISTORY/CHESS_LEGAL_MOVES/CHESS_SEARCH_TEACHER) - le dataset n'est
+        # plus un smoke-test de plomberie (Story 11.4) mais un volume comparable en
+        # esprit à une vraie tentative de convergence (416K positions). Reste
+        # réversible/ajustable (priorité vitesse d'expérimentation, spine
+        # architecture-chess-move-token-2026-08-10) - pas un verdict figé.
+        "optimizer": "adamw",
+        "lr_schedule": "cosine",
+        "epochs": 15,
+        "patience": 8,
+
+        # === Évaluation ===
+        "eval_batch_size": 64,
+
+        # === Sauvegarde ===
+        "save_dir": "./checkpoints_chess_move_token",
     },
 }
 

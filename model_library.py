@@ -1072,6 +1072,117 @@ def create_chess_cnn_attention_legal_moves(num_classes, dropout_rate=0.1, **kwar
     return ChessCnnAttentionLegalMoves(num_moves=num_classes, dropout_rate=dropout_rate, **kwargs)
 
 
+class ChessMoveTokenTransformer(nn.Module):
+    """
+    Modèle chess_move_token (Epic 11, spike — AD-26/AD-28/AD-29/AD-30/AD-31/AD-33,
+    spine architecture-chess-move-token-2026-08-10) : décodeur transformer CAUSAL sur
+    une séquence de coup-tokens (historique de la partie), qui prédit le coup suivant
+    (tête policy, 4672 classes). Première utilisation d'un masque causal dans ce
+    fichier — toute l'attention existante ci-dessus (ChessCnnAttentionPolicyValue/
+    ChessCnnAttentionLegalMoves) est un encodeur bidirectionnel Perceiver-style, pas
+    causal.
+
+    Input : (B, L) — séquence de tokens PADDÉE À GAUCHE (AD-28, construite par
+    ChessMoveTokenDataset/data_management.py) : BOS_TOKEN_ID=4672 en tête d'historique
+    réel, PAD_TOKEN_ID=4673 à gauche. Espace d'entrée (embedding) = 4674
+    (num_moves + BOS + PAD, AD-30).
+
+    x peut arriver en float32 (dummy d'initialisation de Trainer.create_train_state,
+    trainer.py:145 — hors du chemin couvert par le fix dtype=jnp.int32 d'AD-29, qui ne
+    couvre que la boucle d'entraînement réelle) : caste explicitement en int32 dès la
+    première ligne, indépendamment du dtype fourni par l'appelant (AD-33, trouvé par
+    exécution réelle — nn.Embed.init() lève sinon ValueError sur une entrée flottante).
+
+    Output : tenseur unique (B, num_moves) — PAS un dict {"policy", "value"} (AD-26,
+    ce domaine n'a aucune tête value, contrairement à ChessCnnAttentionPolicyValue).
+
+    Lecture : état caché du DERNIER token de la séquence (indice -1) — grâce au
+    padding à gauche (AD-28), c'est toujours le dernier token RÉEL, quelle que soit la
+    longueur réelle de la séquence. Jamais un pooling moyen.
+
+    num_layers/d_model/num_heads/dropout_rate : hyperparamètres, valeurs de départ
+    (Story 11.2, non tunées empiriquement) — ajustables via dataset_configs.py, pas
+    des contraintes fixées par le spine (Deferred, spine).
+    """
+    num_moves: int  # taille de la tête policy (4672) — passe par num_classes générique (main.py), jamais un littéral dupliqué (AD-22 hérité)
+    dropout_rate: float = 0.1
+    num_layers: int = 4
+    d_model: int = 128
+    num_heads: int = 4
+
+    @nn.compact
+    def __call__(self, x, training: bool = True):
+        assert self.d_model % self.num_heads == 0, (
+            f"d_model ({self.d_model}) doit etre divisible par num_heads ({self.num_heads})"
+        )
+        assert self.num_moves > 0, (
+            f"num_moves doit etre > 0 (recu {self.num_moves}) - as-tu bien passe num_classes=4672 "
+            f"(meme convention que ChessCnnAttentionPolicyValue) ?"
+        )
+
+        # AD-33 : caste explicitement en int32, independamment du dtype fourni par
+        # l'appelant (dummy d'init float32 de Trainer OU vraies donnees deja int32
+        # apres le fix AD-29) - idempotent, sans cout, testee par execution reelle.
+        tokens = jnp.asarray(x, dtype=jnp.int32)
+
+        # Import paresseux (pas en tete de fichier) : model_library.py est importe des
+        # le tout debut de main.py (avant jax/tensorflow proprement inities), alors que
+        # data_management.py ne l'est que paresseusement DANS main() pour positionner
+        # CUDA_VISIBLE_DEVICES avant le premier "import tensorflow" (data_management.py,
+        # commentaire d'en-tete) - un import top-level ici casserait cet ordre. Sans
+        # risque au call-site reel : data_management est deja charge par main.py avant
+        # la creation du modele. Source unique des constantes (AD-30) - jamais un
+        # litteral 4673 duplique ici.
+        from data_management import CHESS_MOVE_TOKEN_PAD
+
+        vocab_size = self.num_moves + 2  # + BOS + PAD (AD-30)
+        embed = nn.Embed(num_embeddings=vocab_size, features=self.d_model)
+        h = embed(tokens)  # (B, L, D)
+
+        # Masque : causal (nn.make_causal_mask) combine au masque de padding, derive
+        # directement du tenseur d'entree (tokens != PAD_TOKEN_ID) - jamais un second
+        # tenseur de masque achemine via Strategy/Trainer (AD-28, apply_fn a une
+        # signature fixe a un seul tenseur d'entree).
+        causal_mask = nn.make_causal_mask(tokens)
+        padding_mask = nn.make_attention_mask(tokens != CHESS_MOVE_TOKEN_PAD, tokens != CHESS_MOVE_TOKEN_PAD)
+        mask = nn.combine_masks(causal_mask, padding_mask)
+
+        for _ in range(self.num_layers):
+            residual = h
+            h = nn.LayerNorm()(h)
+            h = nn.MultiHeadDotProductAttention(num_heads=self.num_heads)(inputs_q=h, mask=mask)
+            h = nn.Dropout(self.dropout_rate, deterministic=not training)(h)
+            h = residual + h
+
+            residual = h
+            h = nn.LayerNorm()(h)
+            h = nn.Dense(4 * self.d_model)(h)
+            h = nn.gelu(h)
+            h = nn.Dense(self.d_model)(h)
+            h = nn.Dropout(self.dropout_rate, deterministic=not training)(h)
+            h = residual + h
+
+        h = nn.LayerNorm()(h)
+
+        # Lecture du DERNIER token (toujours reel grace au padding a gauche, AD-28) -
+        # jamais un pooling moyen sur la sequence (AD-28).
+        last_hidden = h[:, -1, :]  # (B, D)
+
+        # (B, num_moves) - jamais BOS/PAD en sortie (AD-30), aucun masquage des coups
+        # illegaux (AD-22 herite).
+        policy_logits = nn.Dense(self.num_moves)(last_hidden)
+        return policy_logits
+
+
+def create_chess_move_token_transformer(num_classes, dropout_rate=0.1, **kwargs):
+    """
+    Factory pour chess_move_token_transformer. `num_classes` (nom imposé par la
+    plomberie model_kwargs générique de main.py) porte la taille de l'espace de coups
+    (4672) — même convention que create_chess_cnn_attention_policy_value ci-dessus.
+    """
+    return ChessMoveTokenTransformer(num_moves=num_classes, dropout_rate=dropout_rate, **kwargs)
+
+
 class Kepler1DConvNet(nn.Module):
     """
     Réseau de Neurones Convolutif 1D pour l'analyse de Séries Temporelles.
@@ -1125,6 +1236,7 @@ MODELS = {
     'aircraft_detector_centernet_lite': create_aircraft_detector_centernet_lite, # CenterNet, encoder/decoder en SeparableConv
     'chess_cnn_attention_policy_value': create_chess_cnn_attention_policy_value, # CNN 8x8 + bottleneck attention, policy+value (Epic 9)
     'chess_cnn_attention_legal_moves': create_chess_cnn_attention_legal_moves, # meme backbone, sans tete value, multi-label coups legaux
+    'chess_move_token_transformer': create_chess_move_token_transformer, # decodeur causal sur move_tokens, policy-only (Epic 11, spike)
     'sophisticated_cnn_128_plus': create_sophisticated_cnn_128_plus,
     'sophisticated_cnn_128_lite': create_sophisticated_cnn_128_lite,
     'sophisticated_cnn_32_plus': create_sophisticated_cnn_32_plus,

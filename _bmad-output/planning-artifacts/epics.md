@@ -12,6 +12,8 @@ inputDocuments:
   - _bmad-output/planning-artifacts/prds/prd-jax_supervised_training-2026-07-27/prd.md
   - _bmad-output/planning-artifacts/architecture/architecture-chess-2026-07-27/ARCHITECTURE-SPINE.md
   - _bmad-output/planning-artifacts/prds/prd-jax_supervised_training-2026-08-04/prd.md
+  - _bmad-output/planning-artifacts/architecture/architecture-chess-move-token-2026-08-10/ARCHITECTURE-SPINE.md
+  - /home/aobled/Desktop/Development/chess_ai/_bmad-output/specs/spec-chess-move-token-poc/SPEC.md
 ---
 
 # Refactor jax_supervised_training — Epic Breakdown
@@ -1427,3 +1429,160 @@ So that l'epic se clôture sur preuve, pas sur lecture de code.
 **Given** les Stories 10.1 et 10.2 complétées
 **When** cette story conclut l'Epic 10
 **Then** FR1 à FR7 sont confirmés couverts et `CHESS_SEARCH_TEACHER` est entraînable de bout en bout via `Trainer`
+
+## Requirements Inventory — Epic 11 (CHESS_MOVE_TOKEN — spike transformer causal sur historique de coups)
+
+Source : pas de PRD dédié cette fois (décision Aymeric/Winston, 2026-08-10 — priorité vitesse d'expérimentation) — exigences extraites directement de `_bmad-output/planning-artifacts/architecture/architecture-chess-move-token-2026-08-10/ARCHITECTURE-SPINE.md` (AD-26 à AD-32, invariants hérités AD-3/AD-14/AD-17/AD-18/AD-21/AD-22) et de `chess_ai/_bmad-output/specs/spec-chess-move-token-poc/SPEC.md` (CAP-3, Constraints, Non-goals). Spike : un dataset `chess_ai` (`chess_move_token_spike.npz`, 3190 positions, format CSR) fournit l'historique de coups (`move_tokens`) de chaque position — un nouveau modèle transformer causal, policy-only, prédit le coup suivant depuis cet historique, branché sur `Trainer`/`TaskStrategy` sans toucher aux domaines échecs existants.
+
+### Functional Requirements
+
+FR1 : Nouvelle entrée `CHESS_MOVE_TOKEN` dans `DATASET_CONFIGS` (`dataset_configs.py`), `task_type="chess_move_token"`, `num_classes=4672`, en-tête de commentaire déclarant explicitement le statut SPIKE/PROVISOIRE et référençant le spine (AD-32).
+FR2 : Nouvelle classe `ChessMoveTokenDataset` (`data_management.py`) qui charge le fichier `.npz` unique du spike (pas de convention `_chunk*.npz`), reconstruit chaque séquence via `move_token_offsets` (CSR) à la volée, mélange les exemples avec une graine fixe reproductible avant un split train/val par fraction (AD-27). `BOS_TOKEN_ID=4672`/`PAD_TOKEN_ID=4673` y sont définis comme source unique (AD-30).
+FR3 : Le batching padde dynamiquement chaque batch à GAUCHE via la recette `reverse → padded_batch → reverse` (`tf.data.Dataset.padded_batch` ne padde nativement qu'à droite) — le dernier token réel d'une séquence est toujours à l'indice `-1` (AD-28).
+FR4 : Nouvelle classe modèle `chess_move_token_transformer` (`model_library.py`, ajoutée au dict `MODELS`) : `nn.Embed` (vocab 4674) → N blocs décodeur causal (`nn.MultiHeadDotProductAttention` masqué via `nn.make_causal_mask`/`nn.combine_masks`, combiné à un masque de padding dérivé de `PAD_TOKEN_ID` directement dans le tenseur d'entrée) → lecture du dernier token réel → `Dense(4672)` (AD-31).
+FR5 : Nouvelle `TaskStrategy` dédiée `ChessMoveTokenStrategy` (`task_strategies.py`) : `outputs` est un tenseur unique `(B, 4672)` (pas de tête value), `compute_loss` délègue à `compute_chess_policy_loss` déjà existante (`loss_functions.py:561`), `primary_metric_name="PolicyAccuracy"` (AD-26).
+FR6 : `main.py` route `task_type == "chess_move_token"` vers `ChessMoveTokenStrategy` **et** passe `dtype=jnp.int32` à `Trainer` pour ce `task_type` spécifiquement (au lieu du `float16` en dur pour TPU/GPU, `main.py:35-41`) — `trainer.py` n'est pas modifié (AD-29).
+FR7 : Aucune régression sur `CHESS_SEARCH_TEACHER`/`CHESS_LEGAL_MOVES`/`CHESS_NO_HISTORY`/`JAX_DETECTOR` et leurs `TaskStrategy`/loaders/modèles associés, vérifiée par exécution réelle (AD-21 hérité).
+FR8 : `CHESS_MOVE_TOKEN` s'entraîne de bout en bout via `Trainer` sans erreur sur le dataset spike réel, validé par exécution réelle.
+
+### NonFunctional Requirements
+
+NFR1 : Aucune nouvelle dépendance externe — le masquage causal repose exclusivement sur les primitives déjà présentes de `flax.linen` (vérifié : `nn.make_causal_mask`/`nn.combine_masks` disponibles, flax 0.10.7 installé).
+NFR2 : Zero-touch `Trainer` — aucune modification de `trainer.py` ; toute adaptation (dtype, masque, lecture du dernier token) passe par `main.py`, `task_strategies.py`, ou le modèle lui-même.
+NFR3 : `CHESS_MOVE_TOKEN` reste marquée expérimentale/spike dans son commentaire d'en-tête tant que le spike côté `chess_ai` n'est pas jugé concluant (CAP-4 et CAP-5 réunis) — aucun contrat d'interface stable synchronisé cette epic (hors scope, non-goal côté `chess_ai`).
+NFR4 : Le succès se mesure par exécution réelle (entraînement qui converge sans erreur, tokens jamais corrompus par un cast de précision) — pas seulement par une revue de code statique.
+
+### Additional Requirements (Architecture)
+
+- **Héritage (read-only)** : AD-3 (fallback checkpoint 3 niveaux), AD-14 (domaine séparé/modulaire), AD-17 (`TaskStrategy`/chargeur dédiés, 3 points de dispatch réels : `main.py`, `data_management.py`, `model_library.py` `MODELS`), AD-18 (module d'échange — relocalisé côté `chess_ai` depuis le split, consommé en aveugle ici), AD-21 (non-régression étendue à tous les domaines échecs existants), AD-22 (espace policy fixe 4672, cross-entropy simple sans masquage des coups illégaux).
+- **Naming** : `task_type="chess_move_token"`, `ChessMoveTokenStrategy`, `ChessMoveTokenDataset`, `chess_move_token_transformer` — convention `Chess<Rôle>` déjà en place.
+- **Stack** : `flax.linen` 0.10.7, `jax` 0.6.2, `tensorflow` 2.20.0 — toutes déjà installées (`jax_env`), aucun ajout à `requirements.txt`.
+- **Hyperparamètres du transformer** (nombre de blocs, `d_model`, têtes, dropout) : seed, non figés par le spine — valeurs de départ raisonnables choisies en Story 11.2, ajustées empiriquement comme le reste du domaine échecs.
+
+### UX Design Requirements
+
+N/A — aucun contrat UX applicable (entraînement pur, aucune interface).
+
+### Guardrails identifiés (revue adversariale du spine, 2026-08-10)
+
+Issus de la Reviewer Gate exécutée sur le spine (2 subagents indépendants : vérification technique, chasse-aux-incompatibilités) — pas une passe de pré-mortem séparée cette fois, mais le même rôle :
+
+- **Bug critique trouvé, pas anticipé au premier jet** : `trainer.py` caste **inconditionnellement** toute entrée en `float16` avant tout hook `Strategy` (`trainer.py:313`/`430`) — sans FR6 (dtype `int32` explicite pour ce `task_type`), les identifiants de token (espace 0-4673) seraient silencieusement corrompus (`float16` ne représente exactement les entiers que jusqu'à ~2048). AC dédiée requise en Story 11.3, vérifiée par un test qui inspecte réellement le dtype/les valeurs après passage dans le pipeline `Trainer`, pas seulement par lecture de code.
+- **`padded_batch` ne padde jamais à gauche nativement** (vérifié) : la recette `reverse → padded_batch → reverse` (FR3) est la seule implémentation correcte — un test doit vérifier explicitement que le dernier token réel d'une séquence de longueur connue se retrouve bien à l'indice `-1` après batching, pas supposé.
+- **BOS/PAD à source unique** (FR2) : un test doit vérifier que le modèle importe ces constantes depuis `data_management.py` plutôt que de les redéfinir comme littéraux indépendants — la dérive silencieuse est le risque documenté par la revue.
+- **Séquencement en au moins 3 stories**, pas une story monolithique (même discipline qu'Epic 9/10) : (1) config + chargeur, testable directement contre le vrai fichier spike (déjà disponible localement, pas besoin de factice) ; (2) modèle, testable en isolation (forme/dtype de sortie) ; (3) stratégie + intégration pipeline + fix dtype critique, puis (4) validation par exécution réelle + non-régression, qui dépend explicitement de (1), (2) et (3).
+
+### FR Coverage Map
+
+FR1: Epic 11 — Entrée `dataset_configs.py` marquée spike
+FR2: Epic 11 — Chargeur CSR fichier unique, constantes BOS/PAD à source unique
+FR3: Epic 11 — Recette de padding à gauche
+FR4: Epic 11 — Modèle transformer causal
+FR5: Epic 11 — `TaskStrategy` policy-only dédiée
+FR6: Epic 11 — Dispatch + fix dtype critique
+FR7: Epic 11 — Non-régression des domaines existants
+FR8: Epic 11 — Validation par exécution réelle
+
+## Epic List
+
+### Epic 11: CHESS_MOVE_TOKEN — spike transformer causal sur historique de coups
+
+Un nouveau modèle transformer causal, policy-only, entraîné sur l'historique de coups (`move_tokens`, longueur variable) du dataset spike `chess_ai`, est branché sur le pipeline `Trainer`/`TaskStrategy` existant via un nouveau `task_type` dédié — sans modifier `trainer.py` ni aucun domaine échecs/détection existant. Standalone : ne dépend d'aucun epic futur.
+**FRs covered:** FR1, FR2, FR3, FR4, FR5, FR6, FR7, FR8
+**Note d'implémentation (revue du spine, 2026-08-10) :** 4 stories, pas une story monolithique — (1) config + chargeur CSR (FR1, FR2, FR3) ; (2) modèle transformer causal (FR4) ; (3) `TaskStrategy` + dispatch + fix dtype critique (FR5, FR6) ; (4) validation par exécution réelle + non-régression (FR7, FR8), dépend explicitement de (1)-(3). Voir "Guardrails identifiés" ci-dessus pour les AC anti-corruption-dtype et anti-dérive BOS/PAD.
+
+### Story 11.1: Configuration et chargeur CSR pour le dataset spike
+
+As a mainteneur du pipeline d'entraînement,
+I want une entrée `CHESS_MOVE_TOKEN` dans `dataset_configs.py` et une classe `ChessMoveTokenDataset` qui charge le fichier spike unique et produit des séquences paddées à gauche,
+So that le dataset coup-token (`chess_ai`) est consommable par le pipeline existant, avec des constantes de tokens spéciaux à source unique.
+
+**Acceptance Criteria:**
+
+**Given** `DATASET_CONFIGS` existant
+**When** l'entrée `CHESS_MOVE_TOKEN` est ajoutée
+**Then** elle porte `task_type="chess_move_token"`, `num_classes=4672`, et un commentaire d'en-tête déclarant explicitement son statut SPIKE/PROVISOIRE référençant le spine — FR1
+
+**Given** le fichier réel `/home/aobled/Documents/data/chunks/chess_move_token_spike/chess_move_token_spike.npz`
+**When** `ChessMoveTokenDataset` le charge
+**Then** il découpe correctement chaque séquence via `move_token_offsets` (CSR), sans supposer de convention `_chunk*.npz` — FR2
+
+**Given** les exemples du dataset spike
+**When** le split train/val est effectué
+**Then** les exemples sont mélangés (graine fixe reproductible) avant le split par fraction — deux runs successifs produisent le même split — FR2
+
+**Given** `BOS_TOKEN_ID`/`PAD_TOKEN_ID`
+**When** ils sont référencés ailleurs dans le code (modèle, Story 11.2)
+**Then** ils sont importés depuis `data_management.py`, jamais redéfinis comme littéraux indépendants — FR2, garde-fou anti-dérive
+
+**Given** une séquence connue de longueur N (ex. 4, la longueur minimale mesurée sur le spike) dans un batch dont la séquence la plus longue fait M > N
+**When** le batch est produit par `create_tf_dataset`
+**Then** le token à l'indice `-1` de cette séquence est bien son dernier token réel (pas un `PAD`), et les `PAD` occupent les indices `0` à `M-N-1` — FR3, garde-fou anti-`padded_batch`-à-droite
+
+### Story 11.2: Modèle transformer causal `chess_move_token_transformer`
+
+As a mainteneur du pipeline d'entraînement,
+I want un modèle décodeur causal qui consomme les séquences paddées à gauche et prédit une policy sur 4672 classes,
+So that le domaine `chess_move_token` dispose d'un modèle testable en isolation avant intégration au pipeline complet.
+
+**Acceptance Criteria:**
+
+**Given** un batch de séquences de tokens `(B, L)` (déjà paddées à gauche, dtype entier)
+**When** `chess_move_token_transformer` est appelé
+**Then** il retourne un tenseur unique `(B, 4672)` — jamais un dict `{"policy", "value"}` — FR4
+
+**Given** ce même batch
+**When** le masque interne est construit
+**Then** il combine un masque causal (`nn.make_causal_mask`) et un masque de padding dérivé de `tokens != PAD_TOKEN_ID` — vérifié en inspectant qu'un token `PAD` en position `j` ne peut influencer la sortie lue en position `-1` (test d'invariance : changer la valeur d'un `PAD` ne change pas la sortie) — FR4
+
+**Given** deux séquences de même contenu réel mais de longueurs de padding différentes (donc de `L` différent une fois batchées séparément)
+**When** chacune passe dans le modèle
+**Then** la prédiction lue à l'indice `-1` est identique aux erreurs numériques près — confirme que la lecture du dernier token réel est correcte indépendamment de la quantité de padding — FR4
+
+### Story 11.3: `TaskStrategy` `chess_move_token`, dispatch et fix dtype critique
+
+As a mainteneur du pipeline d'entraînement,
+I want une `ChessMoveTokenStrategy` dédiée, branchée via `main.py`, avec `Trainer` recevant `dtype=jnp.int32` pour ce `task_type`,
+So that le pipeline complet s'exécute sans corrompre silencieusement les identifiants de token.
+
+**Acceptance Criteria:**
+
+**Given** `ChessMoveTokenStrategy.compute_loss`
+**When** appelée sur les `outputs`/`targets` du modèle
+**Then** elle délègue intégralement à `compute_chess_policy_loss` (`loss_functions.py:561`) — aucune nouvelle fonction de loss créée — FR5
+
+**Given** `main.py`
+**When** `task_type == "chess_move_token"`
+**Then** `Trainer` est construit avec `dtype=jnp.int32` (pas la valeur `float16` en dur des autres `task_type`) — FR6
+
+**Given** un batch de tokens connus (ex. contenant `BOS_TOKEN_ID=4672` et des valeurs proches de 4672/4673)
+**When** ce batch traverse `Trainer._train_step`/`trainer.py:313` (le cast `jnp.array(images_np, dtype=self.dtype)`)
+**Then** les valeurs de tokens en sortie de ce cast sont **bit-à-bit identiques** aux valeurs d'entrée — test qui aurait échoué avant FR6 (corruption `float16` silencieuse) — FR6, garde-fou critique trouvé en revue
+
+**Given** `ChessPolicyValueStrategy`/`ChessLegalMovesStrategy`/`CenterNetDetectionStrategy`/`ClassificationStrategy`/`DetectionStrategy`/`KeplerStrategy`
+**When** cette story est complétée
+**Then** aucune n'est modifiée, et `trainer.py` n'est pas modifié — FR7, NFR2
+
+### Story 11.4: Validation par exécution réelle et non-régression
+
+As a mainteneur du pipeline,
+I want valider par exécution réelle que `CHESS_MOVE_TOKEN` s'entraîne de bout en bout sur le dataset spike réel et que les domaines échecs/détection existants ne régressent pas,
+So that l'epic se clôture sur preuve, pas sur lecture de code.
+
+**Acceptance Criteria:**
+
+**Given** le dataset spike réel (3190 positions, déjà disponible localement)
+**When** un run réel (smoke-test, peu de steps/1 epoch courte — le dataset est volontairement petit) est lancé sur `CHESS_MOVE_TOKEN` via `Trainer`
+**Then** il complète sans exception — FR8
+
+**Given** ce run
+**When** `PolicyAccuracy` est loguée
+**Then** elle n'est pas constante au hasard (~1/4672) sur les quelques steps observés — signal de convergence, pas une preuve de qualité finale (spike, pas un run complet) — FR8
+
+**Given** la suite de tests existante (`tests/test_chess_model.py`, `tests/test_chess_legal_moves_model.py`, `tests/test_no_chess_dependency.py`, `tests/test_jax_detector_config.py`)
+**When** elle est exécutée après cette epic
+**Then** elle passe intégralement, sans modification — FR7, AD-21 hérité
+
+**Given** les Stories 11.1 à 11.4 complétées
+**When** cette story conclut l'Epic 11
+**Then** FR1 à FR8 sont confirmés couverts et `CHESS_MOVE_TOKEN` est entraînable de bout en bout via `Trainer`, sans régression mesurée sur les domaines existants

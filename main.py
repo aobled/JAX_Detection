@@ -129,6 +129,16 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
         # technique 2026-08-06) - meme discipline de forwarding conditionnel que
         # num_bottleneck_tokens ci-dessus
         model_kwargs["token_dim"] = config["token_dim"]
+    if "num_layers" in config:
+        # chess_move_token_transformer uniquement (Epic 11, spike) - meme discipline
+        # de forwarding conditionnel que token_dim/num_bottleneck_tokens ci-dessus
+        model_kwargs["num_layers"] = config["num_layers"]
+    if "d_model" in config:
+        # chess_move_token_transformer uniquement (Epic 11, spike)
+        model_kwargs["d_model"] = config["d_model"]
+    if "num_heads" in config:
+        # chess_move_token_transformer uniquement (Epic 11, spike)
+        model_kwargs["num_heads"] = config["num_heads"]
     model = get_model(model_name, **model_kwargs)
     
     # 4. INSTANCIATION DE LA STRATEGIE (Injection de dépendance)
@@ -196,18 +206,32 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
             metric_threshold=config.get("metric_threshold", 0.5),
             loss_params=loss_params,
         )
+    elif task_type == "chess_move_token":
+        print("🎯 Application de la logique d'entraînement : CHESS MOVE-TOKEN (policy-only, spike)")
+        from task_strategies import ChessMoveTokenStrategy
+        # Pas de loss_method/metric_method/report_method : meme discipline que
+        # ChessPolicyValueStrategy/ChessLegalMovesStrategy ci-dessus.
+        strategy = ChessMoveTokenStrategy(loss_params=loss_params)
     else:
         raise ValueError(f"task_type '{task_type}' non reconnu.")
 
     # 5. INITIALISATION DU TRAINER
     print("\n🎯 CRÉATION DU TRAINER")
     print("=" * 60)
+    # dtype=jnp.int32 pour chess_move_token (AD-29, spine
+    # architecture-chess-move-token-2026-08-10) - trainer.py caste INCONDITIONNELLEMENT
+    # toute entree en `dtype` avant tout hook Strategy (trainer.py:313/430). Le
+    # `float16` par defaut (ligne 35-41 ci-dessus) ne represente exactement les entiers
+    # que jusqu'a ~2048 - les tokens de ce domaine (espace 0-4673, y compris BOS/PAD)
+    # seraient silencieusement corrompus sinon. Branche locale a main.py uniquement -
+    # trainer.py n'est pas modifie (zero-touch preserve, meme discipline qu'ailleurs).
+    trainer_dtype = jnp.int32 if task_type == "chess_move_token" else dtype
     trainer = Trainer(
         model=model,
         config=config,
         backend=backend,
         strategy=strategy,
-        dtype=dtype
+        dtype=trainer_dtype
     )
     
     # === 4. ENTRAÎNEMENT ===

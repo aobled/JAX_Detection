@@ -58,7 +58,7 @@ BATCH_SIZE = 8                         # Batch single-pass (réduire si OOM GPU,
 # selon le nombre réel d'avions attendus (discussion perf 2026-07-19, voir deferred-work.md) :
 # plus petit = crop+classification plus rapide, mais toute frame avec plus de MAX_BOXES avions
 # réels en perdrait silencieusement l'excédent (uniquement les pics de heatmap les moins confiants).
-MAX_BOXES = 13
+MAX_BOXES = 1
 
 #VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
 #TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
@@ -70,8 +70,8 @@ MAX_BOXES = 13
 #TARGET_CLASS_LIST = ["f18", "f15", "f16", "f35", "a10", "c17", "f22","harrier"]
 #VIDEO_PATH = "/media/aobled/Elements/Python/videos/Awesome F-22 Raptor Tail slide in Full control.mp4"
 #TARGET_CLASS_LIST = ["f22"]
-VIDEO_PATH = "/media/aobled/Elements/Python/videos/flypast over Paris for Bastille Day.mp4"
-TARGET_CLASS_LIST = ["alphajet", "rafale", "mirage2000", "f35", "f16", "f18", "hawkeye", "a400m", "typhoon"]
+VIDEO_PATH = "/home/aobled/Downloads/Rafale Courchevel 2026.mp4"
+TARGET_CLASS_LIST = ["rafale"]
 #VIDEO_PATH = "/media/aobled/Elements/Python/videos/250th USA.mp4"
 #TARGET_CLASS_LIST = ["f22", "b2", "b1b", "f16", "c17"]
 

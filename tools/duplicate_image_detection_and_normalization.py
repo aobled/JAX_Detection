@@ -125,7 +125,7 @@ if __name__ == "__main__":
     # Exemple d'utilisation
     threshold = 1
 
-    directory = '/home/aobled/Downloads/tmp_multi'
+    directory = '/home/aobled/Downloads/tmp_multi/Sukhoi'
     duplicates = find_duplicates_optimized(directory, threshold)
     process_duplicates(directory, duplicates)
     process_all_files(directory)
