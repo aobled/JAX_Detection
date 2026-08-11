@@ -361,9 +361,9 @@ action_items:
     owner: "Claude"
     status: done
   - epic: "11"
-    action: "Recalculer decay_steps/warmup_steps (dataset_configs.py, CHESS_MOVE_TOKEN) une fois le nouveau dataset regenere cote chess_ai connu (taille reelle, tpu batch=256 vs gpu batch=128) - PROVISOIRE tant que ce n'est pas fait, ne pas lancer le Run 3 sans ce recalcul (meme piege que Run 1->Run 2)."
-    owner: "Aymeric/Claude"
-    status: open
+    action: "Run 3 pret : dataset regenere recupere (9980 parties, 1393040 positions, mesure reelle via motif de reset - quasi-parite CHESS_SEARCH_TEACHER). 2e crash GPU local (modele 6/192 plus gros) -> entrainement deplace sur TPU Colab. gpu.micro_batch_size 128->64, tpu conserve 256. epochs 15->25 (alignement complet CHESS_SEARCH_TEACHER, volume a parite) - decay_steps recalcules une 2e fois : gpu=489725, tpu=122425. Plus de PROVISOIRE dans le code. validate_config + 9 tests unitaires OK."
+    owner: "Claude"
+    status: done
   - epic: "11"
     action: "Idee Aymeric : architecture(s) specialisee(s) par phase de partie (ouverture/milieu/fin), chacune avec espace de sortie/objectif adapte (l'ouverture n'a pas besoin des 4672 coups, la fin de partie a besoin d'un objectif eviter-le-nul/conclure, pas juste imiter le professeur). Avis Winston : PAS un cul-de-sac, precedent reel dans les moteurs classiques (livres d'ouverture/tablebases), mais premature avant d'avoir pousse le modele unique plus loin. Prochaine etape peu couteuse recommandee avant d'investir : decouper PolicyAccuracy par numero de coup/phase sur le modele ACTUEL pour valider empiriquement l'hypothese de difficulte differentielle par phase."
     owner: "Aymeric/Winston"
@@ -372,3 +372,31 @@ action_items:
     action: "3e probleme reel trouve par Aymeric lui-meme (nvtop, run reel en cours) : GPU 60%->0% ~5s par step, debit tres faible. Diagnostic Winston : padding dynamique PAR BATCH (AD-28 1ere version) -> forme (B,L) variable a chaque step -> Trainer._train_step (@jax.jit) recompile a quasiment chaque step (cache par forme). Fix : longueur fixe globale calculee depuis les vraies donnees (302 = max historique + BOS), pas un litteral en dur. Confirme par re-execution reelle : 1 seule compilation (step 1 a 5.84s), puis stable ~1.1it/s, epoch 264s->86.7s (CPU, ~3x). A retenir pour la retro : un utilisateur qui observe l'outil systeme (nvtop) pendant un run a trouve un probleme que ni la revue de spine ni mes propres smoke-tests CPU n'avaient diagnostique correctement (le symptome etait deja visible dans mes logs, juste pas nomme)."
     owner: "Winston + Aymeric"
     status: done
+  - epic: "11"
+    action: "Precision mixte TPU implementee : ChessMoveTokenTransformer.compute_dtype (defaut float32, retrocompatible), applique aux couches Dense/Attention uniquement, poids stockes/checkpoint restent float32 (compat intacte), sortie recastee float32 avant la loss. CHESS_MOVE_TOKEN passe a compute_dtype='bfloat16'. 12 tests unitaires (3 nouveaux dedies) + 42 tests non-regression echecs/detection tous verts - scope contenu a une seule classe, aucun autre modele affecte. Gain reel non mesure (a evaluer au prochain run TPU)."
+    owner: "Claude"
+    status: done
+  - epic: "11"
+    action: "Transparent hugepages (warning TPU Colab, present depuis longtemps, ignore historiquement) : a re-tester specifiquement pour ce run - Aymeric doit executer la commande sudo dans une nouvelle cellule Colab AVANT de lancer l'entrainement. Correction importante : le warning parle de temps de DEMARRAGE/ARRET du runtime TPU, pas du debit par step en regime permanent - a ne pas attendre de gain sur le ~303ms/step observe sur la duree des epochs, seulement sur le temps d'initialisation en debut de script."
+    owner: "Aymeric"
+    status: open
+  - epic: "11"
+    action: "Overhead de dispatch par step (~303ms/step observe) : vrai levier connu (grouper plusieurs steps d'entrainement par boucle jax.jit/lax.scan pour amortir la latence hote<->device) mais touche trainer.py, code PARTAGE par tous les domaines - PAS implemente par prudence (Aymeric : ne pas degrader les autres modeles). Necessiterait sa propre conception (ex. flag opt-in par config) avant implementation, contrairement au compute_dtype (contenu a une seule classe, sans risque)."
+    owner: "Aymeric/Winston"
+    status: backlog
+  - epic: "11"
+    action: "VERDICT FINAL (2026-08-11) : le spike CHESS_MOVE_TOKEN echoue sur les 2 conditions du succes signal (chess_ai SPEC.md). CAP-4 (accuracy) : plafond ~14-15% (epoch 17/25) contre 28.00% teacher, a volume de donnees et capacite pourtant superieurs (1.39M positions a parite, 4.47M params 3.0x teacher). CAP-5 (repetition) : comparaison propre self-play-vs-self-play (100 parties chacun, meme protocole exact, meme session) - move_token 94.0% de toutes les parties/100% des nulles par repetition, contre teacher 78.0%/92.9% - DEGRADATION nette (+16pt), pas d'amelioration. 4 tournois complets analyses (teacher-vs-teacher, move_token-vs-move_token, teacher-vs-move_token, baseline POC genetique) - detail complet dans le memlog du spine (architecture-chess-move-token-2026-08-10/.memlog.md). Aymeric d'accord avec la lecture. Cloture documentee recommandee (meme sort que le POC genetique bottleneck, chess-bottleneck-genetic-poc - negatif mais documente, pas un echec de session)."
+    owner: "Claude"
+    status: done
+  - epic: "11"
+    action: "Decision actee (Aymeric, 2026-08-11) : document de cloture produit cote chess_ai (docs/chess_ai_global_conclusions.md - synthese hypothese/observation -> conclusion, croise HANDOFF.md/POC genetique/spike move-token, verdict CAP-4/CAP-5 negatif documente, 4 pistes futures). Epic 11 close."
+    owner: "Claude"
+    status: done
+  - epic: "11"
+    action: "Reporte explicitement a une FUTURE epic (Aymeric, 2026-08-11) : generaliser le mecanisme de precision mixte (compute_dtype, introduit cette epic sur ChessMoveTokenTransformer uniquement) aux autres modeles du domaine echecs/detection qui tournent sur TPU. Prochaine reprise jax_supervised_training annoncee sur des sujets d'architecture de code (pas ce domaine echecs specifiquement)."
+    owner: "Aymeric/Winston"
+    status: backlog
+  - epic: "11"
+    action: "marquer CHESS_MOVE_TOKEN comme clos formellement dans dataset_configs.py/epics.md (commentaire de statut, au-dela du marqueur SPIKE/PROVISOIRE deja present, AD-32) - pas fait cette session, a faire a la prochaine reprise du sujet echecs si souhaite."
+    owner: "Aymeric/Claude"
+    status: backlog

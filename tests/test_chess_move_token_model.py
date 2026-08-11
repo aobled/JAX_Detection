@@ -204,6 +204,67 @@ def test_strategy_loss_and_metrics():
           f"(loss={float(loss):.4f}), compute_metrics dans [0,1] ({float(metric):.4f})")
 
 
+def test_compute_dtype_bfloat16_params_and_output_stay_float32():
+    # Precision mixte TPU (2026-08-11) : compute_dtype ne doit JAMAIS changer le
+    # dtype de stockage des poids (param_dtype, toujours float32 - checkpoint-
+    # compatible avec un modele entraine avant ce changement) ni le dtype de sortie
+    # (policy_logits recaste explicitement en float32 avant compute_chess_policy_loss).
+    model = ChessMoveTokenTransformer(
+        num_moves=NUM_MOVES, dropout_rate=0.1, num_layers=2, d_model=32, num_heads=4,
+        compute_dtype=jnp.bfloat16,
+    )
+    x = jnp.zeros((_BATCH_SIZE, _SEQ_LEN), dtype=jnp.int32)
+    variables = model.init({"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True)
+
+    param_dtypes = set(str(l.dtype) for l in jax.tree_util.tree_leaves(variables["params"]))
+    assert param_dtypes == {"float32"}, f"les poids stockes doivent rester float32 (compat checkpoint) : {param_dtypes}"
+
+    out = model.apply(variables, x, training=False)
+    assert out.dtype == jnp.float32, f"la sortie doit toujours etre float32 (loss-safety), obtenu {out.dtype}"
+    assert bool(jnp.all(jnp.isfinite(out))), "sortie non finie (NaN/Inf) avec compute_dtype=bfloat16"
+    print("OK - compute_dtype=bfloat16 : poids stockes et sortie restent float32, sortie finie")
+
+
+def test_compute_dtype_bfloat16_gradients_finite():
+    # Le calcul en bfloat16 ne doit pas casser la retropropagation - gradients
+    # toujours finis et non-nuls, meme forme que le test float32 par defaut.
+    model = ChessMoveTokenTransformer(
+        num_moves=NUM_MOVES, dropout_rate=0.0, num_layers=2, d_model=32, num_heads=4,
+        compute_dtype=jnp.bfloat16,
+    )
+    x = jax.random.randint(jax.random.PRNGKey(42), (_BATCH_SIZE, _SEQ_LEN), 0, NUM_MOVES)
+    targets = jax.random.randint(jax.random.PRNGKey(43), (_BATCH_SIZE,), 0, NUM_MOVES)
+    init_rng = jax.random.PRNGKey(0)
+    variables = model.init({"params": init_rng, "dropout": init_rng}, x, training=True)
+
+    def loss_fn(params):
+        vars_with_params = {**variables, "params": params}
+        out = model.apply(vars_with_params, x, training=True, rngs={"dropout": jax.random.PRNGKey(3)})
+        return compute_chess_policy_loss(out, targets)
+
+    loss, grads = jax.value_and_grad(loss_fn)(variables["params"])
+    assert bool(jnp.isfinite(loss)), f"loss non finie avec compute_dtype=bfloat16 : {loss}"
+
+    leaves = jax.tree_util.tree_leaves(grads)
+    assert all(bool(jnp.all(jnp.isfinite(l))) for l in leaves), "gradient(s) non finis avec compute_dtype=bfloat16"
+    assert any(bool(jnp.any(l != 0)) for l in leaves), "tous les gradients sont nuls avec compute_dtype=bfloat16"
+    grad_dtypes = set(str(l.dtype) for l in leaves)
+    assert grad_dtypes == {"float32"}, f"les gradients doivent matcher le dtype des poids (float32) : {grad_dtypes}"
+    print(f"OK - compute_dtype=bfloat16 : retropropagation reussit, loss={float(loss):.4f}, "
+          f"gradients finis en float32")
+
+
+def test_compute_dtype_factory_rejects_unknown_string():
+    # create_chess_move_token_transformer doit echouer explicitement sur une chaine
+    # compute_dtype invalide, pas silencieusement plus loin dans le graphe JAX.
+    try:
+        create_chess_move_token_transformer(num_classes=NUM_MOVES, compute_dtype="not_a_real_dtype")
+        assert False, "attendu ValueError sur un compute_dtype invalide"
+    except ValueError as e:
+        assert "not_a_real_dtype" in str(e)
+        print(f"OK - compute_dtype invalide rejete explicitement : {e}")
+
+
 def test_left_padding_dataset_loader_if_spike_available():
     # Test d'integration avec le VRAI fichier spike (pas un factice) - AD-27/AD-28.
     # Passe silencieusement (skip) si le fichier n'est pas present sur cette machine
@@ -242,5 +303,8 @@ if __name__ == "__main__":
     test_get_model_factory_and_registry()
     test_end_to_end_differentiability()
     test_strategy_loss_and_metrics()
+    test_compute_dtype_bfloat16_params_and_output_stay_float32()
+    test_compute_dtype_bfloat16_gradients_finite()
+    test_compute_dtype_factory_rejects_unknown_string()
     test_left_padding_dataset_loader_if_spike_available()
     print("\nTous les tests du modele echecs (move-token) sont passes.")

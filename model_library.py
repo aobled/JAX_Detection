@@ -4,7 +4,7 @@ Contient tous les modèles utilisés pour l'entraînement
 """
 
 import math
-from typing import Optional
+from typing import Any, Optional
 
 import jax
 import jax.numpy as jnp
@@ -1103,12 +1103,31 @@ class ChessMoveTokenTransformer(nn.Module):
     num_layers/d_model/num_heads/dropout_rate : hyperparamètres, valeurs de départ
     (Story 11.2, non tunées empiriquement) — ajustables via dataset_configs.py, pas
     des contraintes fixées par le spine (Deferred, spine).
+
+    compute_dtype (2026-08-11, précision mixte TPU) : dtype de CALCUL des couches à
+    matmul lourd (`Dense`/`MultiHeadDotProductAttention`) — PAS le dtype de stockage
+    des poids (`param_dtype`, jamais touché ici, reste `float32` par défaut flax :
+    poids "maîtres" stables, seul le calcul transitoire passe en précision réduite).
+    Distinct et indépendant du cast `int32` des tokens d'entrée (AD-33) - deux dtypes
+    différents à deux endroits différents du pipeline, ne jamais confondre. Un
+    checkpoint sauvegardé avant ce changement reste chargeable sans conversion : la
+    forme/le dtype des paramètres stockés ne change pas. `nn.Embed`/`nn.LayerNorm`
+    volontairement laissés en `float32` par défaut (gather non compute-bound pour
+    Embed ; `force_float32_reductions=True` par défaut sur LayerNorm de toute façon) -
+    seuls Dense/Attention bénéficient réellement d'un calcul en précision réduite sur
+    TPU. `force_fp32_for_softmax=True` fixé explicitement sur l'attention (le défaut
+    flax est `False` - vérifié - le softmax sur une séquence de longueur 404 reste en
+    fp32 par prudence numérique, pratique standard précision mixte). Sortie
+    (`policy_logits`) explicitement recastée en `float32` avant retour, quel que soit
+    `compute_dtype` - `compute_chess_policy_loss` (cross-entropy) ne doit jamais
+    recevoir des logits en précision réduite.
     """
     num_moves: int  # taille de la tête policy (4672) — passe par num_classes générique (main.py), jamais un littéral dupliqué (AD-22 hérité)
     dropout_rate: float = 0.1
     num_layers: int = 4
     d_model: int = 128
     num_heads: int = 4
+    compute_dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, x, training: bool = True):
@@ -1123,6 +1142,8 @@ class ChessMoveTokenTransformer(nn.Module):
         # AD-33 : caste explicitement en int32, independamment du dtype fourni par
         # l'appelant (dummy d'init float32 de Trainer OU vraies donnees deja int32
         # apres le fix AD-29) - idempotent, sans cout, testee par execution reelle.
+        # AUCUN rapport avec compute_dtype ci-dessous (indices de tokens vs precision
+        # de calcul des activations) - ne jamais fusionner ces deux dtypes.
         tokens = jnp.asarray(x, dtype=jnp.int32)
 
         # Import paresseux (pas en tete de fichier) : model_library.py est importe des
@@ -1137,7 +1158,7 @@ class ChessMoveTokenTransformer(nn.Module):
 
         vocab_size = self.num_moves + 2  # + BOS + PAD (AD-30)
         embed = nn.Embed(num_embeddings=vocab_size, features=self.d_model)
-        h = embed(tokens)  # (B, L, D)
+        h = embed(tokens)  # (B, L, D) - float32 (gather non compute-bound, voir docstring)
 
         # Masque : causal (nn.make_causal_mask) combine au masque de padding, derive
         # directement du tenseur d'entree (tokens != PAD_TOKEN_ID) - jamais un second
@@ -1150,15 +1171,19 @@ class ChessMoveTokenTransformer(nn.Module):
         for _ in range(self.num_layers):
             residual = h
             h = nn.LayerNorm()(h)
-            h = nn.MultiHeadDotProductAttention(num_heads=self.num_heads)(inputs_q=h, mask=mask)
+            h = nn.MultiHeadDotProductAttention(
+                num_heads=self.num_heads,
+                dtype=self.compute_dtype,
+                force_fp32_for_softmax=True,  # defaut flax=False - softmax en fp32 par prudence numerique (L=404)
+            )(inputs_q=h, mask=mask)
             h = nn.Dropout(self.dropout_rate, deterministic=not training)(h)
             h = residual + h
 
             residual = h
             h = nn.LayerNorm()(h)
-            h = nn.Dense(4 * self.d_model)(h)
+            h = nn.Dense(4 * self.d_model, dtype=self.compute_dtype)(h)
             h = nn.gelu(h)
-            h = nn.Dense(self.d_model)(h)
+            h = nn.Dense(self.d_model, dtype=self.compute_dtype)(h)
             h = nn.Dropout(self.dropout_rate, deterministic=not training)(h)
             h = residual + h
 
@@ -1169,18 +1194,35 @@ class ChessMoveTokenTransformer(nn.Module):
         last_hidden = h[:, -1, :]  # (B, D)
 
         # (B, num_moves) - jamais BOS/PAD en sortie (AD-30), aucun masquage des coups
-        # illegaux (AD-22 herite).
-        policy_logits = nn.Dense(self.num_moves)(last_hidden)
-        return policy_logits
+        # illegaux (AD-22 herite). Recast explicite en float32 avant retour, quel que
+        # soit compute_dtype - compute_chess_policy_loss (cross-entropy) ne doit
+        # jamais recevoir des logits en precision reduite (perte/instabilite possible
+        # du softmax de la loss, distinct du softmax interne de l'attention deja
+        # protege ci-dessus par force_fp32_for_softmax).
+        policy_logits = nn.Dense(self.num_moves, dtype=self.compute_dtype)(last_hidden)
+        return policy_logits.astype(jnp.float32)
 
 
-def create_chess_move_token_transformer(num_classes, dropout_rate=0.1, **kwargs):
+def create_chess_move_token_transformer(num_classes, dropout_rate=0.1, compute_dtype="float32", **kwargs):
     """
     Factory pour chess_move_token_transformer. `num_classes` (nom imposé par la
     plomberie model_kwargs générique de main.py) porte la taille de l'espace de coups
     (4672) — même convention que create_chess_cnn_attention_policy_value ci-dessus.
+
+    compute_dtype : chaîne ("float32"/"bfloat16"/"float16"), pas un objet jnp.dtype
+    directement — cohérent avec le reste de dataset_configs.py (littéraux Python
+    sérialisables uniquement, jamais un objet framework-spécifique dans une config).
+    Convertie ici en dtype réel ; erreur explicite si la chaîne ne correspond à rien
+    dans jax.numpy plutôt qu'un échec silencieux plus loin dans le graphe.
     """
-    return ChessMoveTokenTransformer(num_moves=num_classes, dropout_rate=dropout_rate, **kwargs)
+    resolved_dtype = getattr(jnp, compute_dtype, None)
+    if resolved_dtype is None:
+        raise ValueError(
+            f"compute_dtype='{compute_dtype}' inconnu de jax.numpy - attendu 'float32'/'bfloat16'/'float16'"
+        )
+    return ChessMoveTokenTransformer(
+        num_moves=num_classes, dropout_rate=dropout_rate, compute_dtype=resolved_dtype, **kwargs
+    )
 
 
 class Kepler1DConvNet(nn.Module):

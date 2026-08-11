@@ -139,6 +139,13 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
     if "num_heads" in config:
         # chess_move_token_transformer uniquement (Epic 11, spike)
         model_kwargs["num_heads"] = config["num_heads"]
+    if "compute_dtype" in config:
+        # chess_move_token_transformer uniquement (Epic 11, precision mixte TPU,
+        # 2026-08-11) - meme discipline de forwarding conditionnel que num_layers/
+        # d_model/num_heads ci-dessus. Chaine ("float32"/"bfloat16"), convertie en
+        # dtype reel par create_chess_move_token_transformer (model_library.py), pas
+        # ici - jamais un objet jnp.dtype dans une config (littéraux Python uniquement).
+        model_kwargs["compute_dtype"] = config["compute_dtype"]
     model = get_model(model_name, **model_kwargs)
     
     # 4. INSTANCIATION DE LA STRATEGIE (Injection de dépendance)

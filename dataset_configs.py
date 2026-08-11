@@ -933,6 +933,20 @@ DATASET_CONFIGS = {
         "num_layers": 6,
         "d_model": 192,
         "num_heads": 4,
+        # compute_dtype (Aymeric/Winston, 2026-08-11, précision mixte TPU) : "bfloat16"
+        # pour le calcul des couches Dense/Attention (poids "maîtres" restent en
+        # float32, AD-33-adjacent mais indépendant - voir docstring
+        # ChessMoveTokenTransformer). Diagnostic réel (nvtop + logs TPU, 2026-08-10/11) :
+        # le modèle tournait entièrement en float32 malgré le print trompeur "TPU:
+        # Utilisation de float16" (qui ne concerne QUE le cast de l'entrée, jamais le
+        # calcul du modèle) - les TPU sont conçus autour de bfloat16, un modèle 100%
+        # float32 en perd l'essentiel de l'avantage. Checkpoint-compatible (dtype des
+        # poids stockés inchangé) - mais rappel : la reprise d'entraînement ne doit de
+        # toute façon pas être utilisée sur ce domaine (mécanisme jugé peu fiable,
+        # verdict Aymeric rétro Epic 10, 2026-08-09 - voir deferred-work.md). Gain
+        # attendu : partiel, pas 2-3x (une partie du temps par step est dispatch/
+        # pipeline, pas calcul) - à mesurer sur le prochain run, pas garanti a priori.
+        "compute_dtype": "bfloat16",
         # output_prefix porte ici le chemin LITTÉRAL du fichier spike unique (pas un
         # préfixe de glob `_chunk*.npz` comme les autres domaines échecs, AD-27) -
         # ChessMoveTokenDataset (data_management.py) le consomme comme tel.
@@ -954,36 +968,51 @@ DATASET_CONFIGS = {
         # HISTORIQUE (pour comprendre les valeurs ci-dessous, pas à ré-appliquer) :
         # Run 1 (20 parties/3190 positions) -> surapprentissage sévère (Train 33.5%/Val
         # 0.35%). Run 2 (régénération 137x, 416 306 positions, batch=128 après un OOM
-        # réel à 256 - self-attention O(B×H×L²), L=404 - decay_steps=43905/15 epochs) ->
-        # plateau propre, Val PolicyAccuracy 5.54%, gap sain 1.76pt (voir
-        # chess-move-token.mmd, E1-E3). Conclusion Aymeric/Winston 2026-08-10 :
-        # volume de données = facteur limitant principal, PAS un problème d'architecture.
+        # réel à 256 sur GPU local - self-attention O(B×H×L²), L=404 -
+        # decay_steps=43905/15 epochs) -> plateau propre, Val PolicyAccuracy 5.54%, gap
+        # sain 1.76pt (voir chess-move-token.mmd, E1-E3). Conclusion Aymeric/Winston
+        # 2026-08-10 : volume de données = facteur limitant principal.
         #
-        # ⚠️ RUN 3 EN PRÉPARATION (Aymeric va relancer la génération côté chess_ai, cible
-        # ~10 000 parties - échelle CHESS_SEARCH_TEACHER - taille réelle pas encore
-        # connue) : `decay_steps` ci-dessous (43905, calculé pour 374 676 positions train
-        # @ batch=128/256) est DONC PROVISOIRE - à recalculer dès que le volume réel du
-        # nouveau dataset est connu (steps/epoch = train_positions // micro_batch_size,
-        # x epochs). Ne pas lancer tel quel sur le nouveau dataset sans ce recalcul -
-        # même piège que le passage Run 1 -> Run 2 (schedule LR qui decay au minimum
-        # bien avant la fin du run si le volume change sans recalcul).
+        # RUN 3 (2026-08-11) : dataset régénéré côté chess_ai à l'échelle cible -
+        # mesuré RÉELLEMENT (pas estimé) depuis le fichier .npz réel via le motif de
+        # reset des longueurs d'historique (une partie = une séquence croissante
+        # 4,5,6...  qui retombe à 4 au début de la suivante) : **9980 parties,
+        # 1 393 040 positions** (139,58 positions/partie en moyenne) - quasiment la
+        # parité avec CHESS_SEARCH_TEACHER (10 000 parties, 1 402 252 positions).
+        # val_split=0.1 -> 139 304 val / 1 253 736 train.
         #
-        # micro_batch_size : gpu reste à 128 (seule valeur validée sans OOM localement,
-        # à ce jour avec l'ancien modèle 4/128 - PAS encore re-testée avec le nouveau
-        # modèle 6/192, plus gros). tpu -> 256 (Aymeric, à tester sur Colab - mémoire par
-        # cœur TPU différente d'une carte locale, aucun historique d'OOM à cette échelle
-        # pour ce modèle).
+        # micro_batch_size : gpu 128 -> **64** (Aymeric, 2026-08-11 - 128 restait trop
+        # haut, nouveau crash sur le GPU local même après le fix Run 2 : le modèle est
+        # désormais plus gros aussi, 6/192 au lieu de 4/128, AD-28/self-attention
+        # O(B×H×L²) toujours en cause). tpu reste à 256 (Aymeric compte entraîner sur
+        # TPU Colab suite aux crashs répétés en local - aucun historique d'OOM constaté
+        # à cette échelle sur TPU, mémoire par cœur différente d'une carte locale).
+        #
+        # decay_steps RECALCULÉ depuis le volume réel ci-dessus (steps/epoch =
+        # train_positions // micro_batch_size, x epochs=15 ci-dessous) :
+        # gpu (batch=64) 1253736//64=19589 steps/epoch x 15 = 293835 ;
+        # tpu (batch=256) 1253736//256=4897 steps/epoch x 15 = 73455.
+        # _count_real_train_samples (trainer.py:45) ne matche jamais les fichiers
+        # échecs (même limitation documentée pour CHESS_SEARCH_TEACHER) - ces valeurs
+        # sont donc bien le repli réellement utilisé.
         #
         # max_seq_len recalculé automatiquement par ChessMoveTokenDataset depuis les
-        # vraies données à chaque chargement (AD-28) - rien à changer ici, une seule
-        # compilation JIT quel que soit le dataset.
+        # vraies données à chaque chargement (AD-28) - rien à changer ici (toujours
+        # 404 sur ce nouveau fichier, même max qu'au Run 2), une seule compilation JIT
+        # quel que soit le dataset.
         #
         # dropout_rate=0.3 / label_smoothing=0.2 (voir loss_params ci-dessus) : hérités
-        # du Run 1 (réponse au surapprentissage sur 2871 exemples), CONSERVÉS tels
-        # quels pour le Run 3 malgré le changement simultané de volume ET de capacité -
-        # décision assumée de ne pas isoler un seul facteur cette fois (contrainte
-        # pratique Colab/temps de session, pas une négligence) ; à réévaluer si le Run 3
-        # montre un gap qui se creuse anormalement.
+        # du Run 1, CONSERVÉS inchangés pour le Run 3 - le volume est désormais à
+        # parité avec CHESS_SEARCH_TEACHER, donc plus loin de la cause du
+        # surapprentissage initial (2871 exemples) qu'ils visaient à corriger ; à
+        # réévaluer seulement si le Run 3 montre un gap qui se creuse anormalement,
+        # pas par précaution préventive.
+        #
+        # decay_steps recalculés une 2e fois (Aymeric, 2026-08-11) pour epochs=15->25
+        # (voir === Entraînement === ci-dessous, alignement complet sur
+        # CHESS_SEARCH_TEACHER maintenant que le volume est à parité) : gpu (batch=64)
+        # 19589 steps/epoch x 25 = 489725 ; tpu (batch=256) 4897 steps/epoch x 25 =
+        # 122425.
         "tpu": {
             "micro_batch_size": 256,
             "accum_steps": 1,
@@ -991,29 +1020,29 @@ DATASET_CONFIGS = {
             "weight_decay": 5e-5,
             "dropout_rate": 0.3,
             "warmup_steps": 200,
-            "decay_steps": 43905,  # PROVISOIRE - à recalculer avec le volume réel du Run 3 (voir note ci-dessus)
+            "decay_steps": 122425,
         },
         "gpu": {
-            "micro_batch_size": 128,
+            "micro_batch_size": 64,
             "accum_steps": 1,
             "learning_rate": 3e-4,
             "weight_decay": 5e-5,
             "dropout_rate": 0.3,
             "warmup_steps": 200,
-            "decay_steps": 43905,  # PROVISOIRE - à recalculer avec le volume réel du Run 3 (voir note ci-dessus)
+            "decay_steps": 489725,
         },
 
         # === Entraînement ===
-        # epochs=10 -> 15 / patience=5 -> 8 (Aymeric, 2026-08-10, régénération à plus
-        # grande échelle) : alignés sur la convention des autres domaines échecs
-        # (CHESS_NO_HISTORY/CHESS_LEGAL_MOVES/CHESS_SEARCH_TEACHER) - le dataset n'est
-        # plus un smoke-test de plomberie (Story 11.4) mais un volume comparable en
-        # esprit à une vraie tentative de convergence (416K positions). Reste
-        # réversible/ajustable (priorité vitesse d'expérimentation, spine
+        # epochs=15 -> 25 (Aymeric, 2026-08-11, Run 3) : alignement complet sur
+        # CHESS_SEARCH_TEACHER (epochs=25/patience=8, déjà identique) maintenant que le
+        # volume de données est à parité (1 393 040 vs 1 402 252 positions) - une vraie
+        # tentative de convergence comparable, pas juste "plus de données que le smoke-
+        # test initial" (raison du 15 précédent). patience=8 déjà alignée, inchangée.
+        # Reste réversible/ajustable (priorité vitesse d'expérimentation, spine
         # architecture-chess-move-token-2026-08-10) - pas un verdict figé.
         "optimizer": "adamw",
         "lr_schedule": "cosine",
-        "epochs": 15,
+        "epochs": 25,
         "patience": 8,
 
         # === Évaluation ===
