@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import optax
 from abc import ABC, abstractmethod
-from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss, compute_segmentation_loss, compute_centernet_loss, compute_chess_policy_value_loss, compute_chess_policy_loss, compute_chess_value_loss, compute_chess_legal_moves_loss
+from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss, compute_segmentation_loss, compute_centernet_loss, compute_chess_policy_value_loss, compute_chess_policy_loss, compute_chess_value_loss, compute_chess_legal_moves_loss, compute_chess_token_candidate_loss
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
 from utils import mixup_batch, smooth_labels
 
@@ -683,3 +683,111 @@ class ChessMoveTokenStrategy(TaskStrategy):
                 print("⚠️  val_ds est vide - aucun détail chess_move_token généré")
         except Exception as e:
             print(f"❌ Erreur lors de la génération du rapport chess_move_token: {e}")
+
+
+class ChessTokenStrategy(TaskStrategy):
+    """
+    Tâche de scoring de candidats légaux (spec-chess-token-candidate-model,
+    2026-08-13, spike, CAP-2) : prédit lequel des `candidate_mask.sum()` slots
+    candidats réels (sur num_candidates=50 slots, dont certains sont du padding) est
+    le coup choisi par le professeur (Stockfish profondeur 12, contrat .npz
+    chess_token_candidate_spike côté chess_ai). outputs est un tenseur unique
+    (B, num_candidates) - PAS un dict {"policy", "value"} (aucune tête value,
+    ChessTokenCandidateModel, model_library.py) - même forme que
+    ChessMoveTokenStrategy/ChessLegalMovesStrategy ci-dessus.
+
+    targets est un DICT {"candidate_label": (B,) int32, "candidate_mask": (B, 50)} -
+    PAS un tenseur unique (contrairement à ChessMoveTokenStrategy) : le masquage de la
+    loss/métrique a besoin de candidate_mask en plus du label, et candidate_mask ne
+    peut pas voyager côté "images" (le modèle n'en a pas besoin en interne, voir
+    docstring ChessTokenCandidateModel - safe_moves neutralise déjà les slots de
+    padding) - même patron dict-target que CenterNetDetectionStrategy
+    ({HEATMAP_KEY, SIZE_KEY}, task_strategies.py), pas un nouveau mécanisme.
+
+    compute_loss délègue intégralement à compute_chess_token_candidate_loss
+    (loss_functions.py, nouvelle - CAP-2) - aucune loss existante ne masque sur un
+    espace de sortie variable (50 slots), contrairement à ChessMoveTokenStrategy qui
+    réutilise compute_chess_policy_loss telle quelle (AD-26).
+    """
+    def __init__(self, loss_params: dict = None):
+        # loss_params : reserve pour extension future (ex. label_smoothing), non
+        # consomme par compute_chess_token_candidate_loss aujourd'hui (masquage seul,
+        # voir Design Notes du SPEC) - meme convention dict que les strategies echecs
+        # ci-dessus (loss_params toujours accepte, meme si vide en pratique).
+        self.loss_params = loss_params or {}
+
+    @property
+    def primary_metric_name(self) -> str:
+        return "PolicyAccuracy"
+
+    @property
+    def optimization_mode(self) -> str:
+        return "max"
+
+    def preprocess_batch(self, images, targets, is_training, rng=None):
+        # "images" est en realite l'entree packee (token_position|global_flags|
+        # candidate_moves) - nom generique herite de la signature TaskStrategy (meme
+        # situation que ChessMoveTokenStrategy/ChessPolicyValueStrategy).
+        # targets = dict {"candidate_label": (B,), "candidate_mask": (B,50)} - deja
+        # int32/int8 au chargement (ChessTokenCandidateDataset), cast defensif ici
+        # (meme discipline que les autres strategies echecs) : candidate_label en
+        # int32 (labels entiers, cross-entropy), candidate_mask en int32 (pas bool -
+        # compute_chess_token_candidate_loss appelle .astype(bool) lui-meme, un
+        # tenseur numerique reste plus simple a batcher/logger qu'un bool).
+        targets = {
+            "candidate_label": jnp.asarray(targets["candidate_label"], dtype=jnp.int32),
+            "candidate_mask": jnp.asarray(targets["candidate_mask"], dtype=jnp.int32),
+        }
+        return images, targets, False
+
+    def compute_loss(self, outputs, targets, **kwargs):
+        return compute_chess_token_candidate_loss(
+            outputs, targets["candidate_label"], targets["candidate_mask"]
+        )
+
+    def compute_metrics(self, outputs, targets):
+        # Top-1 argmax MASQUE (primary_metric_name = PolicyAccuracy) : meme masquage
+        # additif -1e9 que compute_chess_token_candidate_loss (loss_functions.py) -
+        # sans lui, argmax pourrait selectionner un slot de padding (logit non
+        # contraint, poids initialises aleatoirement) et gonfler/degonfler
+        # artificiellement l'accuracy mesuree.
+        #
+        # PRECONDITION NON VERIFIEE ICI (meme choix que compute_chess_token_candidate_loss,
+        # voir sa docstring, loss_functions.py) : si une ligne avait `candidate_mask` a 0
+        # partout, `masked_outputs` vaudrait -1e9 partout et `jnp.argmax` retournerait le
+        # slot 0 par tie-break, faussant silencieusement PolicyAccuracy. Cette methode est
+        # appelee depuis `Trainer._train_step`/`_eval_step`, tous deux `@jax.jit`
+        # (trainer.py:229/261) - un assert Python usuel sur un tracer y echouerait
+        # (ConcretizationTypeError), d'ou l'absence deliberee de garde ici. Garanti en amont
+        # par `ChessTokenCandidateDataset.__init__` (data_management.py) : `candidate_label`
+        # pointe toujours un slot ou `candidate_mask == 1`, ce qui implique
+        # `candidate_mask.sum(axis=-1) >= 1` pour chaque ligne du dataset reel.
+        candidate_mask = targets["candidate_mask"]
+        masked_outputs = jnp.where(candidate_mask.astype(bool), outputs, -1e9)
+        predicted = jnp.argmax(masked_outputs, axis=-1)
+        return (predicted == targets["candidate_label"]).mean()
+
+    def generate_reports(self, val_ds, final_state, model, config):
+        try:
+            batch_consumed = False
+            for batch_inputs, batch_targets in val_ds.take(1).as_numpy_iterator():
+                batch_consumed = True
+                vars = {'params': final_state.params, 'batch_stats': final_state.batch_stats}
+                outputs = final_state.apply_fn(vars, batch_inputs, training=False)
+                targets = {
+                    "candidate_label": jnp.asarray(batch_targets["candidate_label"], dtype=jnp.int32),
+                    "candidate_mask": jnp.asarray(batch_targets["candidate_mask"], dtype=jnp.int32),
+                }
+
+                loss = compute_chess_token_candidate_loss(
+                    outputs, targets["candidate_label"], targets["candidate_mask"]
+                )
+                acc = self.compute_metrics(outputs, targets)
+
+                print(f"📊 Détail chess_token (validation, 1 batch) : "
+                      f"loss={float(loss):.4f}, PolicyAccuracy={float(acc):.4f}")
+                break
+            if not batch_consumed:
+                print("⚠️  val_ds est vide - aucun détail chess_token généré")
+        except Exception as e:
+            print(f"❌ Erreur lors de la génération du rapport chess_token: {e}")

@@ -993,6 +993,213 @@ class ChessMoveTokenDataset:
         return train_ds, val_ds
 
 
+class ChessTokenCandidateDataset:
+    """
+    Gestionnaire de dataset pour le domaine chess_token (spec-chess-token-candidate-model,
+    2026-08-13, spike, CAP-3). Fichier unique .npz (pas de chunks, même convention que
+    ChessMoveTokenDataset ci-dessus, contrairement aux 4 chargeurs échecs chunkés) - contrat
+    de données : companion token-candidate-dataset-schema.md (chess_ai) : `token_position`
+    (N,64) int32 dans [0,12], `global_flags` (N,6) float32 binaire, `candidate_moves` (N,50)
+    int32 dans [-1,4671] (sentinel -1 = padding ; [0,4671] = [0,4672) = espace complet
+    move_to_index, NUM_MOVES=4672 chess_ai/chess_target_encoding.py:243 - PAS 4660, qui n'était
+    que le max observé sur le seul run de génération réel disponible au moment de l'écriture,
+    pas la borne réelle du contrat), `candidate_mask` (N,50) int8, `candidate_label`
+    (N,) int32 dans [0,50) - index de SLOT, pas un index move_to_index.
+
+    Retourne (packed_features, {"candidate_label": ..., "candidate_mask": ...}) - PAS
+    (packed_features, candidate_label) comme ChessMoveTokenDataset : packed_features
+    concatène [token_position | global_flags | candidate_moves] en UN SEUL tenseur
+    (B, 64+6+num_candidates) int32, seule entrée consommée par
+    ChessTokenCandidateModel.__call__ (model_library.py, voir sa docstring - contrainte réelle
+    de Trainer._train_step/_eval_step, `apply_fn(vars, images, ...)` avec UN SEUL tenseur
+    `images`, jamais plusieurs entrées nommées). candidate_mask NE fait PAS partie de
+    packed_features (le modèle n'en a pas besoin en interne, les slots de padding sont
+    neutralisés côté modèle via `safe_moves`) - il voyage côté targets, pour le masquage de la
+    loss/métrique (ChessTokenStrategy, task_strategies.py) - même patron dict-target que
+    CenterNetDetectionStrategy ({HEATMAP_KEY, SIZE_KEY}), pas un nouveau mécanisme.
+    """
+    def __init__(self, npz_path: str, batch_size: int = 32, val_split: float = 0.1, shuffle_seed: int = 42,
+                 num_candidates: int = 50):
+        self.npz_path = npz_path
+        self.batch_size = batch_size
+        self.num_candidates = num_candidates
+
+        if not os.path.exists(npz_path):
+            error_msg = (
+                f"\n❌ ERREUR: Dataset spike chess_token introuvable !\n"
+                f"   Je m'attendais à trouver {npz_path}\n"
+                f"💡 Génère-le d'abord côté chess_ai (chess_token_candidate_spike_dataset.py)."
+            )
+            print(error_msg)
+            exit(1)
+
+        # Fichier unique, chargé entièrement en mémoire une fois (412 574 positions au run
+        # 2026-08-13 - packed_features (N, 120) int32 ~198 Mo, largement dans le budget RAM
+        # habituel de ce repo, même discipline que ChessMoveTokenDataset ci-dessus, pas de
+        # streaming chunké pertinent ici). token_position/global_flags/candidate_moves sont
+        # supprimés (del) juste après la construction de packed_features ci-dessous : ils ne
+        # sont lus nulle part ailleurs dans cette classe (vérifié - create_tf_dataset ne
+        # consomme que packed_features/candidate_label/candidate_mask), les garder vivants
+        # doublerait inutilement ~190 Mo de RAM pour la durée de vie de l'objet (code review,
+        # 2026-08-13).
+        required_keys = ["token_position", "global_flags", "candidate_moves", "candidate_mask", "candidate_label"]
+        with np.load(npz_path) as data:
+            for key in required_keys:
+                if key not in data.files:
+                    error_msg = (
+                        f"\n❌ ERREUR: Dataset spike chess_token malformé !\n"
+                        f"   Clé '{key}' absente de {npz_path} (clés présentes : {list(data.files)})\n"
+                        f"💡 Vérifie que le fichier a bien été généré par chess_token_candidate_spike_dataset.py "
+                        f"(côté chess_ai) avec le schéma attendu (token_position, global_flags, candidate_moves, "
+                        f"candidate_mask, candidate_label)."
+                    )
+                    print(error_msg)
+                    exit(1)
+
+            raw_token_position = data["token_position"]
+            raw_global_flags = data["global_flags"]
+            raw_candidate_moves = data["candidate_moves"]
+            raw_candidate_mask = data["candidate_mask"]
+            raw_candidate_label = data["candidate_label"]
+
+            # global_flags doit être binaire (0/1, voir companion schema) - vérifié AVANT le
+            # cast .astype(np.int32) ci-dessous, sinon un bruit non-binaire (ex. 0.3) serait
+            # silencieusement tronqué à 0 par le cast entier sans jamais lever d'erreur.
+            assert np.all(np.isin(raw_global_flags, [0, 1])), (
+                f"{npz_path} : global_flags contient des valeurs hors {{0,1}} (binaire attendu) - "
+                f"dataset chess_token malformé (min={raw_global_flags.min()}, max={raw_global_flags.max()})"
+            )
+
+            token_position = raw_token_position.astype(np.int32)    # (N, 64)
+            # global_flags est binaire (0.0/1.0, voir companion schema) - cast int32 sans
+            # perte (déjà vérifié ci-dessus), permet de packer avec token_position/
+            # candidate_moves dans UN SEUL tenseur int32 (voir docstring classe).
+            global_flags = raw_global_flags.astype(np.int32)        # (N, 6)
+            candidate_moves = raw_candidate_moves.astype(np.int32)  # (N, num_candidates)
+            self.candidate_mask = raw_candidate_mask.astype(np.int32)    # (N, num_candidates)
+            self.candidate_label = raw_candidate_label.astype(np.int32)  # (N,)
+
+        n_examples = len(self.candidate_label)
+        assert token_position.shape == (n_examples, 64), (
+            f"{npz_path} : token_position a shape {token_position.shape}, attendu (N, 64) - "
+            f"dataset chess_token malformé"
+        )
+        assert global_flags.shape == (n_examples, 6), (
+            f"{npz_path} : global_flags a shape {global_flags.shape}, attendu (N, 6) - "
+            f"dataset chess_token malformé"
+        )
+        assert candidate_moves.shape == (n_examples, self.num_candidates), (
+            f"{npz_path} : candidate_moves a shape {candidate_moves.shape}, attendu "
+            f"(N, {self.num_candidates}) - num_candidates de la config ne correspond pas au fichier réel"
+        )
+        assert self.candidate_mask.shape == candidate_moves.shape, (
+            f"{npz_path} : candidate_mask {self.candidate_mask.shape} != candidate_moves "
+            f"{candidate_moves.shape} - dataset chess_token malformé"
+        )
+        assert self.candidate_label.shape == (n_examples,), (
+            f"{npz_path} : candidate_label a shape {self.candidate_label.shape}, attendu (N,) - "
+            f"dataset chess_token malformé"
+        )
+        assert np.all((token_position >= 0) & (token_position < 13)), (
+            f"{npz_path} : token_position contient des valeurs hors [0,13) - dataset chess_token "
+            f"malformé (min={token_position.min()}, max={token_position.max()})"
+        )
+        assert np.all(self.candidate_label >= 0), (
+            f"{npz_path} : candidate_label contient des valeurs negatives - dataset chess_token malformé "
+            f"(min={self.candidate_label.min()})"
+        )
+        # candidate_label pointe un index de SLOT (pas un index move_to_index) - il ne doit
+        # jamais pointer un slot de padding (candidate_mask==0), sinon la loss/l'argmax
+        # traiteraient silencieusement un slot factice comme le coup du professeur.
+        assert np.all(self.candidate_mask[np.arange(n_examples), self.candidate_label] == 1), (
+            f"{npz_path} : au moins un candidate_label pointe un slot marqué comme padding "
+            f"(candidate_mask==0) - dataset chess_token malformé"
+        )
+
+        # Vecteur packé UNE FOIS à la construction (pas recalculé par exemple dans gen(),
+        # ni à chaque epoch) - concat numpy vectorisé, coût négligeable devant le chargement
+        # du .npz lui-même. Ordre = [token_position(64) | global_flags(6) |
+        # candidate_moves(num_candidates)], celui attendu par ChessTokenCandidateModel.
+        self.packed_features = np.concatenate(
+            [token_position, global_flags, candidate_moves], axis=1
+        ).astype(np.int32)  # (N, 64+6+num_candidates)
+        # token_position/global_flags/candidate_moves ne sont plus référencés nulle part
+        # ailleurs dans cette classe une fois packed_features construit (voir commentaire
+        # RAM ci-dessus) - suppression explicite plutôt que de les laisser vivre en double
+        # jusqu'à la fin de vie de l'objet.
+        del token_position, global_flags, candidate_moves
+
+        # Mélange reproductible des EXEMPLES (pas de chunks - un seul fichier) avant le
+        # split fraction train/val - même convention que ChessMoveTokenDataset ci-dessus.
+        indices = np.arange(n_examples)
+        np.random.RandomState(shuffle_seed).shuffle(indices)
+
+        n_val = 0 if val_split <= 0 else (max(1, int(n_examples * val_split)) if n_examples > 1 else 0)
+        self.train_indices = indices[:-n_val] if n_val else indices
+        self.val_indices = indices[-n_val:] if n_val else np.array([], dtype=np.int64)
+
+        print(f"📦 Chess Token Candidate Dataset (spike) : {len(self.train_indices)} positions train, "
+              f"{len(self.val_indices)} positions val (split côté chargement, val_split={val_split}, "
+              f"mélange reproductible seed={shuffle_seed}), num_candidates={self.num_candidates}")
+
+    def create_tf_dataset(self, split='train'):
+        """
+        Crée un dataset TensorFlow qui retourne (packed_features, {"candidate_label",
+        "candidate_mask"}). packed_features : (64+6+num_candidates,) int32 - toutes les
+        formes sont FIXES (pas de padding dynamique nécessaire, contrairement à
+        ChessMoveTokenDataset) - `ds.batch` simple suffit (même pattern que
+        ChessLegalMovesDataset, data_management.py:804-848).
+        """
+        indices = self.train_indices if split == 'train' else self.val_indices
+        if len(indices) == 0:
+            raise ValueError(f"Aucune position '{split}' disponible pour chess_token "
+                              f"(npz_path={self.npz_path}, val_split trop faible ou trop peu de positions)")
+        # drop_remainder=True (ci-dessous) yielderait silencieusement ZÉRO batch si ce split
+        # a moins d'exemples que batch_size - la boucle train/eval correspondante ne ferait
+        # alors rien du tout, sans aucune erreur (piège classique tf.data). Erreur explicite
+        # ici plutôt qu'un repli sur drop_remainder=False (qui risquerait un batch de forme
+        # différente et une recompilation JIT dans ce pipeline très sensible aux formes,
+        # cf. ChessMoveTokenDataset.__init__ ci-dessus) - erreur bruyante et immédiate,
+        # cohérente avec le reste de ce fichier.
+        if len(indices) < self.batch_size:
+            raise ValueError(
+                f"Split '{split}' de chess_token n'a que {len(indices)} exemple(s), inférieur à "
+                f"batch_size={self.batch_size} : avec drop_remainder=True cela produirait "
+                f"silencieusement ZÉRO batch (npz_path={self.npz_path}). Réduis batch_size ou "
+                f"augmente val_split/le volume de données."
+            )
+
+        def gen():
+            for i in indices:
+                yield (
+                    self.packed_features[i],
+                    {
+                        "candidate_label": self.candidate_label[i],
+                        "candidate_mask": self.candidate_mask[i],
+                    },
+                )
+
+        output_signature = (
+            tf.TensorSpec(shape=(64 + 6 + self.num_candidates,), dtype=tf.int32),
+            {
+                "candidate_label": tf.TensorSpec(shape=(), dtype=tf.int32),
+                "candidate_mask": tf.TensorSpec(shape=(self.num_candidates,), dtype=tf.int32),
+            },
+        )
+        ds = tf.data.Dataset.from_generator(gen, output_signature=output_signature)
+
+        if split == 'train':
+            ds = ds.shuffle(1000)
+
+        ds = ds.batch(self.batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE)
+        return ds
+
+    def get_dataset(self):
+        train_ds = self.create_tf_dataset('train')
+        val_ds = self.create_tf_dataset('val') if len(self.val_indices) else None
+        return train_ds, val_ds
+
+
 def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
     """
     Fonction factory unifiée pour charger les datasets selon le type de tâche.
@@ -1083,6 +1290,18 @@ def get_datasets(config: dict, backend_config: dict) -> Tuple[tf.data.Dataset, t
             npz_path=config["output_prefix"],
             batch_size=backend_config["micro_batch_size"],
             val_split=config.get("val_split", 0.1),
+        )
+        return dataset_manager.get_dataset()
+
+    elif task_type == "chess_token":
+        # "output_prefix" porte ici le chemin LITTÉRAL du fichier spike unique (pas un
+        # préfixe de glob `_chunk*.npz` comme les autres domaines échecs) - même
+        # convention que chess_move_token ci-dessus.
+        dataset_manager = ChessTokenCandidateDataset(
+            npz_path=config["output_prefix"],
+            batch_size=backend_config["micro_batch_size"],
+            val_split=config.get("val_split", 0.1),
+            num_candidates=config.get("num_classes", 50),
         )
         return dataset_manager.get_dataset()
 

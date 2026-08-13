@@ -638,3 +638,55 @@ def compute_chess_legal_moves_loss(logits, legal_mask, pos_weight=1.0):
     loss = -(pos_weight * legal_mask * log_sigmoid_pos + (1.0 - legal_mask) * log_sigmoid_neg)
     return loss.mean()
 
+
+def compute_chess_token_candidate_loss(logits, candidate_label, candidate_mask):
+    """
+    Cross-entropy MASQUEE sur les slots candidats (spec-chess-token-candidate-model,
+    2026-08-13, spike, CAP-2) - PAS compute_chess_policy_loss (softmax sur l'espace
+    fixe 4672) : ici le modele (ChessTokenCandidateModel, model_library.py) score 50
+    slots de candidats VARIABLES par position (dataset chess_token_candidate_spike,
+    cote chess_ai), dont certains sont du padding (candidate_mask == 0) - le softmax
+    ne doit jamais y attribuer de masse de probabilite.
+
+    logits: (Batch, num_candidates) logits bruts, un score par slot (PAS un index de
+    coup move_to_index - deja l'espace de sortie du modele).
+    candidate_label: (Batch,) int32 - index de SLOT dans [0, num_candidates), PAS un
+    index move_to_index (contrat .npz chess_token_candidate_spike, candidate_label).
+    candidate_mask: (Batch, num_candidates) - 1 si le slot est un candidat reel, 0 si
+    padding (int8 au chargement, caste en bool ici).
+
+    Masquage additif -1e9 (pas -inf, evite tout risque de NaN si un batch degenere
+    contenait une ligne entierement masquee - ne devrait jamais arriver en pratique,
+    candidate_label < candidate_mask.sum() par construction du dataset, mais -1e9 reste
+    une pratique standard plus sure que -inf) AVANT le softmax, sur le modele exact du
+    Design Notes du SPEC :
+        masked_logits = jnp.where(candidate_mask.astype(bool), logits, -1e9)
+        loss = optax.softmax_cross_entropy_with_integer_labels(masked_logits, candidate_label)
+    Un slot masque (logit -1e9) recoit une probabilite ~0 au softmax - n'influence ni
+    la valeur de la loss ni le gradient (verifie par test, tests/test_chess_token_model.py).
+
+    PRECONDITION NON VERIFIEE ICI (deliberement) : chaque ligne doit avoir au moins un
+    candidat reel (`candidate_mask.sum(axis=-1) > 0`), sinon `masked_logits` vaut -1e9
+    partout et le softmax degenere en une distribution uniforme finie-mais-arbitraire
+    (loss finie, mais sans signal). Cette fonction est appelee depuis
+    `ChessTokenStrategy.compute_loss` (task_strategies.py) elle-meme invoquee a
+    l'interieur de `Trainer._train_step`/`_eval_step`, tous deux decores `@jax.jit`
+    (trainer.py:229/261) : un `assert` Python usuel sur `candidate_mask` echouerait avec
+    une `ConcretizationTypeError` a la trace JIT (les valeurs sont des tracers, pas des
+    booleens concrets), et ce fichier n'utilise nulle part ailleurs de mecanisme
+    d'assertion compatible JIT (`chex`/`jax.experimental.checkify`) - en introduire un ici
+    serait hors-perimetre de ce nettoyage. La precondition est donc garantie en AMONT,
+    au chargement des donnees (`ChessTokenCandidateDataset.__init__`, data_management.py) :
+    un assert y verifie que `candidate_label` pointe TOUJOURS un slot ou
+    `candidate_mask == 1`, ce qui implique mathematiquement `candidate_mask.sum(axis=-1)
+    >= 1` pour chaque ligne du dataset reel. Un appelant qui construirait un batch
+    synthetique en dehors de ce loader (ex. un test) reste responsable de respecter cette
+    precondition lui-meme.
+
+    Reduction : moyenne sur le batch, meme convention que compute_chess_policy_loss/
+    compute_chess_legal_moves_loss ci-dessus.
+    """
+    masked_logits = jnp.where(candidate_mask.astype(bool), logits, -1e9)
+    loss = optax.softmax_cross_entropy_with_integer_labels(masked_logits, candidate_label)
+    return loss.mean()
+

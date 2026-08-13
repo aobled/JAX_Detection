@@ -137,8 +137,20 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
         # chess_move_token_transformer uniquement (Epic 11, spike)
         model_kwargs["d_model"] = config["d_model"]
     if "num_heads" in config:
-        # chess_move_token_transformer uniquement (Epic 11, spike)
+        # chess_move_token_transformer (Epic 11, spike) ET chess_token_candidate_model
+        # (spec-chess-token-candidate-model, 2026-08-13, spike) - les deux modeles
+        # exposent un champ num_heads, cette branche generique les sert tous les deux.
+        # Ne pas la restreindre/supprimer en pensant qu'elle ne sert qu'a
+        # chess_move_token_transformer.
         model_kwargs["num_heads"] = config["num_heads"]
+    if "num_trunk_layers" in config:
+        # chess_token_candidate_model uniquement (spec-chess-token-candidate-model,
+        # 2026-08-13, spike) - meme discipline de forwarding conditionnel que
+        # num_bottleneck_tokens/token_dim/num_heads ci-dessus. Sans cette branche, la
+        # cle "num_trunk_layers" dans CHESS_TOKEN (dataset_configs.py) serait
+        # silencieusement ignoree malgre le commentaire de cette config qui la liste
+        # comme ajustable.
+        model_kwargs["num_trunk_layers"] = config["num_trunk_layers"]
     if "compute_dtype" in config:
         # chess_move_token_transformer uniquement (Epic 11, precision mixte TPU,
         # 2026-08-11) - meme discipline de forwarding conditionnel que num_layers/
@@ -219,6 +231,12 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
         # Pas de loss_method/metric_method/report_method : meme discipline que
         # ChessPolicyValueStrategy/ChessLegalMovesStrategy ci-dessus.
         strategy = ChessMoveTokenStrategy(loss_params=loss_params)
+    elif task_type == "chess_token":
+        print("🎯 Application de la logique d'entraînement : CHESS TOKEN (scoring candidats, spike)")
+        from task_strategies import ChessTokenStrategy
+        # Pas de loss_method/metric_method/report_method : meme discipline que
+        # ChessMoveTokenStrategy/ChessPolicyValueStrategy ci-dessus.
+        strategy = ChessTokenStrategy(loss_params=loss_params)
     else:
         raise ValueError(f"task_type '{task_type}' non reconnu.")
 
@@ -232,7 +250,11 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
     # que jusqu'a ~2048 - les tokens de ce domaine (espace 0-4673, y compris BOS/PAD)
     # seraient silencieusement corrompus sinon. Branche locale a main.py uniquement -
     # trainer.py n'est pas modifie (zero-touch preserve, meme discipline qu'ailleurs).
-    trainer_dtype = jnp.int32 if task_type == "chess_move_token" else dtype
+    # chess_token (spec-chess-token-candidate-model, 2026-08-13) : meme raisonnement
+    # que chess_move_token ci-dessus (AD-29 herite) - packed_features encode des
+    # indices entiers (token_position/global_flags/candidate_moves, jusqu'a 4671) que
+    # le cast float16 par defaut corromprait silencieusement au-dela de ~2048.
+    trainer_dtype = jnp.int32 if task_type in ("chess_move_token", "chess_token") else dtype
     trainer = Trainer(
         model=model,
         config=config,

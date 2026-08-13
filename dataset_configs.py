@@ -1051,6 +1051,128 @@ DATASET_CONFIGS = {
         # === Sauvegarde ===
         "save_dir": "./checkpoints_chess_move_token",
     },
+
+    "CHESS_TOKEN": {
+        # === SPIKE / PROVISOIRE (spec-chess-token-candidate-model, 2026-08-13) — statut
+        # expérimental === NE PAS traiter comme une config stable au même titre que
+        # CHESS_SEARCH_TEACHER/CHESS_LEGAL_MOVES/CHESS_NO_HISTORY tant que le verdict
+        # CAP-4/CAP-5/CAP-6 (accuracy/paramètres/convergence, mesures de référence, pas
+        # un pass/fail contre le checkpoint 28,00%) n'est pas tranché. Voir
+        # _bmad-output/specs/spec-chess-token-candidate-model/SPEC.md +
+        # _bmad-output/implementation-artifacts/spec-chess-token-candidate-model.md
+        # (tâches/Design Notes) pour le contrat complet.
+        #
+        # Tronc auto-attention PURE sur les 64 tokens-case (remplace le tronc CNN
+        # existant) + bottleneck K=8/token_dim=64 (défauts model_library.py, décision
+        # explicite d'Aymeric de repartir "à neuf" plutôt que de chercher une
+        # comparabilité stricte avec le checkpoint 28,00%, K=16/token_dim=196) + tête
+        # de scoring sur les 50 candidats légaux du dataset (remplace Dense(4672),
+        # ChessTokenCandidateModel, model_library.py).
+        "task_type": "chess_token",
+        # num_classes porte ici MAX_CANDIDATES=50 (contrat .npz chess_token_candidate_spike,
+        # côté chess_ai) - PAS un nombre de classes au sens habituel, même convention que
+        # num_classes=4672 sur les configs chess_cnn_attention_*/chess_move_token
+        # (create_chess_token_candidate_model fait le pont, model_library.py).
+        "num_classes": 50,
+        # input_shape=(120,) : forme du dummy d'INIT uniquement (Trainer.create_train_state,
+        # trainer.py:145 - jnp.ones((1,)+input_shape)), PAS une longueur de séquence.
+        # 120 = 64 (token_position) + 6 (global_flags) + 50 (candidate_moves) - les 3
+        # champs du contrat .npz que le MODÈLE consomme, concaténés en un seul tenseur
+        # par ChessTokenCandidateDataset (data_management.py) car Trainer._train_step/
+        # _eval_step n'acheminent jamais qu'UNE SEULE entrée `images` vers `apply_fn`
+        # (vérifié en lisant trainer.py:312-313/429-430 avant de trancher, plutôt que
+        # de supposer un support multi-entrée qui n'existe pas dans ce pipeline -
+        # même situation que le tenseur unique (sequence) de CHESS_MOVE_TOKEN
+        # ci-dessus, généralisée à 3 champs concaténés au lieu d'1 seul).
+        # candidate_mask (N,50) N'EST PAS inclus ici : le modèle n'en a pas besoin en
+        # interne (slots de padding neutralisés via `safe_moves`, voir docstring
+        # ChessTokenCandidateModel) - il voyage côté targets (dict), pas côté images.
+        "input_shape": (120,),
+        "model_name": "chess_token_candidate_model",
+        # token_dim/num_bottleneck_tokens/num_heads/num_trunk_layers : absents ici
+        # volontairement - défauts de la classe (K=8/token_dim=64/num_heads=4/
+        # num_trunk_layers=2, model_library.py) repris tels quels (décision Aymeric,
+        # SPEC 2026-08-13, "on repart à neuf"). Ajustables via ces mêmes clés si un
+        # futur run en montre le besoin (forwarding déjà générique, main.py:123-131 -
+        # num_trunk_layers n'a pas encore de ligne de forwarding dédiée, à ajouter si
+        # utilisé un jour, cohérent avec le reste de ce fichier qui n'ajoute une clé
+        # que quand elle sert réellement).
+        #
+        # output_prefix porte ici le chemin LITTÉRAL du fichier spike unique (pas un
+        # préfixe de glob `_chunk*.npz` comme les 4 domaines échecs du contrat stable) -
+        # même convention que CHESS_MOVE_TOKEN. Run réel généré côté chess_ai
+        # (2026-08-13) : 3000 parties, seed=42, 412 574 positions (professeur Stockfish
+        # profondeur 12, mêmes opening_plies=4/max_halfmoves=400 que CHESS_SEARCH_TEACHER
+        # - voir token-candidate-dataset-schema.md, chess_ai).
+        "output_prefix": f"{DATA_ROOT}/chunks/chess_token_candidate_spike/chess_token_candidate_spike.npz",
+        "val_split": 0.1,
+        # Pas de loss_params : compute_chess_token_candidate_loss (loss_functions.py)
+        # n'a aucun hyperparamètre aujourd'hui (masquage + cross-entropy simple, voir
+        # Design Notes du SPEC) - contrairement à CHESS_SEARCH_TEACHER/CHESS_MOVE_TOKEN
+        # (label_smoothing). ChessTokenStrategy accepte quand même loss_params=None par
+        # défaut (même discipline dict que les autres strategies échecs), rien à passer
+        # ici tant qu'aucun hyperparamètre de loss n'existe réellement.
+        #
+        # === Hyperparamètres GPU/TPU ===
+        # PROVISOIRE - point de départ non tuné empiriquement (comme CHESS_LEGAL_MOVES/
+        # CHESS_MOVE_TOKEN à leur création), pas des valeurs mesurées sur un run réel de
+        # CE modèle. learning_rate=3e-4 aligné sur CHESS_MOVE_TOKEN (autre tronc
+        # attention, pas un CNN comme CHESS_SEARCH_TEACHER qui tolère 4e-4/8e-4) -
+        # dropout_rate=0.1 : défaut de la classe (model_library.py), pas le 0.35 de
+        # CHESS_SEARCH_TEACHER (ce tronc est structurellement plus petit - L=64 tokens,
+        # attention O(L²) largement moins coûteuse que les L=404 de CHESS_MOVE_TOKEN qui
+        # avait forcé micro_batch_size=64 sur GPU local - aucun historique d'OOM attendu
+        # à cette échelle, mais jamais testé en réel non plus, à revoir dès le premier
+        # run si un OOM survient malgré tout).
+        #
+        # decay_steps calculés depuis le volume RÉEL mesuré ci-dessus (412 574 positions,
+        # val_split=0.1 -> n_val=max(1,int(412574*0.1))=41257, train=371317, même formule
+        # que ChessTokenCandidateDataset.__init__) : steps/epoch = train // micro_batch_size,
+        # x epochs=25 ci-dessous. gpu (batch=128) 371317//128=2900 x25=72500 ; tpu
+        # (batch=256) 371317//256=1450 x25=36250. _count_real_train_samples (trainer.py:45)
+        # ne matche jamais les fichiers échecs à fichier unique (même limitation documentée
+        # pour CHESS_SEARCH_TEACHER/CHESS_MOVE_TOKEN) - ces valeurs sont donc bien le repli
+        # réellement utilisé.
+        "tpu": {
+            "micro_batch_size": 256,
+            "accum_steps": 1,
+            "learning_rate": 3e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            "decay_steps": 36250,
+        },
+        "gpu": {
+            "micro_batch_size": 128,
+            "accum_steps": 1,
+            "learning_rate": 3e-4,
+            "weight_decay": 5e-5,
+            "dropout_rate": 0.1,
+            "warmup_steps": 200,
+            "decay_steps": 72500,
+        },
+
+        # === Entraînement ===
+        # epochs=25/patience=8 : même mécanisme d'arrêt anticipé standard que les autres
+        # configs échecs (CAP-6 du SPEC - PAS de détection sur mesure d'un décrochage
+        # contre la baseline CNN, décision explicite "on repart à neuf").
+        "optimizer": "adamw",
+        "lr_schedule": "cosine",
+        "epochs": 25,
+        "patience": 8,
+
+        # Pas de "eval_batch_size" ici (retiré, code review 2026-08-13) : cette clé
+        # n'était que du boilerplate copié depuis les configs sœurs (section
+        # "=== Évaluation ==="), jamais lue par le chemin chess_token
+        # (get_datasets()/ChessTokenStrategy.generate_reports rebatchent la
+        # validation avec le même batch_size que train, pas eval_batch_size -
+        # seule ClassificationStrategy.generate_reports la consomme,
+        # task_strategies.py) - clé morte, retirée plutôt que gardée pour une
+        # cohérence de forme purement cosmétique.
+
+        # === Sauvegarde ===
+        "save_dir": "./checkpoints_chess_token",
+    },
 }
 
 
