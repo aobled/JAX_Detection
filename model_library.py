@@ -508,92 +508,114 @@ class AircraftDetectorUNet(nn.Module):
     Output: (B, 224, 224, 1) Mask de probabilités (0 à 1)
     """
     dropout_rate: float = 0.2
+    # compute_dtype (spec-compute-dtype-detection, 2026-08-17, AD-1/AD-3/AD-4/AD-6) :
+    # dtype de CALCUL de CHAQUE nn.Conv/nn.BatchNorm - meme regle que
+    # SophisticatedCNN32Plus/128Lite/128Plus ci-dessus (Conv/Dense/BatchNorm/
+    # LayerNorm suivent compute_dtype, jamais nn.Embed - non applicable ici, pas de
+    # nn.Embed dans cette classe). Poids stockes (checkpoint) restent float32 dans
+    # tous les cas (AD-6). La sortie (masque, passe par nn.sigmoid) est recastee
+    # float32 AVANT la non-linearite, pas seulement avant le retour - cas non
+    # couvert par le precedent classification, la non-linearite ne doit jamais
+    # recevoir des logits en precision reduite.
+    compute_dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, x, training=True):
         # --- ENCODER ---
         # Block 1 (224x224 -> 112x112)
-        x1 = nn.Conv(32, (3, 3), padding="SAME")(x)
-        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.Conv(32, (3, 3), padding="SAME", dtype=self.compute_dtype)(x)
+        x1 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x1)
         x1 = nn.silu(x1)
-        x1 = nn.Conv(32, (3, 3), padding="SAME")(x1)
-        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.Conv(32, (3, 3), padding="SAME", dtype=self.compute_dtype)(x1)
+        x1 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x1)
         x1 = nn.silu(x1)
         p1 = nn.max_pool(x1, window_shape=(2, 2), strides=(2, 2)) # 112x112
-        
+
         # Block 2 (112x112 -> 56x56)
-        x2 = nn.Conv(64, (3, 3), padding="SAME")(p1)
-        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.Conv(64, (3, 3), padding="SAME", dtype=self.compute_dtype)(p1)
+        x2 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x2)
         x2 = nn.silu(x2)
-        x2 = nn.Conv(64, (3, 3), padding="SAME")(x2)
-        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.Conv(64, (3, 3), padding="SAME", dtype=self.compute_dtype)(x2)
+        x2 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x2)
         x2 = nn.silu(x2)
         p2 = nn.max_pool(x2, window_shape=(2, 2), strides=(2, 2)) # 56x56
-        
+
         # Block 3 (56x56 -> 28x28)
-        x3 = nn.Conv(128, (3, 3), padding="SAME")(p2)
-        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.Conv(128, (3, 3), padding="SAME", dtype=self.compute_dtype)(p2)
+        x3 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x3)
         x3 = nn.silu(x3)
-        x3 = nn.Conv(128, (3, 3), padding="SAME")(x3)
-        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.Conv(128, (3, 3), padding="SAME", dtype=self.compute_dtype)(x3)
+        x3 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x3)
         x3 = nn.silu(x3)
         p3 = nn.max_pool(x3, window_shape=(2, 2), strides=(2, 2)) # 28x28
-        
+
         # --- BOTTLENECK ---
         # 28x28
-        b = nn.Conv(256, (3, 3), padding="SAME")(p3)
-        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.Conv(256, (3, 3), padding="SAME", dtype=self.compute_dtype)(p3)
+        b = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(b)
         b = nn.silu(b)
-        b = nn.Conv(256, (3, 3), padding="SAME")(b)
-        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.Conv(256, (3, 3), padding="SAME", dtype=self.compute_dtype)(b)
+        b = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(b)
         b = nn.silu(b)
-        
+
         # Application du Dropout au bottleneck (le seul endroit où il est vraiment efficace sur un U-Net)
         b = nn.Dropout(self.dropout_rate, deterministic=not training)(b)
-        
+
         # --- DECODER ---
         # Up 1 (28x28 -> 56x56)
         u1 = jax.image.resize(b, shape=(b.shape[0], x3.shape[1], x3.shape[2], b.shape[3]), method='bilinear')
-        u1 = nn.Conv(128, (2, 2), padding="SAME")(u1)
+        u1 = nn.Conv(128, (2, 2), padding="SAME", dtype=self.compute_dtype)(u1)
         u1 = jnp.concatenate([u1, x3], axis=-1)
-        u1 = nn.Conv(128, (3, 3), padding="SAME")(u1)
-        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.Conv(128, (3, 3), padding="SAME", dtype=self.compute_dtype)(u1)
+        u1 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u1)
         u1 = nn.silu(u1)
-        u1 = nn.Conv(128, (3, 3), padding="SAME")(u1)
-        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.Conv(128, (3, 3), padding="SAME", dtype=self.compute_dtype)(u1)
+        u1 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u1)
         u1 = nn.silu(u1)
-        
+
         # Up 2 (56x56 -> 112x112)
         u2 = jax.image.resize(u1, shape=(u1.shape[0], x2.shape[1], x2.shape[2], u1.shape[3]), method='bilinear')
-        u2 = nn.Conv(64, (2, 2), padding="SAME")(u2)
+        u2 = nn.Conv(64, (2, 2), padding="SAME", dtype=self.compute_dtype)(u2)
         u2 = jnp.concatenate([u2, x2], axis=-1)
-        u2 = nn.Conv(64, (3, 3), padding="SAME")(u2)
-        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.Conv(64, (3, 3), padding="SAME", dtype=self.compute_dtype)(u2)
+        u2 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u2)
         u2 = nn.silu(u2)
-        u2 = nn.Conv(64, (3, 3), padding="SAME")(u2)
-        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.Conv(64, (3, 3), padding="SAME", dtype=self.compute_dtype)(u2)
+        u2 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u2)
         u2 = nn.silu(u2)
-        
+
         # Up 3 (112x112 -> 224x224)
         u3 = jax.image.resize(u2, shape=(u2.shape[0], x1.shape[1], x1.shape[2], u2.shape[3]), method='bilinear')
-        u3 = nn.Conv(32, (2, 2), padding="SAME")(u3)
+        u3 = nn.Conv(32, (2, 2), padding="SAME", dtype=self.compute_dtype)(u3)
         u3 = jnp.concatenate([u3, x1], axis=-1)
-        u3 = nn.Conv(32, (3, 3), padding="SAME")(u3)
-        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.Conv(32, (3, 3), padding="SAME", dtype=self.compute_dtype)(u3)
+        u3 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u3)
         u3 = nn.silu(u3)
-        u3 = nn.Conv(32, (3, 3), padding="SAME")(u3)
-        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.Conv(32, (3, 3), padding="SAME", dtype=self.compute_dtype)(u3)
+        u3 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u3)
         u3 = nn.silu(u3)
-        
+
         # --- OUTPUT ---
-        # Mask 224x224x1
-        out = nn.Conv(1, (1, 1), padding="SAME")(u3)
+        # Mask 224x224x1 - recast explicite en float32 AVANT nn.sigmoid (pas apres) :
+        # la non-linearite ne doit jamais recevoir des logits en precision reduite,
+        # meme garde-principe que le recast pre-loss des modeles de classification,
+        # applique ici avant l'activation plutot qu'avant une loss externe.
+        out = nn.Conv(1, (1, 1), padding="SAME", dtype=self.compute_dtype)(u3)
+        out = out.astype(jnp.float32)
         return nn.sigmoid(out)
 
 
-def create_aircraft_detector_unet(dropout_rate=0.2, **kwargs):
-    """Factory for UNet Detector"""
-    return AircraftDetectorUNet(dropout_rate=dropout_rate)
+def create_aircraft_detector_unet(dropout_rate=0.2, compute_dtype=jnp.float32, **kwargs):
+    """Factory for UNet Detector.
+
+    compute_dtype accepte explicitement comme parametre NOMME (AD-3) pour que
+    l'introspection stricte de main.py (inspect.signature) cible cette factory -
+    **kwargs seul resterait invisible a cette detection. Valide compute_dtype (voir
+    _validate_compute_dtype). Bug preexistant **kwargs non transmis au constructeur
+    (documente, ex. num_classes) volontairement PAS corrige ici - hors scope.
+    """
+    _validate_compute_dtype(compute_dtype)
+    return AircraftDetectorUNet(dropout_rate=dropout_rate, compute_dtype=compute_dtype)
 
 
 class AircraftDetectorCenterNet(nn.Module):
@@ -615,34 +637,42 @@ class AircraftDetectorCenterNet(nn.Module):
     """
     dropout_rate: float = 0.2
     heatmap_prior: float = 0.01
+    # compute_dtype (spec-compute-dtype-detection, 2026-08-17, AD-1/AD-3/AD-4/AD-6) :
+    # meme regle que AircraftDetectorUNet ci-dessus - CHAQUE nn.Conv/nn.BatchNorm de
+    # cette classe (encodeur, bottleneck dilate, branche de contexte global,
+    # decodeur) suit compute_dtype. Les DEUX tetes de sortie (heatmap, size) sont
+    # recastees float32 avant retour - heatmap AVANT nn.sigmoid (meme garde que
+    # AircraftDetectorUNet), size directement (pas d'activation a proteger, mais
+    # coherence float32 avec le reste des sorties de ce projet).
+    compute_dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, x, training: bool = True):
         # --- ENCODER --- (identique à AircraftDetectorUNet)
         # Block 1 (H,W -> H/2,W/2)
-        x1 = nn.Conv(32, (3, 3), padding="SAME")(x)
-        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.Conv(32, (3, 3), padding="SAME", dtype=self.compute_dtype)(x)
+        x1 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x1)
         x1 = nn.silu(x1)
-        x1 = nn.Conv(32, (3, 3), padding="SAME")(x1)
-        x1 = nn.BatchNorm(use_running_average=not training)(x1)
+        x1 = nn.Conv(32, (3, 3), padding="SAME", dtype=self.compute_dtype)(x1)
+        x1 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x1)
         x1 = nn.silu(x1)
         p1 = nn.max_pool(x1, window_shape=(2, 2), strides=(2, 2))
 
         # Block 2 (H/2,W/2 -> H/4,W/4)
-        x2 = nn.Conv(64, (3, 3), padding="SAME")(p1)
-        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.Conv(64, (3, 3), padding="SAME", dtype=self.compute_dtype)(p1)
+        x2 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x2)
         x2 = nn.silu(x2)
-        x2 = nn.Conv(64, (3, 3), padding="SAME")(x2)
-        x2 = nn.BatchNorm(use_running_average=not training)(x2)
+        x2 = nn.Conv(64, (3, 3), padding="SAME", dtype=self.compute_dtype)(x2)
+        x2 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x2)
         x2 = nn.silu(x2)
         p2 = nn.max_pool(x2, window_shape=(2, 2), strides=(2, 2))
 
         # Block 3 (H/4,W/4 -> H/8,W/8)
-        x3 = nn.Conv(128, (3, 3), padding="SAME")(p2)
-        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.Conv(128, (3, 3), padding="SAME", dtype=self.compute_dtype)(p2)
+        x3 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x3)
         x3 = nn.silu(x3)
-        x3 = nn.Conv(128, (3, 3), padding="SAME")(x3)
-        x3 = nn.BatchNorm(use_running_average=not training)(x3)
+        x3 = nn.Conv(128, (3, 3), padding="SAME", dtype=self.compute_dtype)(x3)
+        x3 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x3)
         x3 = nn.silu(x3)
         p3 = nn.max_pool(x3, window_shape=(2, 2), strides=(2, 2))
 
@@ -656,11 +686,11 @@ class AircraftDetectorCenterNet(nn.Module):
         # spatiale du bottleneck (28x28) ni le nombre de parametres (dilation != taille
         # de noyau). N'affecte pas AircraftDetectorUNet (AD-20, code non partage malgre
         # l'architecture jumelle).
-        b = nn.Conv(256, (3, 3), kernel_dilation=(2, 2), padding="SAME")(p3)
-        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.Conv(256, (3, 3), kernel_dilation=(2, 2), padding="SAME", dtype=self.compute_dtype)(p3)
+        b = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(b)
         b = nn.silu(b)
-        b = nn.Conv(256, (3, 3), kernel_dilation=(4, 4), padding="SAME")(b)
-        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.Conv(256, (3, 3), kernel_dilation=(4, 4), padding="SAME", dtype=self.compute_dtype)(b)
+        b = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(b)
         b = nn.silu(b)
 
         # Branche de contexte global (2026-07-22, complement a la dilatation ci-dessus -
@@ -674,12 +704,12 @@ class AircraftDetectorCenterNet(nn.Module):
         # position spatiale et fusionnee (concat) avec les features locales avant
         # projection retour a 256 canaux.
         context = jnp.mean(b, axis=(1, 2), keepdims=True)  # (B,1,1,256)
-        context = nn.Conv(256, (1, 1), padding="SAME")(context)
+        context = nn.Conv(256, (1, 1), padding="SAME", dtype=self.compute_dtype)(context)
         context = nn.silu(context)
         context = jnp.broadcast_to(context, b.shape)  # (B,28,28,256)
         b = jnp.concatenate([b, context], axis=-1)  # (B,28,28,512) : local + global
-        b = nn.Conv(256, (1, 1), padding="SAME")(b)  # projection retour a 256ch
-        b = nn.BatchNorm(use_running_average=not training)(b)
+        b = nn.Conv(256, (1, 1), padding="SAME", dtype=self.compute_dtype)(b)  # projection retour a 256ch
+        b = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(b)
         b = nn.silu(b)
 
         b = nn.Dropout(self.dropout_rate, deterministic=not training)(b)
@@ -687,35 +717,35 @@ class AircraftDetectorCenterNet(nn.Module):
         # --- DECODER --- (identique à AircraftDetectorUNet)
         # Up 1
         u1 = jax.image.resize(b, shape=(b.shape[0], x3.shape[1], x3.shape[2], b.shape[3]), method='bilinear')
-        u1 = nn.Conv(128, (2, 2), padding="SAME")(u1)
+        u1 = nn.Conv(128, (2, 2), padding="SAME", dtype=self.compute_dtype)(u1)
         u1 = jnp.concatenate([u1, x3], axis=-1)
-        u1 = nn.Conv(128, (3, 3), padding="SAME")(u1)
-        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.Conv(128, (3, 3), padding="SAME", dtype=self.compute_dtype)(u1)
+        u1 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u1)
         u1 = nn.silu(u1)
-        u1 = nn.Conv(128, (3, 3), padding="SAME")(u1)
-        u1 = nn.BatchNorm(use_running_average=not training)(u1)
+        u1 = nn.Conv(128, (3, 3), padding="SAME", dtype=self.compute_dtype)(u1)
+        u1 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u1)
         u1 = nn.silu(u1)
 
         # Up 2
         u2 = jax.image.resize(u1, shape=(u1.shape[0], x2.shape[1], x2.shape[2], u1.shape[3]), method='bilinear')
-        u2 = nn.Conv(64, (2, 2), padding="SAME")(u2)
+        u2 = nn.Conv(64, (2, 2), padding="SAME", dtype=self.compute_dtype)(u2)
         u2 = jnp.concatenate([u2, x2], axis=-1)
-        u2 = nn.Conv(64, (3, 3), padding="SAME")(u2)
-        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.Conv(64, (3, 3), padding="SAME", dtype=self.compute_dtype)(u2)
+        u2 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u2)
         u2 = nn.silu(u2)
-        u2 = nn.Conv(64, (3, 3), padding="SAME")(u2)
-        u2 = nn.BatchNorm(use_running_average=not training)(u2)
+        u2 = nn.Conv(64, (3, 3), padding="SAME", dtype=self.compute_dtype)(u2)
+        u2 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u2)
         u2 = nn.silu(u2)
 
         # Up 3
         u3 = jax.image.resize(u2, shape=(u2.shape[0], x1.shape[1], x1.shape[2], u2.shape[3]), method='bilinear')
-        u3 = nn.Conv(32, (2, 2), padding="SAME")(u3)
+        u3 = nn.Conv(32, (2, 2), padding="SAME", dtype=self.compute_dtype)(u3)
         u3 = jnp.concatenate([u3, x1], axis=-1)
-        u3 = nn.Conv(32, (3, 3), padding="SAME")(u3)
-        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.Conv(32, (3, 3), padding="SAME", dtype=self.compute_dtype)(u3)
+        u3 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u3)
         u3 = nn.silu(u3)
-        u3 = nn.Conv(32, (3, 3), padding="SAME")(u3)
-        u3 = nn.BatchNorm(use_running_average=not training)(u3)
+        u3 = nn.Conv(32, (3, 3), padding="SAME", dtype=self.compute_dtype)(u3)
+        u3 = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(u3)
         u3 = nn.silu(u3)
 
         # --- OUTPUT : deux têtes paralleles ---
@@ -732,19 +762,32 @@ class AircraftDetectorCenterNet(nn.Module):
             f"heatmap_prior doit etre dans (0,1) - log(p/(1-p)) indefini sinon, recu {self.heatmap_prior}"
         )
         heatmap_bias_init = math.log(self.heatmap_prior / (1.0 - self.heatmap_prior))
-        heatmap = nn.Conv(1, (1, 1), padding="SAME", bias_init=nn.initializers.constant(heatmap_bias_init))(u3)
+        heatmap = nn.Conv(1, (1, 1), padding="SAME", bias_init=nn.initializers.constant(heatmap_bias_init), dtype=self.compute_dtype)(u3)
+        # Recast explicite en float32 AVANT nn.sigmoid (meme garde que AircraftDetectorUNet) :
+        # la non-linearite ne doit jamais recevoir des logits en precision reduite.
+        heatmap = heatmap.astype(jnp.float32)
         heatmap = nn.sigmoid(heatmap)
 
         # Regression de taille (B,H,W,2) largeur/hauteur, pas d'activation
-        # (convention CenterNet standard - la perte, Story 7.3, gere la positivite)
-        size = nn.Conv(2, (1, 1), padding="SAME")(u3)
+        # (convention CenterNet standard - la perte, Story 7.3, gere la positivite).
+        # Recast explicite en float32 directement (pas de non-linearite a proteger ici,
+        # mais coherence float32 avec le reste des sorties de ce projet - AD-6).
+        size = nn.Conv(2, (1, 1), padding="SAME", dtype=self.compute_dtype)(u3)
+        size = size.astype(jnp.float32)
 
         return {HEATMAP_KEY: heatmap, SIZE_KEY: size}
 
 
-def create_aircraft_detector_centernet(dropout_rate=0.2, heatmap_prior=0.01, **kwargs):
-    """Factory for CenterNet Detector"""
-    return AircraftDetectorCenterNet(dropout_rate=dropout_rate, heatmap_prior=heatmap_prior)
+def create_aircraft_detector_centernet(dropout_rate=0.2, heatmap_prior=0.01, compute_dtype=jnp.float32, **kwargs):
+    """Factory for CenterNet Detector.
+
+    compute_dtype accepte explicitement comme parametre NOMME (AD-3), meme
+    raisonnement que create_aircraft_detector_unet ci-dessus. Valide compute_dtype
+    (voir _validate_compute_dtype). Bug preexistant **kwargs non transmis au
+    constructeur volontairement PAS corrige ici - hors scope.
+    """
+    _validate_compute_dtype(compute_dtype)
+    return AircraftDetectorCenterNet(dropout_rate=dropout_rate, heatmap_prior=heatmap_prior, compute_dtype=compute_dtype)
 
 
 # MiniUNet/conv_block/create_aircraft_detector_miniunet supprimés le 2026-07-15 : non utilisés par

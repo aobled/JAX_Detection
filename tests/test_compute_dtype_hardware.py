@@ -16,6 +16,16 @@ plus bas, desormais inversee pour ces 3 modeles). Consequence mesuree empiriquem
 BatchNorm qui ressort en compute_dtype (et non plus toujours float32), ressortent
 elles aussi en compute_dtype de bout en bout - plus de "reset" a chaque bloc.
 
+Etendu par spec-compute-dtype-detection (2026-08-17, dernier groupe du rollout) :
+AircraftDetectorUNet (FIGHTERJET_DETECTION) et AircraftDetectorCenterNet (JAX_DETECTOR)
+- meme famille d'architecture (Conv/BatchNorm uniquement, pas de LayerNorm/sous-module
+partage), nouveau cas non couvert par le precedent classification : sortie(s) passant
+par nn.sigmoid (masque UNet, tete heatmap CenterNet) - recast float32 AVANT la
+non-linearite, pas juste avant le retour. Input reel 224x224 (dataset_configs.py,
+JAX_DETECTOR/FIGHTERJET_DETECTION) ; tests ci-dessous utilisent 32x32 (divisible par 8,
+survit aux 3 max-pools de l'encodeur, verifie empiriquement avant de figer ce choix -
+uniquement pour la vitesse d'execution des tests, aucun impact sur le mecanisme teste).
+
 Script autonome - ce projet n'a pas de framework de test formel (meme convention que
 tests/test_chess_model.py / tests/test_chess_move_token_model.py /
 tests/test_chess_token_model.py). Executer directement :
@@ -39,16 +49,22 @@ from model_library import (
     SeparableConv,
     SEBlock,
     SpatialAttention,
+    AircraftDetectorUNet,
+    AircraftDetectorCenterNet,
     create_sophisticated_cnn_32_plus,
     create_sophisticated_cnn_128_lite,
     create_sophisticated_cnn_128_plus,
     create_chess_move_token_transformer,
     create_kepler_1d_cnn,
     create_aircraft_detector_unet,
+    create_aircraft_detector_centernet,
+    create_chess_cnn_attention_policy_value,
     get_model,
     resolve_compute_dtype,
     MODELS,
 )
+from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
+from loss_functions import compute_segmentation_loss, compute_centernet_loss
 
 
 def _params_are_float32(variables):
@@ -97,7 +113,7 @@ def _matmul_intermediates(mutated, extra_prefixes=()):
     }
 
 
-def _assert_all_matmul_layers_match_dtype(mutated, expected_dtype, model_label, include_normalization=False):
+def _assert_all_matmul_layers_match_dtype(mutated, expected_dtype, model_label, include_normalization=False, include_attention_submodules=None):
     # Revue Blind Hunter, 2026-08-17 : verifier seulement Conv_0 ne detecterait pas
     # un site d'appel qui aurait perdu dtype=self.compute_dtype plus loin dans le
     # reseau (ex. une des SeparableConv residuelles). Verifie ICI TOUTES les couches
@@ -118,7 +134,23 @@ def _assert_all_matmul_layers_match_dtype(mutated, expected_dtype, model_label, 
     # Conv/SeparableConv/Dense, la chaine de precision reduite ne se reinitialisant
     # plus a chaque bloc de normalisation (verifie empiriquement, pas suppose - cf
     # docstring de ce fichier).
-    extra_prefixes = _NORMALIZATION_LAYER_PREFIXES + _ATTENTION_LAYER_PREFIXES if include_normalization else ()
+    #
+    # include_attention_submodules (spec-compute-dtype-detection, 2026-08-17) : par
+    # defaut (None) suit include_normalization, comme avant l'ajout de ce parametre -
+    # aucun changement de comportement pour les appelants existants (SophisticatedCNN*/
+    # Kepler1DConvNet). Explicitement mis a False par AircraftDetectorUNet/CenterNet
+    # (ci-dessous) : ces 2 classes n'ont AUCUN sous-module partage (pas de
+    # SeparableConv/SEBlock/SpatialAttention, verifie en lisant le code - familles
+    # Conv/BatchNorm uniquement), donc exiger des couches SEBlock_*/SpatialAttention_*
+    # ferait echouer le test a coup sur pour un motif hors-sujet (sous-module absent,
+    # pas un dtype incorrect).
+    if include_attention_submodules is None:
+        include_attention_submodules = include_normalization
+    extra_prefixes = ()
+    if include_normalization:
+        extra_prefixes += _NORMALIZATION_LAYER_PREFIXES
+    if include_attention_submodules:
+        extra_prefixes += _ATTENTION_LAYER_PREFIXES
     layers = _matmul_intermediates(mutated, extra_prefixes=extra_prefixes)
     assert layers, f"{model_label}: aucune couche matmul capturee, capture_intermediates a-t-il fonctionne ?"
     # Revue Edge Case Hunter, 2026-08-17 : `assert layers` ci-dessus ne garantit que le
@@ -129,9 +161,11 @@ def _assert_all_matmul_layers_match_dtype(mutated, expected_dtype, model_label, 
     # que cet amendement existe pour prouver. Verification explicite par famille de
     # prefixe demandee.
     if include_normalization:
-        for prefix_group in (_NORMALIZATION_LAYER_PREFIXES, _ATTENTION_LAYER_PREFIXES):
-            found = [name for name in layers if name.startswith(prefix_group)]
-            assert found, f"{model_label}: aucune couche capturee pour les prefixes {prefix_group} - capture_intermediates a-t-il bien cible ces couches ?"
+        found = [name for name in layers if name.startswith(_NORMALIZATION_LAYER_PREFIXES)]
+        assert found, f"{model_label}: aucune couche capturee pour les prefixes {_NORMALIZATION_LAYER_PREFIXES} - capture_intermediates a-t-il bien cible ces couches ?"
+    if include_attention_submodules:
+        found = [name for name in layers if name.startswith(_ATTENTION_LAYER_PREFIXES)]
+        assert found, f"{model_label}: aucune couche capturee pour les prefixes {_ATTENTION_LAYER_PREFIXES} - capture_intermediates a-t-il bien cible ces couches ?"
     mismatched = {name: arr.dtype for name, arr in layers.items() if arr.dtype != expected_dtype}
     assert not mismatched, (
         f"{model_label}: couches dont le dtype ne correspond pas a {expected_dtype} : {mismatched}"
@@ -345,6 +379,152 @@ def test_shared_submodules_compute_dtype_really_observed():
     print("OK - SeparableConv/SEBlock/SpatialAttention : compute_dtype reellement observe individuellement (AD-5)")
 
 
+def test_aircraft_detector_unet_compute_dtype_really_observed():
+    # spec-compute-dtype-detection (2026-08-17, dernier groupe du rollout) : meme
+    # preuve que les modeles de classification ci-dessus, pour AircraftDetectorUNet
+    # (FIGHTERJET_DETECTION). Entree reelle 224x224 (dataset_configs.py) ; 32x32 utilise
+    # ici (divisible par 8, survit aux 3 max-pools de l'encodeur, verifie empiriquement -
+    # seule la vitesse d'execution du test change, pas le mecanisme).
+    #
+    # include_attention_submodules=False : AircraftDetectorUNet n'a AUCUN sous-module
+    # partage (pas de SeparableConv/SEBlock/SpatialAttention, verifie en lisant le
+    # code) - seul BatchNorm (pas de LayerNorm non plus) suit compute_dtype ici.
+    x = jnp.zeros((2, 32, 32, 3), dtype=jnp.float32)
+
+    model_f32 = AircraftDetectorUNet(dropout_rate=0.0, compute_dtype=jnp.float32)
+    variables_f32 = model_f32.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    out_f32, mutated_f32 = model_f32.apply(
+        variables_f32, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    assert out_f32.dtype == jnp.float32, f"masque doit toujours etre float32 (recast avant sigmoid), obtenu {out_f32.dtype}"
+    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "AircraftDetectorUNet(compute_dtype=float32)", include_normalization=True, include_attention_submodules=False)
+    assert _all_variables_are_float32(variables_f32), "poids/batch_stats doivent rester float32 (compute_dtype=float32)"
+
+    model_bf16 = AircraftDetectorUNet(dropout_rate=0.0, compute_dtype=jnp.bfloat16)
+    variables_bf16 = model_bf16.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    out_bf16, mutated_bf16 = model_bf16.apply(
+        variables_bf16, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    assert out_bf16.dtype == jnp.float32, f"masque doit rester float32 meme sous compute_dtype=bfloat16 (recast avant sigmoid), obtenu {out_bf16.dtype}"
+    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "AircraftDetectorUNet(compute_dtype=bfloat16)", include_normalization=True, include_attention_submodules=False)
+    assert _all_variables_are_float32(variables_bf16), "poids/batch_stats doivent rester float32 (compat checkpoint) meme sous compute_dtype=bfloat16 (AD-6)"
+    assert bool(jnp.all(jnp.isfinite(out_bf16))), "masque non fini (NaN/Inf) avec compute_dtype=bfloat16"
+
+    # training=True : reduction BatchNorm EN DIRECT sur le batch, chemin de code
+    # different de training=False (use_running_average), cf modeles de classification
+    # ci-dessus.
+    out_bf16_train, mutated_bf16_train = model_bf16.apply(
+        variables_bf16, x, training=True, rngs={"dropout": jax.random.PRNGKey(2)},
+        mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    assert out_bf16_train.dtype == jnp.float32, f"masque doit rester float32 en training=True (recast avant sigmoid), obtenu {out_bf16_train.dtype}"
+    _assert_all_matmul_layers_match_dtype(mutated_bf16_train, jnp.bfloat16, "AircraftDetectorUNet(compute_dtype=bfloat16, training=True)", include_normalization=True, include_attention_submodules=False)
+    assert all(l.dtype == jnp.float32 for l in jax.tree_util.tree_leaves(mutated_bf16_train["batch_stats"])), "batch_stats doit rester float32 apres une mise a jour EN DIRECT (training=True) meme sous compute_dtype=bfloat16"
+    assert bool(jnp.all(jnp.isfinite(out_bf16_train))), "masque non fini (NaN/Inf) en training=True avec compute_dtype=bfloat16"
+    print("OK - AircraftDetectorUNet : compute_dtype reellement observe sur TOUTES les couches Conv/BatchNorm (training=False ET True), masque/poids/batch_stats toujours float32")
+
+
+def test_aircraft_detector_centernet_compute_dtype_really_observed():
+    # Meme preuve que ci-dessus pour AircraftDetectorCenterNet (JAX_DETECTOR) - sortie
+    # dict a 2 tetes (HEATMAP_KEY passe par nn.sigmoid, SIZE_KEY sans activation) : les
+    # DEUX doivent rester float32, dans le cas float32 ET bfloat16.
+    x = jnp.zeros((2, 32, 32, 3), dtype=jnp.float32)
+
+    model_f32 = AircraftDetectorCenterNet(dropout_rate=0.0, heatmap_prior=0.01, compute_dtype=jnp.float32)
+    variables_f32 = model_f32.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    outputs_f32, mutated_f32 = model_f32.apply(
+        variables_f32, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    assert outputs_f32[HEATMAP_KEY].dtype == jnp.float32, f"heatmap doit toujours etre float32 (recast avant sigmoid), obtenu {outputs_f32[HEATMAP_KEY].dtype}"
+    assert outputs_f32[SIZE_KEY].dtype == jnp.float32, f"size doit toujours etre float32 (recast direct), obtenu {outputs_f32[SIZE_KEY].dtype}"
+    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "AircraftDetectorCenterNet(compute_dtype=float32)", include_normalization=True, include_attention_submodules=False)
+    assert _all_variables_are_float32(variables_f32), "poids/batch_stats doivent rester float32 (compute_dtype=float32)"
+
+    model_bf16 = AircraftDetectorCenterNet(dropout_rate=0.0, heatmap_prior=0.01, compute_dtype=jnp.bfloat16)
+    variables_bf16 = model_bf16.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    outputs_bf16, mutated_bf16 = model_bf16.apply(
+        variables_bf16, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    assert outputs_bf16[HEATMAP_KEY].dtype == jnp.float32, f"heatmap doit rester float32 meme sous compute_dtype=bfloat16 (recast avant sigmoid), obtenu {outputs_bf16[HEATMAP_KEY].dtype}"
+    assert outputs_bf16[SIZE_KEY].dtype == jnp.float32, f"size doit rester float32 meme sous compute_dtype=bfloat16 (recast direct), obtenu {outputs_bf16[SIZE_KEY].dtype}"
+    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "AircraftDetectorCenterNet(compute_dtype=bfloat16)", include_normalization=True, include_attention_submodules=False)
+    assert _all_variables_are_float32(variables_bf16), "poids/batch_stats doivent rester float32 (compat checkpoint) meme sous compute_dtype=bfloat16 (AD-6)"
+    assert bool(jnp.all(jnp.isfinite(outputs_bf16[HEATMAP_KEY]))), "heatmap non finie (NaN/Inf) avec compute_dtype=bfloat16"
+    assert bool(jnp.all(jnp.isfinite(outputs_bf16[SIZE_KEY]))), "size non finie (NaN/Inf) avec compute_dtype=bfloat16"
+
+    # training=True : reduction BatchNorm EN DIRECT sur le batch (cf AircraftDetectorUNet
+    # ci-dessus).
+    outputs_bf16_train, mutated_bf16_train = model_bf16.apply(
+        variables_bf16, x, training=True, rngs={"dropout": jax.random.PRNGKey(2)},
+        mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    assert outputs_bf16_train[HEATMAP_KEY].dtype == jnp.float32, f"heatmap doit rester float32 en training=True (recast avant sigmoid), obtenu {outputs_bf16_train[HEATMAP_KEY].dtype}"
+    assert outputs_bf16_train[SIZE_KEY].dtype == jnp.float32, f"size doit rester float32 en training=True (recast direct), obtenu {outputs_bf16_train[SIZE_KEY].dtype}"
+    _assert_all_matmul_layers_match_dtype(mutated_bf16_train, jnp.bfloat16, "AircraftDetectorCenterNet(compute_dtype=bfloat16, training=True)", include_normalization=True, include_attention_submodules=False)
+    assert all(l.dtype == jnp.float32 for l in jax.tree_util.tree_leaves(mutated_bf16_train["batch_stats"])), "batch_stats doit rester float32 apres une mise a jour EN DIRECT (training=True) meme sous compute_dtype=bfloat16"
+    assert bool(jnp.all(jnp.isfinite(outputs_bf16_train[HEATMAP_KEY]))), "heatmap non finie (NaN/Inf) en training=True avec compute_dtype=bfloat16"
+    assert bool(jnp.all(jnp.isfinite(outputs_bf16_train[SIZE_KEY]))), "size non finie (NaN/Inf) en training=True avec compute_dtype=bfloat16"
+    print("OK - AircraftDetectorCenterNet : compute_dtype reellement observe sur TOUTES les couches Conv/BatchNorm (training=False ET True), heatmap/size/poids/batch_stats toujours float32")
+
+
+def test_aircraft_detector_gradients_finite_under_bfloat16():
+    # Revue Blind Hunter, 2026-08-17 : les 2 tests ci-dessus ne verifient que le FORWARD
+    # pass (dtype/isfinite de la sortie) - jamais le GRADIENT a travers la vraie loss
+    # (compute_segmentation_loss/compute_centernet_loss), la ou une perte de precision
+    # bfloat16 se manifesterait le plus plausiblement (termes jnp.log/jnp.power pres de
+    # la saturation) - risque de NaN en entrainement reel qu'un test forward-only ne
+    # peut pas detecter. Verifie ici via jax.value_and_grad reel, pas suppose.
+    #
+    # heatmap_prior=0.0000268 : valeur REELLE de JAX_DETECTOR (dataset_configs.py:490),
+    # pas le defaut 0.01 des tests ci-dessus - biais initial ~-10.5 (vs ~-4.6 pour le
+    # defaut), le cas le plus extreme/pertinent en production, jamais exerce ci-dessus.
+    x = jnp.zeros((2, 32, 32, 3), dtype=jnp.float32)
+
+    model_unet = AircraftDetectorUNet(dropout_rate=0.0, compute_dtype=jnp.bfloat16)
+    variables_unet = model_unet.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    true_mask = jnp.zeros((2, 32, 32, 1), dtype=jnp.float32)
+
+    def unet_loss_fn(params):
+        pred_mask = model_unet.apply({**variables_unet, "params": params}, x, training=False)
+        return compute_segmentation_loss(pred_mask, true_mask)
+
+    unet_loss, unet_grads = jax.value_and_grad(unet_loss_fn)(variables_unet["params"])
+    assert bool(jnp.isfinite(unet_loss)), f"AircraftDetectorUNet: loss non finie sous compute_dtype=bfloat16, obtenu {unet_loss}"
+    unet_grad_leaves = jax.tree_util.tree_leaves(unet_grads)
+    assert all(bool(jnp.all(jnp.isfinite(g))) for g in unet_grad_leaves), "AircraftDetectorUNet: gradient non fini (NaN/Inf) sous compute_dtype=bfloat16"
+    assert all(g.dtype == jnp.float32 for g in unet_grad_leaves), "AircraftDetectorUNet: gradients doivent rester float32 (params float32, AD-6)"
+
+    model_centernet = AircraftDetectorCenterNet(dropout_rate=0.0, heatmap_prior=0.0000268, compute_dtype=jnp.bfloat16)
+    variables_centernet = model_centernet.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    targets = {
+        HEATMAP_KEY: jnp.zeros((2, 32, 32, 1), dtype=jnp.float32),
+        SIZE_KEY: jnp.zeros((2, 32, 32, 2), dtype=jnp.float32),
+    }
+
+    def centernet_loss_fn(params):
+        outputs = model_centernet.apply({**variables_centernet, "params": params}, x, training=False)
+        return compute_centernet_loss(outputs, targets)
+
+    centernet_loss, centernet_grads = jax.value_and_grad(centernet_loss_fn)(variables_centernet["params"])
+    assert bool(jnp.isfinite(centernet_loss)), f"AircraftDetectorCenterNet: loss non finie (heatmap_prior reel extreme) sous compute_dtype=bfloat16, obtenu {centernet_loss}"
+    centernet_grad_leaves = jax.tree_util.tree_leaves(centernet_grads)
+    assert all(bool(jnp.all(jnp.isfinite(g))) for g in centernet_grad_leaves), "AircraftDetectorCenterNet: gradient non fini (NaN/Inf) sous compute_dtype=bfloat16 avec heatmap_prior reel extreme"
+    assert all(g.dtype == jnp.float32 for g in centernet_grad_leaves), "AircraftDetectorCenterNet: gradients doivent rester float32 (params float32, AD-6)"
+    print("OK - AircraftDetectorUNet/CenterNet : loss+gradients reels finis sous compute_dtype=bfloat16 (y compris heatmap_prior extreme reel de JAX_DETECTOR)")
+
+
 def test_factories_accept_and_forward_compute_dtype():
     # Les factories (pas seulement les classes) doivent accepter compute_dtype comme
     # parametre nomme explicite et le transmettre reellement au constructeur - pas
@@ -362,6 +542,13 @@ def test_factories_accept_and_forward_compute_dtype():
     model = create_kepler_1d_cnn(num_classes=2, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
     assert model.compute_dtype == jnp.bfloat16, "create_kepler_1d_cnn doit transmettre compute_dtype au constructeur"
 
+    # Dernier groupe du rollout (spec-compute-dtype-detection, 2026-08-17).
+    model = create_aircraft_detector_unet(dropout_rate=0.2, compute_dtype=jnp.bfloat16)
+    assert model.compute_dtype == jnp.bfloat16, "create_aircraft_detector_unet doit transmettre compute_dtype au constructeur"
+
+    model = create_aircraft_detector_centernet(dropout_rate=0.2, heatmap_prior=0.01, compute_dtype=jnp.bfloat16)
+    assert model.compute_dtype == jnp.bfloat16, "create_aircraft_detector_centernet doit transmettre compute_dtype au constructeur"
+
     # Meme chemin que main.py : get_model(model_name, **model_kwargs)
     model_via_registry = get_model("sophisticated_cnn_32_plus", num_classes=10, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
     assert model_via_registry.compute_dtype == jnp.bfloat16
@@ -370,6 +557,12 @@ def test_factories_accept_and_forward_compute_dtype():
     assert model_via_registry.compute_dtype == jnp.bfloat16
 
     model_via_registry = get_model("kepler_1d_cnn", num_classes=2, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
+    assert model_via_registry.compute_dtype == jnp.bfloat16
+
+    model_via_registry = get_model("aircraft_detector_unet", dropout_rate=0.2, compute_dtype=jnp.bfloat16)
+    assert model_via_registry.compute_dtype == jnp.bfloat16
+
+    model_via_registry = get_model("aircraft_detector_centernet", dropout_rate=0.2, heatmap_prior=0.01, compute_dtype=jnp.bfloat16)
     assert model_via_registry.compute_dtype == jnp.bfloat16
 
     # Defauts (sans compute_dtype explicite) doivent rester float32 - jamais bfloat16
@@ -381,7 +574,11 @@ def test_factories_accept_and_forward_compute_dtype():
     assert default_model.compute_dtype == jnp.float32, "defaut de la factory doit rester float32"
     default_model = create_kepler_1d_cnn(num_classes=2, dropout_rate=0.0)
     assert default_model.compute_dtype == jnp.float32, "defaut de la factory doit rester float32"
-    print("OK - create_sophisticated_cnn_32_plus/128_lite/128_plus/kepler_1d_cnn acceptent et transmettent reellement compute_dtype, defaut float32")
+    default_model = create_aircraft_detector_unet(dropout_rate=0.2)
+    assert default_model.compute_dtype == jnp.float32, "defaut de la factory doit rester float32"
+    default_model = create_aircraft_detector_centernet(dropout_rate=0.2, heatmap_prior=0.01)
+    assert default_model.compute_dtype == jnp.float32, "defaut de la factory doit rester float32"
+    print("OK - create_sophisticated_cnn_32_plus/128_lite/128_plus/kepler_1d_cnn/aircraft_detector_unet/centernet acceptent et transmettent reellement compute_dtype, defaut float32")
 
 
 def test_resolve_compute_dtype_both_branches():
@@ -436,7 +633,17 @@ def test_introspection_targets_only_adapted_factories():
     # **kwargs seul aurait fonctionne a l'execution (forwarding correct vers
     # Kepler1DConvNet) mais serait reste invisible a l'introspection stricte par nom
     # (AD-3), donc jamais reellement injecte par main.py.
-    adapted = {"sophisticated_cnn_32_plus", "sophisticated_cnn_128_lite", "sophisticated_cnn_128_plus", "kepler_1d_cnn"}
+    # Etendu par spec-compute-dtype-detection (2026-08-17, dernier groupe du rollout) :
+    # aircraft_detector_unet/centernet rejoignent le set adapte, meme raisonnement -
+    # create_aircraft_detector_unet/centernet passent de `(dropout_rate=..., **kwargs)`
+    # a `(dropout_rate=..., compute_dtype=jnp.float32, **kwargs)`. Le bug preexistant
+    # **kwargs-non-transmis-au-constructeur (AD-3c, ex. num_classes pour CenterNet)
+    # reste entier pour ces 2 factories - seul compute_dtype devient un parametre
+    # nomme explicite, hors scope de corriger le reste.
+    adapted = {
+        "sophisticated_cnn_32_plus", "sophisticated_cnn_128_lite", "sophisticated_cnn_128_plus", "kepler_1d_cnn",
+        "aircraft_detector_unet", "aircraft_detector_centernet",
+    }
     for model_name, factory in MODELS.items():
         has_named_param = "compute_dtype" in inspect.signature(factory).parameters
         if model_name in adapted:
@@ -456,11 +663,19 @@ def test_introspection_targets_only_adapted_factories():
     assert "compute_dtype" in inspect.signature(create_sophisticated_cnn_32_plus).parameters
     assert "compute_dtype" in inspect.signature(create_sophisticated_cnn_128_plus).parameters
     assert "compute_dtype" in inspect.signature(create_kepler_1d_cnn).parameters
-    # aircraft_detector_unet illustre le piege **kwargs deja documente (AD-3c) :
-    # accepte **kwargs en facade mais n'a pas de parametre NOMME compute_dtype -
-    # l'introspection stricte (par nom, pas par **kwargs) ne doit pas le cibler.
-    assert "compute_dtype" not in inspect.signature(create_aircraft_detector_unet).parameters
-    print("OK - introspection cible exactement les 4 factories adaptees + le precedent chess_move_token_transformer, aucun autre")
+    assert "compute_dtype" in inspect.signature(create_aircraft_detector_unet).parameters
+    assert "compute_dtype" in inspect.signature(create_aircraft_detector_centernet).parameters
+    # create_chess_cnn_attention_policy_value illustre le piege **kwargs toujours
+    # documente (AD-3c, Deferred de la spine) : accepte **kwargs en facade mais n'a
+    # pas de parametre NOMME compute_dtype - l'introspection stricte (par nom, pas
+    # par **kwargs) ne doit pas le cibler. (aircraft_detector_unet/centernet
+    # servaient auparavant de contre-exemple ici ; ils rejoignent desormais le set
+    # adapte ci-dessus - spec-compute-dtype-detection, 2026-08-17.)
+    assert "compute_dtype" not in inspect.signature(create_chess_cnn_attention_policy_value).parameters
+    # f-string plutot qu'un chiffre code en dur (revue Blind Hunter, 2026-08-17) : ce
+    # compte a deja du etre bascule manuellement de 4 a 6 lors de ce cycle - reste
+    # synchronise automatiquement avec `adapted` si un futur modele rejoint le rollout.
+    print(f"OK - introspection cible exactement les {len(adapted)} factories adaptees + le precedent chess_move_token_transformer, aucun autre")
 
 
 if __name__ == "__main__":
@@ -469,6 +684,8 @@ if __name__ == "__main__":
     test_sophisticated_cnn_128_plus_compute_dtype_really_observed()
     test_kepler_1d_cnn_compute_dtype_really_observed()
     test_shared_submodules_compute_dtype_really_observed()
+    test_aircraft_detector_unet_compute_dtype_really_observed()
+    test_aircraft_detector_centernet_compute_dtype_really_observed()
     test_factories_accept_and_forward_compute_dtype()
     test_resolve_compute_dtype_both_branches()
     test_chess_move_token_transformer_factory_valid_string_still_works()
