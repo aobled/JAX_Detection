@@ -41,9 +41,12 @@ else:
     dtype = jnp.float16
     print("📊 GPU: Utilisation de float16")
 
-# compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-1/AD-2) : dtype de CALCUL
-# des couches matmul lourdes (nn.Conv/nn.Dense), derive UNE SEULE FOIS ici depuis le
-# meme backend deja detecte ci-dessus - bfloat16 sur TPU, float32 partout ailleurs
+# compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-1/AD-2 ; etendu a
+# nn.BatchNorm/nn.LayerNorm par l'amendement AD-4, spec-compute-dtype-batchnorm-
+# layernorm, 2026-08-17) : dtype de CALCUL des couches matmul lourdes (nn.Conv/
+# nn.Dense) ET de normalisation (nn.BatchNorm/nn.LayerNorm - jamais nn.Embed), derive
+# UNE SEULE FOIS ici depuis le meme backend deja detecte ci-dessus - bfloat16 sur TPU,
+# float32 partout ailleurs
 # (GPU inclus - prudence de projet documentee, pas une limite materielle, voir
 # SPEC.md Constraints). Distinct de `dtype` ci-dessus (cast de l'ENTREE uniquement,
 # mecanisme separe, jamais touche ici). Deja un jnp.dtype resolu (pas une string) -
@@ -57,7 +60,7 @@ compute_dtype = resolve_compute_dtype(backend)
 # bien bfloat16 - la propagation reelle du dtype dans les couches est deja prouvee en
 # local (tests/test_compute_dtype_hardware.py, independante du materiel). Distinct du
 # print "Backend JAX" ci-dessous (celui-ci existait deja, ne mentionne pas compute_dtype).
-print(f"🔢 compute_dtype (calcul Conv/Dense): {compute_dtype.__name__}")
+print(f"🔢 compute_dtype (calcul Conv/Dense/BatchNorm/LayerNorm): {compute_dtype.__name__}")
 
 print("Backend JAX:", backend)
 print("Devices:", jax.devices())

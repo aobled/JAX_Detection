@@ -8,6 +8,14 @@ Etendu par spec-compute-dtype-rollout-classification (2026-08-17, Groupe 1 du ro
 SophisticatedCNN128Plus (meme famille/sous-modules que 32Plus/128Lite) et Kepler1DConvNet
 (plus simple, pas de sous-module partage, pas de nn.BatchNorm/nn.LayerNorm).
 
+Etendu par spec-compute-dtype-batchnorm-layernorm (2026-08-17, amendement AD-4) :
+SophisticatedCNN32Plus/128Lite/128Plus passent desormais dtype=self.compute_dtype a
+CHAQUE nn.BatchNorm/nn.LayerNorm (plus jamais exclus, cf ancienne exception documentee
+plus bas, desormais inversee pour ces 3 modeles). Consequence mesuree empiriquement
+(pas supposee) : SEBlock/SpatialAttention, dont l'entree x vient maintenant d'un
+BatchNorm qui ressort en compute_dtype (et non plus toujours float32), ressortent
+elles aussi en compute_dtype de bout en bout - plus de "reset" a chaque bloc.
+
 Script autonome - ce projet n'a pas de framework de test formel (meme convention que
 tests/test_chess_model.py / tests/test_chess_move_token_model.py /
 tests/test_chess_token_model.py). Executer directement :
@@ -63,48 +71,70 @@ def _all_variables_are_float32(variables):
 
 _MATMUL_LAYER_PREFIXES = ("Conv_", "SeparableConv_", "Dense_")
 
+# spec-compute-dtype-batchnorm-layernorm (2026-08-17, amendement AD-4) : BatchNorm/
+# LayerNorm recoivent maintenant dtype=self.compute_dtype dans SophisticatedCNN32Plus/
+# 128Lite/128Plus (les 3 seuls modeles ou cette verification renforcee est utilisee,
+# voir include_normalization ci-dessous). SEBlock/SpatialAttention y sont inclus aussi :
+# mesure empirique (pas suppose, cf _assert_all_matmul_layers_match_dtype) montrant
+# qu'avec leur entree x desormais deja en compute_dtype (plus jamais float32 en sortie
+# de BatchNorm), leur multiplication elementwise x*signal ne re-promeut plus vers
+# float32 et ressort donc elle aussi en compute_dtype de bout en bout.
+_NORMALIZATION_LAYER_PREFIXES = ("BatchNorm_", "LayerNorm_")
+_ATTENTION_LAYER_PREFIXES = ("SEBlock_", "SpatialAttention_")
 
-def _matmul_intermediates(mutated):
-    # Filtre les intermediates captures (capture_intermediates=True) aux seules
-    # couches matmul lourdes (Conv/SeparableConv/Dense, AD-4) - exclut
-    # BatchNorm/SEBlock/SpatialAttention/LayerNorm/Dropout, dont le dtype de sortie
-    # n'est PAS gouverne par compute_dtype (voir _assert_all_matmul_layers_match_dtype
-    # ci-dessous pour le pourquoi).
+
+def _matmul_intermediates(mutated, extra_prefixes=()):
+    # Filtre les intermediates captures (capture_intermediates=True) aux couches
+    # matmul lourdes (Conv/SeparableConv/Dense, AD-4) - plus, si extra_prefixes est
+    # fourni, les prefixes additionnels demandes (ex. BatchNorm_/LayerNorm_/SEBlock_/
+    # SpatialAttention_ pour les 3 modeles amendes par AD-4 2026-08-17). Exclut
+    # toujours Dropout_ (pas un concern dtype de calcul ici).
+    prefixes = _MATMUL_LAYER_PREFIXES + tuple(extra_prefixes)
     return {
         name: val["__call__"][0]
         for name, val in mutated["intermediates"].items()
-        if name.startswith(_MATMUL_LAYER_PREFIXES)
+        if name.startswith(prefixes)
     }
 
 
-def _assert_all_matmul_layers_match_dtype(mutated, expected_dtype, model_label):
+def _assert_all_matmul_layers_match_dtype(mutated, expected_dtype, model_label, include_normalization=False):
     # Revue Blind Hunter, 2026-08-17 : verifier seulement Conv_0 ne detecterait pas
     # un site d'appel qui aurait perdu dtype=self.compute_dtype plus loin dans le
     # reseau (ex. une des SeparableConv residuelles). Verifie ICI TOUTES les couches
     # matmul capturees, pas seulement la premiere.
     #
-    # N'inclut PAS BatchNorm/SEBlock/SpatialAttention/LayerNorm : decouverte reelle en
-    # sondant ce test (2026-08-17) - nn.BatchNorm n'est JAMAIS appele avec dtype= (AD-4,
-    # deliberement exclu) et ressort donc TOUJOURS en float32 meme si son entree est
-    # compute_dtype, quel que soit le compute_dtype de la couche precedente. Consequence
-    # en cascade : SEBlock/SpatialAttention (dont l'entree x vient d'un BatchNorm)
-    # ressortent aussi en float32 en pratique (leur propre multiplication elementwise
-    # x*signal promeut vers float32 des que x est deja float32), MEME SI leurs 2
-    # nn.Dense/nn.Conv internes calculent bien en compute_dtype (verifie separement en
-    # isolation, test_shared_submodules_compute_dtype_really_observed). Aucune couche
-    # Conv/SeparableConv/Dense n'est donc manquee - le reseau alterne juste
-    # compute_dtype (sortie Conv) / float32 (sortie BatchNorm) a chaque bloc plutot que
-    # de rester en compute_dtype en continu. Pas un bug (rien de casse, deja valide en
-    # conditions reelles TPU v5 sur CIFAR10/FIGHTERJET_CLASSIFICATION), mais une
-    # limite reelle du gain de vitesse a garder en tete - piste d'optimisation future
-    # (passer dtype=self.compute_dtype a nn.BatchNorm aussi, sa reduction interne
-    # resterait protegee en float32 par force_float32_reductions) deliberement HORS
-    # SCOPE ici (toucherait des modeles deja valides sur materiel reel).
-    layers = _matmul_intermediates(mutated)
+    # include_normalization=False (defaut, ex. Kepler1DConvNet qui n'a pas de
+    # BatchNorm/LayerNorm) : ne verifie que Conv/SeparableConv/Dense, comme avant.
+    #
+    # include_normalization=True (SophisticatedCNN32Plus/128Lite/128Plus uniquement,
+    # spec-compute-dtype-batchnorm-layernorm, 2026-08-17, amendement AD-4) : verifie EN
+    # PLUS BatchNorm_*/LayerNorm_*/SEBlock_*/SpatialAttention_*. Avant cet amendement,
+    # nn.BatchNorm n'etait JAMAIS appele avec dtype= et ressortait donc TOUJOURS en
+    # float32 quel que soit le compute_dtype de la couche precedente, ce qui faisait
+    # aussi ressortir SEBlock/SpatialAttention en float32 en cascade (leur
+    # multiplication elementwise x*signal promeut vers float32 des que x l'est deja) -
+    # cette ancienne exception est desormais explicitement testee comme INVERSEE : ces
+    # 4 familles de couches doivent maintenant matcher expected_dtype tout comme
+    # Conv/SeparableConv/Dense, la chaine de precision reduite ne se reinitialisant
+    # plus a chaque bloc de normalisation (verifie empiriquement, pas suppose - cf
+    # docstring de ce fichier).
+    extra_prefixes = _NORMALIZATION_LAYER_PREFIXES + _ATTENTION_LAYER_PREFIXES if include_normalization else ()
+    layers = _matmul_intermediates(mutated, extra_prefixes=extra_prefixes)
     assert layers, f"{model_label}: aucune couche matmul capturee, capture_intermediates a-t-il fonctionne ?"
+    # Revue Edge Case Hunter, 2026-08-17 : `assert layers` ci-dessus ne garantit que le
+    # dict combine est non-vide (les entrees Conv/Dense suffisent a le satisfaire) - si
+    # include_normalization=True et que la capture avait silencieusement rate les
+    # prefixes BatchNorm_/LayerNorm_/SEBlock_/SpatialAttention_ (ex. suite a un
+    # changement de comportement Flax), le test passerait SANS AVOIR VERIFIE l'invariant
+    # que cet amendement existe pour prouver. Verification explicite par famille de
+    # prefixe demandee.
+    if include_normalization:
+        for prefix_group in (_NORMALIZATION_LAYER_PREFIXES, _ATTENTION_LAYER_PREFIXES):
+            found = [name for name in layers if name.startswith(prefix_group)]
+            assert found, f"{model_label}: aucune couche capturee pour les prefixes {prefix_group} - capture_intermediates a-t-il bien cible ces couches ?"
     mismatched = {name: arr.dtype for name, arr in layers.items() if arr.dtype != expected_dtype}
     assert not mismatched, (
-        f"{model_label}: couches matmul dont le dtype ne correspond pas a {expected_dtype} : {mismatched}"
+        f"{model_label}: couches dont le dtype ne correspond pas a {expected_dtype} : {mismatched}"
     )
 
 
@@ -126,7 +156,7 @@ def test_sophisticated_cnn_32_plus_compute_dtype_really_observed():
         variables_f32, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
     )
     assert out_f32.dtype == jnp.float32, f"sortie doit toujours etre float32 (recast explicite), obtenu {out_f32.dtype}"
-    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "SophisticatedCNN32Plus(compute_dtype=float32)")
+    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "SophisticatedCNN32Plus(compute_dtype=float32)", include_normalization=True)
     assert _all_variables_are_float32(variables_f32), "poids/batch_stats doivent rester float32 (compute_dtype=float32)"
 
     model_bf16 = SophisticatedCNN32Plus(num_classes=10, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
@@ -137,10 +167,23 @@ def test_sophisticated_cnn_32_plus_compute_dtype_really_observed():
         variables_bf16, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
     )
     assert out_bf16.dtype == jnp.float32, f"sortie doit rester float32 meme sous compute_dtype=bfloat16 (recast explicite), obtenu {out_bf16.dtype}"
-    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "SophisticatedCNN32Plus(compute_dtype=bfloat16)")
+    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "SophisticatedCNN32Plus(compute_dtype=bfloat16)", include_normalization=True)
     assert _all_variables_are_float32(variables_bf16), "poids/batch_stats doivent rester float32 (compat checkpoint) meme sous compute_dtype=bfloat16 (AD-6)"
     assert bool(jnp.all(jnp.isfinite(out_bf16))), "sortie non finie (NaN/Inf) avec compute_dtype=bfloat16"
-    print("OK - SophisticatedCNN32Plus : compute_dtype reellement observe sur TOUTES les couches matmul, sortie/poids/batch_stats toujours float32")
+
+    # Revue Edge Case Hunter/Blind Hunter, 2026-08-17 : les verifications ci-dessus
+    # utilisent toutes training=False (use_running_average=True sur nn.BatchNorm) - un
+    # chemin de code DIFFERENT de training=True (reduction de stats EN DIRECT sur le
+    # batch), le chemin reellement emprunte pendant l'entrainement, precisement celui
+    # que cet amendement cible pour la vitesse. Verifie ici separement.
+    out_bf16_train, mutated_bf16_train = model_bf16.apply(
+        variables_bf16, x, training=True, rngs={"dropout": jax.random.PRNGKey(2)},
+        mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    _assert_all_matmul_layers_match_dtype(mutated_bf16_train, jnp.bfloat16, "SophisticatedCNN32Plus(compute_dtype=bfloat16, training=True)", include_normalization=True)
+    assert all(l.dtype == jnp.float32 for l in jax.tree_util.tree_leaves(mutated_bf16_train["batch_stats"])), "batch_stats doit rester float32 apres une mise a jour EN DIRECT (training=True) meme sous compute_dtype=bfloat16"
+    assert bool(jnp.all(jnp.isfinite(out_bf16_train))), "sortie non finie (NaN/Inf) en training=True avec compute_dtype=bfloat16"
+    print("OK - SophisticatedCNN32Plus : compute_dtype reellement observe sur TOUTES les couches matmul (training=False ET True), sortie/poids/batch_stats toujours float32")
 
 
 def test_sophisticated_cnn_128_lite_compute_dtype_really_observed():
@@ -156,7 +199,7 @@ def test_sophisticated_cnn_128_lite_compute_dtype_really_observed():
         variables_f32, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
     )
     assert out_f32.dtype == jnp.float32, f"sortie doit toujours etre float32 (recast explicite), obtenu {out_f32.dtype}"
-    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "SophisticatedCNN128Lite(compute_dtype=float32)")
+    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "SophisticatedCNN128Lite(compute_dtype=float32)", include_normalization=True)
     assert _all_variables_are_float32(variables_f32), "poids/batch_stats doivent rester float32 (compute_dtype=float32)"
 
     model_bf16 = SophisticatedCNN128Lite(num_classes=32, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
@@ -167,10 +210,19 @@ def test_sophisticated_cnn_128_lite_compute_dtype_really_observed():
         variables_bf16, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
     )
     assert out_bf16.dtype == jnp.float32, f"sortie doit rester float32 meme sous compute_dtype=bfloat16 (recast explicite), obtenu {out_bf16.dtype}"
-    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "SophisticatedCNN128Lite(compute_dtype=bfloat16)")
+    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "SophisticatedCNN128Lite(compute_dtype=bfloat16)", include_normalization=True)
     assert _all_variables_are_float32(variables_bf16), "poids/batch_stats doivent rester float32 (compat checkpoint) meme sous compute_dtype=bfloat16 (AD-6)"
     assert bool(jnp.all(jnp.isfinite(out_bf16))), "sortie non finie (NaN/Inf) avec compute_dtype=bfloat16"
-    print("OK - SophisticatedCNN128Lite : compute_dtype reellement observe sur TOUTES les couches matmul, sortie/poids/batch_stats toujours float32")
+
+    # training=True (reduction BatchNorm EN DIRECT, cf SophisticatedCNN32Plus ci-dessus).
+    out_bf16_train, mutated_bf16_train = model_bf16.apply(
+        variables_bf16, x, training=True, rngs={"dropout": jax.random.PRNGKey(2)},
+        mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    _assert_all_matmul_layers_match_dtype(mutated_bf16_train, jnp.bfloat16, "SophisticatedCNN128Lite(compute_dtype=bfloat16, training=True)", include_normalization=True)
+    assert all(l.dtype == jnp.float32 for l in jax.tree_util.tree_leaves(mutated_bf16_train["batch_stats"])), "batch_stats doit rester float32 apres une mise a jour EN DIRECT (training=True) meme sous compute_dtype=bfloat16"
+    assert bool(jnp.all(jnp.isfinite(out_bf16_train))), "sortie non finie (NaN/Inf) en training=True avec compute_dtype=bfloat16"
+    print("OK - SophisticatedCNN128Lite : compute_dtype reellement observe sur TOUTES les couches matmul (training=False ET True), sortie/poids/batch_stats toujours float32")
 
 
 def test_sophisticated_cnn_128_plus_compute_dtype_really_observed():
@@ -188,7 +240,7 @@ def test_sophisticated_cnn_128_plus_compute_dtype_really_observed():
         variables_f32, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
     )
     assert out_f32.dtype == jnp.float32, f"sortie doit toujours etre float32 (recast explicite), obtenu {out_f32.dtype}"
-    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "SophisticatedCNN128Plus(compute_dtype=float32)")
+    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "SophisticatedCNN128Plus(compute_dtype=float32)", include_normalization=True)
     assert _all_variables_are_float32(variables_f32), "poids/batch_stats doivent rester float32 (compute_dtype=float32)"
 
     model_bf16 = SophisticatedCNN128Plus(num_classes=32, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
@@ -199,10 +251,19 @@ def test_sophisticated_cnn_128_plus_compute_dtype_really_observed():
         variables_bf16, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
     )
     assert out_bf16.dtype == jnp.float32, f"sortie doit rester float32 meme sous compute_dtype=bfloat16 (recast explicite), obtenu {out_bf16.dtype}"
-    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "SophisticatedCNN128Plus(compute_dtype=bfloat16)")
+    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "SophisticatedCNN128Plus(compute_dtype=bfloat16)", include_normalization=True)
     assert _all_variables_are_float32(variables_bf16), "poids/batch_stats doivent rester float32 (compat checkpoint) meme sous compute_dtype=bfloat16 (AD-6)"
     assert bool(jnp.all(jnp.isfinite(out_bf16))), "sortie non finie (NaN/Inf) avec compute_dtype=bfloat16"
-    print("OK - SophisticatedCNN128Plus : compute_dtype reellement observe sur TOUTES les couches matmul, sortie/poids/batch_stats toujours float32")
+
+    # training=True (reduction BatchNorm EN DIRECT, cf SophisticatedCNN32Plus ci-dessus).
+    out_bf16_train, mutated_bf16_train = model_bf16.apply(
+        variables_bf16, x, training=True, rngs={"dropout": jax.random.PRNGKey(2)},
+        mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    _assert_all_matmul_layers_match_dtype(mutated_bf16_train, jnp.bfloat16, "SophisticatedCNN128Plus(compute_dtype=bfloat16, training=True)", include_normalization=True)
+    assert all(l.dtype == jnp.float32 for l in jax.tree_util.tree_leaves(mutated_bf16_train["batch_stats"])), "batch_stats doit rester float32 apres une mise a jour EN DIRECT (training=True) meme sous compute_dtype=bfloat16"
+    assert bool(jnp.all(jnp.isfinite(out_bf16_train))), "sortie non finie (NaN/Inf) en training=True avec compute_dtype=bfloat16"
+    print("OK - SophisticatedCNN128Plus : compute_dtype reellement observe sur TOUTES les couches matmul (training=False ET True), sortie/poids/batch_stats toujours float32")
 
 
 def test_kepler_1d_cnn_compute_dtype_really_observed():

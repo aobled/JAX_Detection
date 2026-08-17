@@ -115,11 +115,12 @@ class SophisticatedCNN128Plus(nn.Module):
     num_classes: int = 2
     dropout_rate: float = 0.0
     # compute_dtype (spec-compute-dtype-rollout-classification, 2026-08-17, AD-1/AD-4/
-    # AD-5/AD-6) : dtype de CALCUL des nn.Conv/nn.Dense uniquement (jamais
-    # nn.BatchNorm/nn.LayerNorm, AD-4) - derive du materiel par main.py (bfloat16 sur
-    # TPU, float32 sinon), injecte par introspection de signature. Poids stockes
-    # (checkpoint) restent float32 dans tous les cas (AD-6) - champ dataclass
-    # statique, jamais un nn.Param, absent du pytree de parametres. Meme regle que
+    # AD-5/AD-6 ; AD-4 amende par spec-compute-dtype-batchnorm-layernorm, 2026-08-17) :
+    # dtype de CALCUL des nn.Conv/nn.Dense ET nn.BatchNorm/nn.LayerNorm (jamais
+    # nn.Embed) - derive du materiel par main.py (bfloat16 sur TPU, float32 sinon),
+    # injecte par introspection de signature. Poids stockes (checkpoint) restent
+    # float32 dans tous les cas (AD-6) - champ dataclass statique, jamais un
+    # nn.Param, absent du pytree de parametres. Meme regle que
     # SophisticatedCNN128Lite/32Plus deja adaptes.
     compute_dtype: Any = jnp.float32
 
@@ -133,21 +134,21 @@ class SophisticatedCNN128Plus(nn.Module):
         # === BLOC 0: Conv initiale (adaptatif au nombre de canaux) ===
         x = nn.Conv(64, (3, 3), padding="SAME", use_bias=False,
                    kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         # === BLOC 1: 96 canaux (NOUVEAU pour 128×128) ===
         x = SeparableConv(96, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         # Residual connection
         residual = nn.Conv(96, (1, 1), padding="SAME", use_bias=False,
                           kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        residual = nn.BatchNorm(use_running_average=not training)(residual)
+        residual = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(residual)
 
         x = SeparableConv(96, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = x + residual
         x = nn.silu(x)
 
@@ -156,16 +157,16 @@ class SophisticatedCNN128Plus(nn.Module):
 
         # === BLOC 2: 128 canaux ===
         x = SeparableConv(128, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         # Residual connection
         residual = nn.Conv(128, (1, 1), padding="SAME", use_bias=False,
                           kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        residual = nn.BatchNorm(use_running_average=not training)(residual)
+        residual = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(residual)
 
         x = SeparableConv(128, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = x + residual
         x = nn.silu(x)
 
@@ -174,11 +175,11 @@ class SophisticatedCNN128Plus(nn.Module):
 
         # === BLOC 3: 256 canaux ===
         x = SeparableConv(256, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         x = SeparableConv(256, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         # SE Attention
@@ -190,21 +191,21 @@ class SophisticatedCNN128Plus(nn.Module):
         # === BLOC 4: 512 canaux ===
         x = nn.Conv(384, (1, 1), padding="SAME", use_bias=False,
                    kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         x = SeparableConv(512, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         # Residual connection
         residual = nn.Conv(512, (1, 1), padding="SAME", use_bias=False,
                           kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        residual = nn.BatchNorm(use_running_average=not training)(residual)
+        residual = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(residual)
 
         x = nn.Conv(512, (1, 1), padding="SAME", use_bias=False,
                    kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = x + residual
         x = nn.silu(x)
 
@@ -218,7 +219,7 @@ class SophisticatedCNN128Plus(nn.Module):
         x = jnp.mean(x, axis=(1, 2))  # (B, 512)
 
         # Classification head
-        x = nn.LayerNorm()(x)
+        x = nn.LayerNorm(dtype=self.compute_dtype)(x)
         x = nn.Dense(384, use_bias=True, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
         x = nn.Dropout(self.dropout_rate, deterministic=not training)(x)
@@ -256,12 +257,13 @@ class SophisticatedCNN128Lite(nn.Module):
     """
     num_classes: int = 2
     dropout_rate: float = 0.0
-    # compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-1/AD-4/AD-6) : dtype
-    # de CALCUL des nn.Conv/nn.Dense uniquement (jamais nn.BatchNorm/nn.LayerNorm,
-    # AD-4) - derive du materiel par main.py (bfloat16 sur TPU, float32 sinon),
-    # injecte par introspection de signature. Poids stockes (checkpoint) restent
-    # float32 dans tous les cas (AD-6) - champ dataclass statique, jamais un
-    # nn.Param, absent du pytree de parametres.
+    # compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-1/AD-4/AD-6 ; AD-4
+    # amende par spec-compute-dtype-batchnorm-layernorm, 2026-08-17) : dtype de CALCUL
+    # des nn.Conv/nn.Dense ET nn.BatchNorm/nn.LayerNorm (jamais nn.Embed) - derive du
+    # materiel par main.py (bfloat16 sur TPU, float32 sinon), injecte par introspection
+    # de signature. Poids stockes (checkpoint) restent float32 dans tous les cas
+    # (AD-6) - champ dataclass statique, jamais un nn.Param, absent du pytree de
+    # parametres.
     compute_dtype: Any = jnp.float32
 
     @nn.compact
@@ -271,20 +273,20 @@ class SophisticatedCNN128Lite(nn.Module):
         # === BLOC 0: Conv initiale (inchangé) ===
         x = nn.Conv(64, (3, 3), padding="SAME", use_bias=False,
                    kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         # === BLOC 1: 64 canaux (LITE: 96 -> 64, pleine résolution 128×128) ===
         x = SeparableConv(64, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         residual = nn.Conv(64, (1, 1), padding="SAME", use_bias=False,
                           kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        residual = nn.BatchNorm(use_running_average=not training)(residual)
+        residual = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(residual)
 
         x = SeparableConv(64, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = x + residual
         x = nn.silu(x)
 
@@ -293,15 +295,15 @@ class SophisticatedCNN128Lite(nn.Module):
 
         # === BLOC 2: 128 canaux (inchangé) ===
         x = SeparableConv(128, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         residual = nn.Conv(128, (1, 1), padding="SAME", use_bias=False,
                           kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        residual = nn.BatchNorm(use_running_average=not training)(residual)
+        residual = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(residual)
 
         x = SeparableConv(128, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = x + residual
         x = nn.silu(x)
 
@@ -310,11 +312,11 @@ class SophisticatedCNN128Lite(nn.Module):
 
         # === BLOC 3: 256 canaux (inchangé) ===
         x = SeparableConv(256, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         x = SeparableConv(256, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         # SE Attention
@@ -326,21 +328,21 @@ class SophisticatedCNN128Lite(nn.Module):
         # === BLOC 4: 384 canaux (LITE: pic 512 -> 384, x0.75) ===
         x = nn.Conv(288, (1, 1), padding="SAME", use_bias=False,
                    kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         x = SeparableConv(384, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         # Residual connection
         residual = nn.Conv(384, (1, 1), padding="SAME", use_bias=False,
                           kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        residual = nn.BatchNorm(use_running_average=not training)(residual)
+        residual = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(residual)
 
         x = nn.Conv(384, (1, 1), padding="SAME", use_bias=False,
                    kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = x + residual
         x = nn.silu(x)
 
@@ -354,7 +356,7 @@ class SophisticatedCNN128Lite(nn.Module):
         x = jnp.mean(x, axis=(1, 2))  # (B, 384)
 
         # Classification head (inchangé)
-        x = nn.LayerNorm()(x)
+        x = nn.LayerNorm(dtype=self.compute_dtype)(x)
         x = nn.Dense(384, use_bias=True, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
         x = nn.Dropout(self.dropout_rate, deterministic=not training)(x)
@@ -384,8 +386,10 @@ class SophisticatedCNN32Plus(nn.Module):
     """
     num_classes: int = 10
     dropout_rate: float = 0.0
-    # compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-1/AD-4/AD-6) : cf.
-    # SophisticatedCNN128Lite ci-dessus - meme regle, meme garantie checkpoint.
+    # compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-1/AD-4/AD-6 ; AD-4
+    # amende par spec-compute-dtype-batchnorm-layernorm, 2026-08-17) : cf.
+    # SophisticatedCNN128Lite ci-dessus - meme regle (Conv/Dense/BatchNorm/LayerNorm),
+    # meme garantie checkpoint.
     compute_dtype: Any = jnp.float32
 
     @nn.compact
@@ -395,20 +399,20 @@ class SophisticatedCNN32Plus(nn.Module):
         # === BLOC 0: Conv initiale ===
         x = nn.Conv(32, (3, 3), padding="SAME", use_bias=False,
                    kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         # === BLOC 1: 48 canaux ===
         x = SeparableConv(48, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         residual = nn.Conv(48, (1, 1), padding="SAME", use_bias=False,
                           kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        residual = nn.BatchNorm(use_running_average=not training)(residual)
+        residual = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(residual)
 
         x = SeparableConv(48, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = x + residual
         x = nn.silu(x)
 
@@ -417,15 +421,15 @@ class SophisticatedCNN32Plus(nn.Module):
 
         # === BLOC 2: 64 canaux ===
         x = SeparableConv(64, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         residual = nn.Conv(64, (1, 1), padding="SAME", use_bias=False,
                           kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        residual = nn.BatchNorm(use_running_average=not training)(residual)
+        residual = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(residual)
 
         x = SeparableConv(64, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = x + residual
         x = nn.silu(x)
 
@@ -434,11 +438,11 @@ class SophisticatedCNN32Plus(nn.Module):
 
         # === BLOC 3: 128 canaux ===
         x = SeparableConv(128, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         x = SeparableConv(128, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         # SE Attention
@@ -449,20 +453,20 @@ class SophisticatedCNN32Plus(nn.Module):
         # === BLOC 4: bottleneck 192 -> 256 canaux ===
         x = nn.Conv(192, (1, 1), padding="SAME", use_bias=False,
                    kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         x = SeparableConv(256, (3, 3), compute_dtype=self.compute_dtype)(x, training)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
 
         residual = nn.Conv(256, (1, 1), padding="SAME", use_bias=False,
                           kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        residual = nn.BatchNorm(use_running_average=not training)(residual)
+        residual = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(residual)
 
         x = nn.Conv(256, (1, 1), padding="SAME", use_bias=False,
                    kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
-        x = nn.BatchNorm(use_running_average=not training)(x)
+        x = nn.BatchNorm(use_running_average=not training, dtype=self.compute_dtype)(x)
         x = x + residual
         x = nn.silu(x)
 
@@ -476,7 +480,7 @@ class SophisticatedCNN32Plus(nn.Module):
         x = jnp.mean(x, axis=(1, 2))  # (B, 256)
 
         # Classification head
-        x = nn.LayerNorm()(x)
+        x = nn.LayerNorm(dtype=self.compute_dtype)(x)
         x = nn.Dense(192, use_bias=True, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
         x = nn.Dropout(self.dropout_rate, deterministic=not training)(x)
