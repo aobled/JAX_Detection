@@ -51,6 +51,13 @@ else:
 # Logique extraite dans model_library.resolve_compute_dtype() (testable en isolation,
 # voir tests/test_compute_dtype_hardware.py) - main.py ne fait plus que l'appeler.
 compute_dtype = resolve_compute_dtype(backend)
+# Print de validation (2026-08-17, suite a une question d'Aymeric) : la seule chose
+# qu'un vrai run peut apprendre que les tests locaux ne couvrent pas deja, c'est si
+# jax.default_backend() detecte reellement "tpu" dans CE runtime (Colab) et resout
+# bien bfloat16 - la propagation reelle du dtype dans les couches est deja prouvee en
+# local (tests/test_compute_dtype_hardware.py, independante du materiel). Distinct du
+# print "Backend JAX" ci-dessous (celui-ci existait deja, ne mentionne pas compute_dtype).
+print(f"🔢 compute_dtype (calcul Conv/Dense): {compute_dtype.__name__}")
 
 print("Backend JAX:", backend)
 print("Devices:", jax.devices())
@@ -176,8 +183,10 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
     # ValueError explicite habituel (liste les modeles disponibles), comme avant cette
     # feature (revue Edge Case Hunter/Blind Hunter, 2026-08-17).
     target_factory = MODELS.get(model_name)
-    if target_factory is not None and "compute_dtype" in inspect.signature(target_factory).parameters:
+    compute_dtype_injected = target_factory is not None and "compute_dtype" in inspect.signature(target_factory).parameters
+    if compute_dtype_injected:
         model_kwargs["compute_dtype"] = compute_dtype
+    print(f"🔢 compute_dtype pour '{model_name}': {'injecte (' + compute_dtype.__name__ + ')' if compute_dtype_injected else 'non applicable (modele non adapte)'}")
     model = get_model(model_name, **model_kwargs)
     
     # 4. INSTANCIATION DE LA STRATEGIE (Injection de dépendance)
