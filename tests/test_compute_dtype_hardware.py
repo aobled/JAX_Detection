@@ -4,6 +4,10 @@ generalisation de `compute_dtype` (precision mixte, derivee du materiel) a
 SophisticatedCNN32Plus (CIFAR10) et SophisticatedCNN128Lite (FIGHTERJET_CLASSIFICATION),
 au dela de son seul precedent (ChessMoveTokenTransformer, tests/test_chess_move_token_model.py).
 
+Etendu par spec-compute-dtype-rollout-classification (2026-08-17, Groupe 1 du rollout) :
+SophisticatedCNN128Plus (meme famille/sous-modules que 32Plus/128Lite) et Kepler1DConvNet
+(plus simple, pas de sous-module partage, pas de nn.BatchNorm/nn.LayerNorm).
+
 Script autonome - ce projet n'a pas de framework de test formel (meme convention que
 tests/test_chess_model.py / tests/test_chess_move_token_model.py /
 tests/test_chess_token_model.py). Executer directement :
@@ -22,11 +26,14 @@ import jax.numpy as jnp
 from model_library import (
     SophisticatedCNN32Plus,
     SophisticatedCNN128Lite,
+    SophisticatedCNN128Plus,
+    Kepler1DConvNet,
     SeparableConv,
     SEBlock,
     SpatialAttention,
     create_sophisticated_cnn_32_plus,
     create_sophisticated_cnn_128_lite,
+    create_sophisticated_cnn_128_plus,
     create_chess_move_token_transformer,
     create_kepler_1d_cnn,
     create_aircraft_detector_unet,
@@ -54,6 +61,53 @@ def _all_variables_are_float32(variables):
     return all_dtypes == {"float32"}
 
 
+_MATMUL_LAYER_PREFIXES = ("Conv_", "SeparableConv_", "Dense_")
+
+
+def _matmul_intermediates(mutated):
+    # Filtre les intermediates captures (capture_intermediates=True) aux seules
+    # couches matmul lourdes (Conv/SeparableConv/Dense, AD-4) - exclut
+    # BatchNorm/SEBlock/SpatialAttention/LayerNorm/Dropout, dont le dtype de sortie
+    # n'est PAS gouverne par compute_dtype (voir _assert_all_matmul_layers_match_dtype
+    # ci-dessous pour le pourquoi).
+    return {
+        name: val["__call__"][0]
+        for name, val in mutated["intermediates"].items()
+        if name.startswith(_MATMUL_LAYER_PREFIXES)
+    }
+
+
+def _assert_all_matmul_layers_match_dtype(mutated, expected_dtype, model_label):
+    # Revue Blind Hunter, 2026-08-17 : verifier seulement Conv_0 ne detecterait pas
+    # un site d'appel qui aurait perdu dtype=self.compute_dtype plus loin dans le
+    # reseau (ex. une des SeparableConv residuelles). Verifie ICI TOUTES les couches
+    # matmul capturees, pas seulement la premiere.
+    #
+    # N'inclut PAS BatchNorm/SEBlock/SpatialAttention/LayerNorm : decouverte reelle en
+    # sondant ce test (2026-08-17) - nn.BatchNorm n'est JAMAIS appele avec dtype= (AD-4,
+    # deliberement exclu) et ressort donc TOUJOURS en float32 meme si son entree est
+    # compute_dtype, quel que soit le compute_dtype de la couche precedente. Consequence
+    # en cascade : SEBlock/SpatialAttention (dont l'entree x vient d'un BatchNorm)
+    # ressortent aussi en float32 en pratique (leur propre multiplication elementwise
+    # x*signal promeut vers float32 des que x est deja float32), MEME SI leurs 2
+    # nn.Dense/nn.Conv internes calculent bien en compute_dtype (verifie separement en
+    # isolation, test_shared_submodules_compute_dtype_really_observed). Aucune couche
+    # Conv/SeparableConv/Dense n'est donc manquee - le reseau alterne juste
+    # compute_dtype (sortie Conv) / float32 (sortie BatchNorm) a chaque bloc plutot que
+    # de rester en compute_dtype en continu. Pas un bug (rien de casse, deja valide en
+    # conditions reelles TPU v5 sur CIFAR10/FIGHTERJET_CLASSIFICATION), mais une
+    # limite reelle du gain de vitesse a garder en tete - piste d'optimisation future
+    # (passer dtype=self.compute_dtype a nn.BatchNorm aussi, sa reduction interne
+    # resterait protegee en float32 par force_float32_reductions) deliberement HORS
+    # SCOPE ici (toucherait des modeles deja valides sur materiel reel).
+    layers = _matmul_intermediates(mutated)
+    assert layers, f"{model_label}: aucune couche matmul capturee, capture_intermediates a-t-il fonctionne ?"
+    mismatched = {name: arr.dtype for name, arr in layers.items() if arr.dtype != expected_dtype}
+    assert not mismatched, (
+        f"{model_label}: couches matmul dont le dtype ne correspond pas a {expected_dtype} : {mismatched}"
+    )
+
+
 def test_sophisticated_cnn_32_plus_compute_dtype_really_observed():
     # AD-3/AD-4/AD-6 : compute_dtype doit REELLEMENT changer le dtype de calcul (pas
     # seulement etre accepte sans erreur) - poids stockes (params ET batch_stats)
@@ -72,7 +126,7 @@ def test_sophisticated_cnn_32_plus_compute_dtype_really_observed():
         variables_f32, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
     )
     assert out_f32.dtype == jnp.float32, f"sortie doit toujours etre float32 (recast explicite), obtenu {out_f32.dtype}"
-    assert mutated_f32["intermediates"]["Conv_0"]["__call__"][0].dtype == jnp.float32
+    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "SophisticatedCNN32Plus(compute_dtype=float32)")
     assert _all_variables_are_float32(variables_f32), "poids/batch_stats doivent rester float32 (compute_dtype=float32)"
 
     model_bf16 = SophisticatedCNN32Plus(num_classes=10, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
@@ -83,11 +137,10 @@ def test_sophisticated_cnn_32_plus_compute_dtype_really_observed():
         variables_bf16, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
     )
     assert out_bf16.dtype == jnp.float32, f"sortie doit rester float32 meme sous compute_dtype=bfloat16 (recast explicite), obtenu {out_bf16.dtype}"
-    first_conv_dtype = mutated_bf16["intermediates"]["Conv_0"]["__call__"][0].dtype
-    assert first_conv_dtype == jnp.bfloat16, f"compute_dtype=bfloat16 doit se propager a la 1ere couche Conv, obtenu {first_conv_dtype}"
+    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "SophisticatedCNN32Plus(compute_dtype=bfloat16)")
     assert _all_variables_are_float32(variables_bf16), "poids/batch_stats doivent rester float32 (compat checkpoint) meme sous compute_dtype=bfloat16 (AD-6)"
     assert bool(jnp.all(jnp.isfinite(out_bf16))), "sortie non finie (NaN/Inf) avec compute_dtype=bfloat16"
-    print("OK - SophisticatedCNN32Plus : compute_dtype reellement observe en interne (Conv_0), sortie/poids/batch_stats toujours float32")
+    print("OK - SophisticatedCNN32Plus : compute_dtype reellement observe sur TOUTES les couches matmul, sortie/poids/batch_stats toujours float32")
 
 
 def test_sophisticated_cnn_128_lite_compute_dtype_really_observed():
@@ -103,7 +156,7 @@ def test_sophisticated_cnn_128_lite_compute_dtype_really_observed():
         variables_f32, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
     )
     assert out_f32.dtype == jnp.float32, f"sortie doit toujours etre float32 (recast explicite), obtenu {out_f32.dtype}"
-    assert mutated_f32["intermediates"]["Conv_0"]["__call__"][0].dtype == jnp.float32
+    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "SophisticatedCNN128Lite(compute_dtype=float32)")
     assert _all_variables_are_float32(variables_f32), "poids/batch_stats doivent rester float32 (compute_dtype=float32)"
 
     model_bf16 = SophisticatedCNN128Lite(num_classes=32, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
@@ -114,11 +167,80 @@ def test_sophisticated_cnn_128_lite_compute_dtype_really_observed():
         variables_bf16, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
     )
     assert out_bf16.dtype == jnp.float32, f"sortie doit rester float32 meme sous compute_dtype=bfloat16 (recast explicite), obtenu {out_bf16.dtype}"
-    first_conv_dtype = mutated_bf16["intermediates"]["Conv_0"]["__call__"][0].dtype
-    assert first_conv_dtype == jnp.bfloat16, f"compute_dtype=bfloat16 doit se propager a la 1ere couche Conv, obtenu {first_conv_dtype}"
+    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "SophisticatedCNN128Lite(compute_dtype=bfloat16)")
     assert _all_variables_are_float32(variables_bf16), "poids/batch_stats doivent rester float32 (compat checkpoint) meme sous compute_dtype=bfloat16 (AD-6)"
     assert bool(jnp.all(jnp.isfinite(out_bf16))), "sortie non finie (NaN/Inf) avec compute_dtype=bfloat16"
-    print("OK - SophisticatedCNN128Lite : compute_dtype reellement observe en interne (Conv_0), sortie/poids/batch_stats toujours float32")
+    print("OK - SophisticatedCNN128Lite : compute_dtype reellement observe sur TOUTES les couches matmul, sortie/poids/batch_stats toujours float32")
+
+
+def test_sophisticated_cnn_128_plus_compute_dtype_really_observed():
+    # Meme preuve que 32Plus/128Lite ci-dessus, pour SophisticatedCNN128Plus
+    # (spec-compute-dtype-rollout-classification, Groupe 1 du rollout, 2026-08-17) :
+    # meme famille/sous-modules (SeparableConv/SEBlock/SpatialAttention) que les 2
+    # modeles deja adaptes, meme garde de recast float32 en sortie.
+    x = jnp.zeros((2, 128, 128, 3), dtype=jnp.float32)
+
+    model_f32 = SophisticatedCNN128Plus(num_classes=32, dropout_rate=0.0, compute_dtype=jnp.float32)
+    variables_f32 = model_f32.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    out_f32, mutated_f32 = model_f32.apply(
+        variables_f32, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    assert out_f32.dtype == jnp.float32, f"sortie doit toujours etre float32 (recast explicite), obtenu {out_f32.dtype}"
+    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "SophisticatedCNN128Plus(compute_dtype=float32)")
+    assert _all_variables_are_float32(variables_f32), "poids/batch_stats doivent rester float32 (compute_dtype=float32)"
+
+    model_bf16 = SophisticatedCNN128Plus(num_classes=32, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
+    variables_bf16 = model_bf16.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    out_bf16, mutated_bf16 = model_bf16.apply(
+        variables_bf16, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    assert out_bf16.dtype == jnp.float32, f"sortie doit rester float32 meme sous compute_dtype=bfloat16 (recast explicite), obtenu {out_bf16.dtype}"
+    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "SophisticatedCNN128Plus(compute_dtype=bfloat16)")
+    assert _all_variables_are_float32(variables_bf16), "poids/batch_stats doivent rester float32 (compat checkpoint) meme sous compute_dtype=bfloat16 (AD-6)"
+    assert bool(jnp.all(jnp.isfinite(out_bf16))), "sortie non finie (NaN/Inf) avec compute_dtype=bfloat16"
+    print("OK - SophisticatedCNN128Plus : compute_dtype reellement observe sur TOUTES les couches matmul, sortie/poids/batch_stats toujours float32")
+
+
+def test_kepler_1d_cnn_compute_dtype_really_observed():
+    # Meme preuve que ci-dessus pour Kepler1DConvNet (spec-compute-dtype-rollout-
+    # classification, 2026-08-17) : pas de sous-module partage, pas de nn.BatchNorm/
+    # nn.LayerNorm dans cette classe (verifie en lisant le code - donc pas de collection
+    # "batch_stats" a verifier separement ici, contrairement aux 3 modeles CNN 2D
+    # ci-dessus qui utilisent nn.BatchNorm : _all_variables_are_float32 reste correct a
+    # appeler tel quel, elle itere simplement sur les collections presentes dans
+    # `variables`, qui ne contiendra ici que "params").
+    x = jnp.zeros((2, 256, 1), dtype=jnp.float32)
+
+    model_f32 = Kepler1DConvNet(num_classes=2, dropout_rate=0.0, compute_dtype=jnp.float32)
+    variables_f32 = model_f32.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    out_f32, mutated_f32 = model_f32.apply(
+        variables_f32, x, training=False, mutable=["intermediates"], capture_intermediates=True
+    )
+    assert out_f32.dtype == jnp.float32, f"sortie doit toujours etre float32 (recast explicite), obtenu {out_f32.dtype}"
+    _assert_all_matmul_layers_match_dtype(mutated_f32, jnp.float32, "Kepler1DConvNet(compute_dtype=float32)")
+    assert _all_variables_are_float32(variables_f32), "poids doivent rester float32 (compute_dtype=float32)"
+
+    model_bf16 = Kepler1DConvNet(num_classes=2, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
+    variables_bf16 = model_bf16.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    out_bf16, mutated_bf16 = model_bf16.apply(
+        variables_bf16, x, training=False, mutable=["intermediates"], capture_intermediates=True
+    )
+    assert out_bf16.dtype == jnp.float32, f"sortie doit rester float32 meme sous compute_dtype=bfloat16 (recast explicite), obtenu {out_bf16.dtype}"
+    # Kepler1DConvNet n'a pas de nn.BatchNorm (verifie) - contrairement aux 3 modeles
+    # CNN 2D ci-dessus, TOUTES ses couches matmul devraient donc rester en
+    # compute_dtype d'un bout a l'autre (pas de "reset" par BatchNorm entre blocs).
+    _assert_all_matmul_layers_match_dtype(mutated_bf16, jnp.bfloat16, "Kepler1DConvNet(compute_dtype=bfloat16)")
+    assert _all_variables_are_float32(variables_bf16), "poids doivent rester float32 (compat checkpoint) meme sous compute_dtype=bfloat16 (AD-6)"
+    assert bool(jnp.all(jnp.isfinite(out_bf16))), "sortie non finie (NaN/Inf) avec compute_dtype=bfloat16"
+    print("OK - Kepler1DConvNet : compute_dtype reellement observe sur TOUTES les couches matmul, sortie/poids toujours float32")
 
 
 def test_shared_submodules_compute_dtype_really_observed():
@@ -172,8 +294,21 @@ def test_factories_accept_and_forward_compute_dtype():
     model = create_sophisticated_cnn_128_lite(num_classes=32, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
     assert model.compute_dtype == jnp.bfloat16, "create_sophisticated_cnn_128_lite doit transmettre compute_dtype au constructeur"
 
+    # Groupe 1 du rollout (spec-compute-dtype-rollout-classification, 2026-08-17).
+    model = create_sophisticated_cnn_128_plus(num_classes=32, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
+    assert model.compute_dtype == jnp.bfloat16, "create_sophisticated_cnn_128_plus doit transmettre compute_dtype au constructeur"
+
+    model = create_kepler_1d_cnn(num_classes=2, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
+    assert model.compute_dtype == jnp.bfloat16, "create_kepler_1d_cnn doit transmettre compute_dtype au constructeur"
+
     # Meme chemin que main.py : get_model(model_name, **model_kwargs)
     model_via_registry = get_model("sophisticated_cnn_32_plus", num_classes=10, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
+    assert model_via_registry.compute_dtype == jnp.bfloat16
+
+    model_via_registry = get_model("sophisticated_cnn_128_plus", num_classes=32, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
+    assert model_via_registry.compute_dtype == jnp.bfloat16
+
+    model_via_registry = get_model("kepler_1d_cnn", num_classes=2, dropout_rate=0.0, compute_dtype=jnp.bfloat16)
     assert model_via_registry.compute_dtype == jnp.bfloat16
 
     # Defauts (sans compute_dtype explicite) doivent rester float32 - jamais bfloat16
@@ -181,7 +316,11 @@ def test_factories_accept_and_forward_compute_dtype():
     # appelant construit le modele sans passer par la derivation materielle).
     default_model = create_sophisticated_cnn_32_plus(num_classes=10, dropout_rate=0.0)
     assert default_model.compute_dtype == jnp.float32, "defaut de la factory doit rester float32"
-    print("OK - create_sophisticated_cnn_32_plus/128_lite acceptent et transmettent reellement compute_dtype, defaut float32")
+    default_model = create_sophisticated_cnn_128_plus(num_classes=32, dropout_rate=0.0)
+    assert default_model.compute_dtype == jnp.float32, "defaut de la factory doit rester float32"
+    default_model = create_kepler_1d_cnn(num_classes=2, dropout_rate=0.0)
+    assert default_model.compute_dtype == jnp.float32, "defaut de la factory doit rester float32"
+    print("OK - create_sophisticated_cnn_32_plus/128_lite/128_plus/kepler_1d_cnn acceptent et transmettent reellement compute_dtype, defaut float32")
 
 
 def test_resolve_compute_dtype_both_branches():
@@ -229,7 +368,14 @@ def test_introspection_targets_only_adapted_factories():
     # verifie directement le contrat d'introspection sur les factories reelles de
     # MODELS, ce qui est equivalent a executer la condition de main.py pour chaque
     # modele.
-    adapted = {"sophisticated_cnn_32_plus", "sophisticated_cnn_128_lite"}
+    # Etendu par spec-compute-dtype-rollout-classification (2026-08-17, Groupe 1) :
+    # sophisticated_cnn_128_plus et kepler_1d_cnn rejoignent le set adapte. Pour
+    # kepler_1d_cnn en particulier, create_kepler_1d_cnn a ete change de `(**kwargs)`
+    # a `(compute_dtype=jnp.float32, **kwargs)` precisement pour que ce test passe :
+    # **kwargs seul aurait fonctionne a l'execution (forwarding correct vers
+    # Kepler1DConvNet) mais serait reste invisible a l'introspection stricte par nom
+    # (AD-3), donc jamais reellement injecte par main.py.
+    adapted = {"sophisticated_cnn_32_plus", "sophisticated_cnn_128_lite", "sophisticated_cnn_128_plus", "kepler_1d_cnn"}
     for model_name, factory in MODELS.items():
         has_named_param = "compute_dtype" in inspect.signature(factory).parameters
         if model_name in adapted:
@@ -241,23 +387,26 @@ def test_introspection_targets_only_adapted_factories():
         else:
             assert not has_named_param, (
                 f"{model_name} ne doit PAS declarer de parametre nomme compute_dtype "
-                f"(9 modeles non adaptes, rollout differe - Deferred de la spine)"
+                f"(modeles non adaptes, rollout differe - Deferred de la spine)"
             )
 
     # Sanity explicite demandee par le spec : un exemple concret adapte vs un exemple
     # concret non adapte.
     assert "compute_dtype" in inspect.signature(create_sophisticated_cnn_32_plus).parameters
-    assert "compute_dtype" not in inspect.signature(create_kepler_1d_cnn).parameters
+    assert "compute_dtype" in inspect.signature(create_sophisticated_cnn_128_plus).parameters
+    assert "compute_dtype" in inspect.signature(create_kepler_1d_cnn).parameters
     # aircraft_detector_unet illustre le piege **kwargs deja documente (AD-3c) :
     # accepte **kwargs en facade mais n'a pas de parametre NOMME compute_dtype -
     # l'introspection stricte (par nom, pas par **kwargs) ne doit pas le cibler.
     assert "compute_dtype" not in inspect.signature(create_aircraft_detector_unet).parameters
-    print("OK - introspection cible exactement les 2 factories adaptees + le precedent chess_move_token_transformer, aucun autre")
+    print("OK - introspection cible exactement les 4 factories adaptees + le precedent chess_move_token_transformer, aucun autre")
 
 
 if __name__ == "__main__":
     test_sophisticated_cnn_32_plus_compute_dtype_really_observed()
     test_sophisticated_cnn_128_lite_compute_dtype_really_observed()
+    test_sophisticated_cnn_128_plus_compute_dtype_really_observed()
+    test_kepler_1d_cnn_compute_dtype_really_observed()
     test_shared_submodules_compute_dtype_really_observed()
     test_factories_accept_and_forward_compute_dtype()
     test_resolve_compute_dtype_both_branches()
