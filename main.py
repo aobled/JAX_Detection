@@ -12,6 +12,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MPLBACKEND", "Agg")
 
+import inspect
 import jax
 import jax.numpy as jnp
 import gc
@@ -19,7 +20,7 @@ import psutil
 from tqdm import tqdm
 
 # Import des modules
-from model_library import get_model
+from model_library import get_model, MODELS, resolve_compute_dtype
 from dataset_configs import get_dataset_config, print_config as print_dataset_config
 from trainer import Trainer
 from task_strategies import ClassificationStrategy, DetectionStrategy
@@ -39,6 +40,17 @@ else:
     jax.config.update("jax_platform_name", "gpu")
     dtype = jnp.float16
     print("📊 GPU: Utilisation de float16")
+
+# compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-1/AD-2) : dtype de CALCUL
+# des couches matmul lourdes (nn.Conv/nn.Dense), derive UNE SEULE FOIS ici depuis le
+# meme backend deja detecte ci-dessus - bfloat16 sur TPU, float32 partout ailleurs
+# (GPU inclus - prudence de projet documentee, pas une limite materielle, voir
+# SPEC.md Constraints). Distinct de `dtype` ci-dessus (cast de l'ENTREE uniquement,
+# mecanisme separe, jamais touche ici). Deja un jnp.dtype resolu (pas une string) -
+# aucune config de dataset ne doit plus jamais declarer "compute_dtype" (AD-1).
+# Logique extraite dans model_library.resolve_compute_dtype() (testable en isolation,
+# voir tests/test_compute_dtype_hardware.py) - main.py ne fait plus que l'appeler.
+compute_dtype = resolve_compute_dtype(backend)
 
 print("Backend JAX:", backend)
 print("Devices:", jax.devices())
@@ -151,13 +163,21 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
         # silencieusement ignoree malgre le commentaire de cette config qui la liste
         # comme ajustable.
         model_kwargs["num_trunk_layers"] = config["num_trunk_layers"]
-    if "compute_dtype" in config:
-        # chess_move_token_transformer uniquement (Epic 11, precision mixte TPU,
-        # 2026-08-11) - meme discipline de forwarding conditionnel que num_layers/
-        # d_model/num_heads ci-dessus. Chaine ("float32"/"bfloat16"), convertie en
-        # dtype reel par create_chess_move_token_transformer (model_library.py), pas
-        # ici - jamais un objet jnp.dtype dans une config (littéraux Python uniquement).
-        model_kwargs["compute_dtype"] = config["compute_dtype"]
+    # compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-3) : injection par
+    # introspection de signature, PAS un forwarding conditionnel par config comme les
+    # branches ci-dessus. `compute_dtype` n'est jamais lu depuis `config` (AD-1) - la
+    # seule question est "la factory cible declare-t-elle un parametre NOMME
+    # compute_dtype ?" (pas juste **kwargs, qui absorberait silencieusement la valeur
+    # sans jamais la transmettre au constructeur - piege deja present sur
+    # aircraft_detector_unet/centernet/centernet_lite, voir architecture spine AD-3).
+    # Modeles non adaptes (9 sur 12) : rien injecte, comportement inchange. Lookup via
+    # .get() (pas MODELS[model_name]) : un model_name invalide/mal orthographie ne doit
+    # pas planter ici avec un KeyError brut - on laisse get_model() ci-dessous lever son
+    # ValueError explicite habituel (liste les modeles disponibles), comme avant cette
+    # feature (revue Edge Case Hunter/Blind Hunter, 2026-08-17).
+    target_factory = MODELS.get(model_name)
+    if target_factory is not None and "compute_dtype" in inspect.signature(target_factory).parameters:
+        model_kwargs["compute_dtype"] = compute_dtype
     model = get_model(model_name, **model_kwargs)
     
     # 4. INSTANCIATION DE LA STRATEGIE (Injection de dépendance)

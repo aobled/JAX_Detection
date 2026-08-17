@@ -22,6 +22,11 @@ class SeparableConv(nn.Module):
     strides: tuple = (1, 1)
     padding: str = "SAME"
     use_bias: bool = False
+    # compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-4/AD-5) : dtype de
+    # CALCUL des deux nn.Conv internes uniquement - poids stockes (param_dtype)
+    # inchanges, restent float32 par defaut flax. Doit etre passe explicitement par
+    # CHAQUE appelant (AD-5), jamais herite implicitement.
+    compute_dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, x, training=True):
@@ -33,7 +38,8 @@ class SeparableConv(nn.Module):
             padding=self.padding,
             feature_group_count=x.shape[-1],
             use_bias=self.use_bias,
-            kernel_init=nn.initializers.kaiming_normal()
+            kernel_init=nn.initializers.kaiming_normal(),
+            dtype=self.compute_dtype
         )(x)
         # Pointwise convolution
         x = nn.Conv(
@@ -41,7 +47,8 @@ class SeparableConv(nn.Module):
             kernel_size=(1, 1),
             padding=self.padding,
             use_bias=self.use_bias,
-            kernel_init=nn.initializers.kaiming_normal()
+            kernel_init=nn.initializers.kaiming_normal(),
+            dtype=self.compute_dtype
         )(x)
         return x
 
@@ -49,6 +56,9 @@ class SeparableConv(nn.Module):
 class SEBlock(nn.Module):
     """Squeeze-and-Excitation Block"""
     reduction: int = 16
+    # compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-4/AD-5) : cf.
+    # SeparableConv ci-dessus - s'applique ici aux deux nn.Dense internes.
+    compute_dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, x, training=True):
@@ -56,10 +66,10 @@ class SEBlock(nn.Module):
         # Global Average Pooling
         gap = jnp.mean(x, axis=(1, 2))
         # Squeeze
-        se_dense1 = nn.Dense(C // self.reduction, use_bias=True)(gap)
+        se_dense1 = nn.Dense(C // self.reduction, use_bias=True, dtype=self.compute_dtype)(gap)
         se_act1 = nn.silu(se_dense1)
         # Excite
-        se_dense2 = nn.Dense(C, use_bias=True)(se_act1)
+        se_dense2 = nn.Dense(C, use_bias=True, dtype=self.compute_dtype)(se_act1)
         se_sigmoid = nn.sigmoid(se_dense2)
         # Scale
         se_broadcast = jnp.expand_dims(jnp.expand_dims(se_sigmoid, 1), 1)
@@ -68,7 +78,10 @@ class SEBlock(nn.Module):
 
 class SpatialAttention(nn.Module):
     """Spatial Attention Module"""
-    
+    # compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-4/AD-5) : cf.
+    # SeparableConv ci-dessus - s'applique ici au nn.Conv interne.
+    compute_dtype: Any = jnp.float32
+
     @nn.compact
     def __call__(self, x, training=True):
         # Spatial attention
@@ -77,7 +90,8 @@ class SpatialAttention(nn.Module):
             kernel_size=(1, 1),
             padding="SAME",
             use_bias=True,
-            kernel_init=nn.initializers.kaiming_normal()
+            kernel_init=nn.initializers.kaiming_normal(),
+            dtype=self.compute_dtype
         )(x)
         spatial_attn = nn.sigmoid(spatial_attn)
         return x * spatial_attn
@@ -228,6 +242,13 @@ class SophisticatedCNN128Lite(nn.Module):
     """
     num_classes: int = 2
     dropout_rate: float = 0.0
+    # compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-1/AD-4/AD-6) : dtype
+    # de CALCUL des nn.Conv/nn.Dense uniquement (jamais nn.BatchNorm/nn.LayerNorm,
+    # AD-4) - derive du materiel par main.py (bfloat16 sur TPU, float32 sinon),
+    # injecte par introspection de signature. Poids stockes (checkpoint) restent
+    # float32 dans tous les cas (AD-6) - champ dataclass statique, jamais un
+    # nn.Param, absent du pytree de parametres.
+    compute_dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, x, training=True):
@@ -235,20 +256,20 @@ class SophisticatedCNN128Lite(nn.Module):
 
         # === BLOC 0: Conv initiale (inchangé) ===
         x = nn.Conv(64, (3, 3), padding="SAME", use_bias=False,
-                   kernel_init=nn.initializers.kaiming_normal())(x)
+                   kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
         # === BLOC 1: 64 canaux (LITE: 96 -> 64, pleine résolution 128×128) ===
-        x = SeparableConv(64, (3, 3))(x, training)
+        x = SeparableConv(64, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
         residual = nn.Conv(64, (1, 1), padding="SAME", use_bias=False,
-                          kernel_init=nn.initializers.kaiming_normal())(x)
+                          kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         residual = nn.BatchNorm(use_running_average=not training)(residual)
 
-        x = SeparableConv(64, (3, 3))(x, training)
+        x = SeparableConv(64, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = x + residual
         x = nn.silu(x)
@@ -257,15 +278,15 @@ class SophisticatedCNN128Lite(nn.Module):
         x = nn.max_pool(x, (2, 2), strides=(2, 2))
 
         # === BLOC 2: 128 canaux (inchangé) ===
-        x = SeparableConv(128, (3, 3))(x, training)
+        x = SeparableConv(128, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
         residual = nn.Conv(128, (1, 1), padding="SAME", use_bias=False,
-                          kernel_init=nn.initializers.kaiming_normal())(x)
+                          kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         residual = nn.BatchNorm(use_running_average=not training)(residual)
 
-        x = SeparableConv(128, (3, 3))(x, training)
+        x = SeparableConv(128, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = x + residual
         x = nn.silu(x)
@@ -274,62 +295,67 @@ class SophisticatedCNN128Lite(nn.Module):
         x = nn.max_pool(x, (2, 2), strides=(2, 2))
 
         # === BLOC 3: 256 canaux (inchangé) ===
-        x = SeparableConv(256, (3, 3))(x, training)
+        x = SeparableConv(256, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
-        x = SeparableConv(256, (3, 3))(x, training)
+        x = SeparableConv(256, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
         # SE Attention
-        x = SEBlock(reduction=16)(x, training)
+        x = SEBlock(reduction=16, compute_dtype=self.compute_dtype)(x, training)
 
         # Max Pool 3: 32×32 → 16×16
         x = nn.max_pool(x, (2, 2), strides=(2, 2))
 
         # === BLOC 4: 384 canaux (LITE: pic 512 -> 384, x0.75) ===
         x = nn.Conv(288, (1, 1), padding="SAME", use_bias=False,
-                   kernel_init=nn.initializers.kaiming_normal())(x)
+                   kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
-        x = SeparableConv(384, (3, 3))(x, training)
+        x = SeparableConv(384, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
         # Residual connection
         residual = nn.Conv(384, (1, 1), padding="SAME", use_bias=False,
-                          kernel_init=nn.initializers.kaiming_normal())(x)
+                          kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         residual = nn.BatchNorm(use_running_average=not training)(residual)
 
         x = nn.Conv(384, (1, 1), padding="SAME", use_bias=False,
-                   kernel_init=nn.initializers.kaiming_normal())(x)
+                   kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = x + residual
         x = nn.silu(x)
 
         # SE Attention
-        x = SEBlock(reduction=16)(x, training)
+        x = SEBlock(reduction=16, compute_dtype=self.compute_dtype)(x, training)
 
         # Spatial Attention
-        x = SpatialAttention()(x, training)
+        x = SpatialAttention(compute_dtype=self.compute_dtype)(x, training)
 
         # Global Average Pooling
         x = jnp.mean(x, axis=(1, 2))  # (B, 384)
 
         # Classification head (inchangé)
         x = nn.LayerNorm()(x)
-        x = nn.Dense(384, use_bias=True)(x)
+        x = nn.Dense(384, use_bias=True, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
         x = nn.Dropout(self.dropout_rate, deterministic=not training)(x)
 
-        return nn.Dense(self.num_classes, use_bias=True)(x)
+        # Recast explicite en float32 avant retour, quel que soit compute_dtype - la
+        # loss (optax.softmax_cross_entropy*, task_strategies.py::ClassificationStrategy)
+        # ne doit jamais recevoir des logits en precision reduite (meme garde que
+        # ChessMoveTokenTransformer, model_library.py, pour la meme raison : stabilite
+        # numerique du softmax/cross-entropy, pas seulement du softmax d'attention).
+        return nn.Dense(self.num_classes, use_bias=True, dtype=self.compute_dtype)(x).astype(jnp.float32)
 
 
-def create_sophisticated_cnn_128_lite(num_classes=2, dropout_rate=0.0):
+def create_sophisticated_cnn_128_lite(num_classes=2, dropout_rate=0.0, compute_dtype=jnp.float32):
     """Crée une instance de SophisticatedCNN128Lite (Blocs 1+4 allégés pour la vitesse d'inférence)"""
-    return SophisticatedCNN128Lite(num_classes=num_classes, dropout_rate=dropout_rate)
+    return SophisticatedCNN128Lite(num_classes=num_classes, dropout_rate=dropout_rate, compute_dtype=compute_dtype)
 
 
 class SophisticatedCNN32Plus(nn.Module):
@@ -343,6 +369,9 @@ class SophisticatedCNN32Plus(nn.Module):
     """
     num_classes: int = 10
     dropout_rate: float = 0.0
+    # compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-1/AD-4/AD-6) : cf.
+    # SophisticatedCNN128Lite ci-dessus - meme regle, meme garantie checkpoint.
+    compute_dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, x, training=True):
@@ -350,20 +379,20 @@ class SophisticatedCNN32Plus(nn.Module):
 
         # === BLOC 0: Conv initiale ===
         x = nn.Conv(32, (3, 3), padding="SAME", use_bias=False,
-                   kernel_init=nn.initializers.kaiming_normal())(x)
+                   kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
         # === BLOC 1: 48 canaux ===
-        x = SeparableConv(48, (3, 3))(x, training)
+        x = SeparableConv(48, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
         residual = nn.Conv(48, (1, 1), padding="SAME", use_bias=False,
-                          kernel_init=nn.initializers.kaiming_normal())(x)
+                          kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         residual = nn.BatchNorm(use_running_average=not training)(residual)
 
-        x = SeparableConv(48, (3, 3))(x, training)
+        x = SeparableConv(48, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = x + residual
         x = nn.silu(x)
@@ -372,15 +401,15 @@ class SophisticatedCNN32Plus(nn.Module):
         x = nn.max_pool(x, (2, 2), strides=(2, 2))
 
         # === BLOC 2: 64 canaux ===
-        x = SeparableConv(64, (3, 3))(x, training)
+        x = SeparableConv(64, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
         residual = nn.Conv(64, (1, 1), padding="SAME", use_bias=False,
-                          kernel_init=nn.initializers.kaiming_normal())(x)
+                          kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         residual = nn.BatchNorm(use_running_average=not training)(residual)
 
-        x = SeparableConv(64, (3, 3))(x, training)
+        x = SeparableConv(64, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = x + residual
         x = nn.silu(x)
@@ -389,60 +418,62 @@ class SophisticatedCNN32Plus(nn.Module):
         x = nn.max_pool(x, (2, 2), strides=(2, 2))
 
         # === BLOC 3: 128 canaux ===
-        x = SeparableConv(128, (3, 3))(x, training)
+        x = SeparableConv(128, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
-        x = SeparableConv(128, (3, 3))(x, training)
+        x = SeparableConv(128, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
         # SE Attention
-        x = SEBlock(reduction=16)(x, training)
+        x = SEBlock(reduction=16, compute_dtype=self.compute_dtype)(x, training)
 
         # Pas de 3e max-pool (contrairement à 128-Plus) : reste à 8×8, suffisant vu la taille d'entrée native
 
         # === BLOC 4: bottleneck 192 -> 256 canaux ===
         x = nn.Conv(192, (1, 1), padding="SAME", use_bias=False,
-                   kernel_init=nn.initializers.kaiming_normal())(x)
+                   kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
-        x = SeparableConv(256, (3, 3))(x, training)
+        x = SeparableConv(256, (3, 3), compute_dtype=self.compute_dtype)(x, training)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = nn.silu(x)
 
         residual = nn.Conv(256, (1, 1), padding="SAME", use_bias=False,
-                          kernel_init=nn.initializers.kaiming_normal())(x)
+                          kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         residual = nn.BatchNorm(use_running_average=not training)(residual)
 
         x = nn.Conv(256, (1, 1), padding="SAME", use_bias=False,
-                   kernel_init=nn.initializers.kaiming_normal())(x)
+                   kernel_init=nn.initializers.kaiming_normal(), dtype=self.compute_dtype)(x)
         x = nn.BatchNorm(use_running_average=not training)(x)
         x = x + residual
         x = nn.silu(x)
 
         # SE Attention
-        x = SEBlock(reduction=16)(x, training)
+        x = SEBlock(reduction=16, compute_dtype=self.compute_dtype)(x, training)
 
         # Spatial Attention
-        x = SpatialAttention()(x, training)
+        x = SpatialAttention(compute_dtype=self.compute_dtype)(x, training)
 
         # Global Average Pooling
         x = jnp.mean(x, axis=(1, 2))  # (B, 256)
 
         # Classification head
         x = nn.LayerNorm()(x)
-        x = nn.Dense(192, use_bias=True)(x)
+        x = nn.Dense(192, use_bias=True, dtype=self.compute_dtype)(x)
         x = nn.silu(x)
         x = nn.Dropout(self.dropout_rate, deterministic=not training)(x)
 
-        return nn.Dense(self.num_classes, use_bias=True)(x)
+        # Recast explicite en float32 avant retour, quel que soit compute_dtype - meme
+        # garde que SophisticatedCNN128Lite/ChessMoveTokenTransformer ci-dessus.
+        return nn.Dense(self.num_classes, use_bias=True, dtype=self.compute_dtype)(x).astype(jnp.float32)
 
 
-def create_sophisticated_cnn_32_plus(num_classes=2, dropout_rate=0.0):
+def create_sophisticated_cnn_32_plus(num_classes=2, dropout_rate=0.0, compute_dtype=jnp.float32):
     """Crée une instance de SophisticatedCNN32Plus, variante réduite pour images 32×32 (ex. CIFAR-10)"""
-    return SophisticatedCNN32Plus(num_classes=num_classes, dropout_rate=dropout_rate)
+    return SophisticatedCNN32Plus(num_classes=num_classes, dropout_rate=dropout_rate, compute_dtype=compute_dtype)
 
 
 # SophisticatedCNN64Plus (variante 64×64) testée et rejetée le 2026-07-15 : -6.1 pts d'accuracy
@@ -1209,16 +1240,30 @@ def create_chess_move_token_transformer(num_classes, dropout_rate=0.1, compute_d
     plomberie model_kwargs générique de main.py) porte la taille de l'espace de coups
     (4672) — même convention que create_chess_cnn_attention_policy_value ci-dessus.
 
-    compute_dtype : chaîne ("float32"/"bfloat16"/"float16"), pas un objet jnp.dtype
-    directement — cohérent avec le reste de dataset_configs.py (littéraux Python
-    sérialisables uniquement, jamais un objet framework-spécifique dans une config).
-    Convertie ici en dtype réel ; erreur explicite si la chaîne ne correspond à rien
-    dans jax.numpy plutôt qu'un échec silencieux plus loin dans le graphe.
+    compute_dtype : chaîne ("float32"/"bfloat16"/"float16") OU un jnp.dtype déjà
+    résolu. Historiquement une string uniquement (appel direct/manuel, littéral
+    sérialisable) ; accepte aussi un jnp.dtype depuis spec-compute-dtype-hardware
+    (2026-08-17, AD-3) — l'injection par introspection de main.py cible cette
+    factory (paramètre nommé compute_dtype) et lui transmet le jnp.dtype DÉJÀ
+    résolu par le mécanisme central (AD-2), jamais une string. Erreur explicite
+    dans LES DEUX cas si la valeur ne correspond à rien de connu, plutôt qu'un
+    échec silencieux plus loin dans le graphe (revue Edge Case Hunter, 2026-08-17 :
+    le chemin non-string acceptait n'importe quel objet sans validation avant ce
+    fix).
     """
-    resolved_dtype = getattr(jnp, compute_dtype, None)
-    if resolved_dtype is None:
+    _VALID_DTYPES = (jnp.float32, jnp.bfloat16, jnp.float16)
+    if isinstance(compute_dtype, str):
+        resolved_dtype = getattr(jnp, compute_dtype, None)
+        if resolved_dtype is None or resolved_dtype not in _VALID_DTYPES:
+            raise ValueError(
+                f"compute_dtype='{compute_dtype}' inconnu de jax.numpy - attendu 'float32'/'bfloat16'/'float16'"
+            )
+    elif compute_dtype in _VALID_DTYPES:
+        resolved_dtype = compute_dtype
+    else:
         raise ValueError(
-            f"compute_dtype='{compute_dtype}' inconnu de jax.numpy - attendu 'float32'/'bfloat16'/'float16'"
+            f"compute_dtype={compute_dtype!r} non reconnu - attendu une string "
+            f"('float32'/'bfloat16'/'float16') ou un de {_VALID_DTYPES}"
         )
     return ChessMoveTokenTransformer(
         num_moves=num_classes, dropout_rate=dropout_rate, compute_dtype=resolved_dtype, **kwargs
@@ -1762,6 +1807,22 @@ MODELS = {
     'sophisticated_cnn_32_plus': create_sophisticated_cnn_32_plus,
     'kepler_1d_cnn': create_kepler_1d_cnn,
 }
+
+def resolve_compute_dtype(backend):
+    """
+    Derive compute_dtype (dtype de CALCUL des couches matmul lourdes, AD-1/AD-2,
+    spec-compute-dtype-hardware 2026-08-17) depuis le backend JAX detecte -
+    bfloat16 sur TPU, float32 partout ailleurs (GPU inclus - prudence de projet
+    documentee, pas une limite materielle, voir SPEC.md Constraints).
+
+    Extrait de main.py dans une fonction pure importable/testable (revue Blind
+    Hunter, 2026-08-17 : la ligne qui fait tout le travail de cette feature
+    n'etait exercee par aucun test, main.py ayant des effets de bord au chargement
+    du module - hardware init, prints - qui rendent son import direct depuis les
+    tests indesirable).
+    """
+    return jnp.bfloat16 if backend == "tpu" else jnp.float32
+
 
 def get_model(model_name, **kwargs):
     """

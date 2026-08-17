@@ -950,20 +950,11 @@ DATASET_CONFIGS = {
         "num_layers": 6,
         "d_model": 192,
         "num_heads": 4,
-        # compute_dtype (Aymeric/Winston, 2026-08-11, précision mixte TPU) : "bfloat16"
-        # pour le calcul des couches Dense/Attention (poids "maîtres" restent en
-        # float32, AD-33-adjacent mais indépendant - voir docstring
-        # ChessMoveTokenTransformer). Diagnostic réel (nvtop + logs TPU, 2026-08-10/11) :
-        # le modèle tournait entièrement en float32 malgré le print trompeur "TPU:
-        # Utilisation de float16" (qui ne concerne QUE le cast de l'entrée, jamais le
-        # calcul du modèle) - les TPU sont conçus autour de bfloat16, un modèle 100%
-        # float32 en perd l'essentiel de l'avantage. Checkpoint-compatible (dtype des
-        # poids stockés inchangé) - mais rappel : la reprise d'entraînement ne doit de
-        # toute façon pas être utilisée sur ce domaine (mécanisme jugé peu fiable,
-        # verdict Aymeric rétro Epic 10, 2026-08-09 - voir deferred-work.md). Gain
-        # attendu : partiel, pas 2-3x (une partie du temps par step est dispatch/
-        # pipeline, pas calcul) - à mesurer sur le prochain run, pas garanti a priori.
-        "compute_dtype": "bfloat16",
+        # compute_dtype retiré (spec-compute-dtype-hardware, 2026-08-17, AD-1/AD-7) :
+        # n'est plus une string codée en dur ici, mais dérivé du backend matériel réel
+        # au runtime (bfloat16 sur TPU, float32 sinon) et injecté par main.py via
+        # introspection de la signature de create_chess_move_token_transformer -
+        # comportement TPU inchangé (bfloat16), voir main.py.
         # output_prefix porte ici le chemin LITTÉRAL du fichier spike unique (pas un
         # préfixe de glob `_chunk*.npz` comme les autres domaines échecs, AD-27) -
         # ChessMoveTokenDataset (data_management.py) le consomme comme tel.
