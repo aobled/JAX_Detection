@@ -639,7 +639,7 @@ def compute_chess_legal_moves_loss(logits, legal_mask, pos_weight=1.0):
     return loss.mean()
 
 
-def compute_chess_token_candidate_loss(logits, candidate_label, candidate_mask):
+def compute_chess_token_candidate_loss(logits, candidate_label, candidate_mask, label_smoothing=0.0):
     """
     Cross-entropy MASQUEE sur les slots candidats (spec-chess-token-candidate-model,
     2026-08-13, spike, CAP-2) - PAS compute_chess_policy_loss (softmax sur l'espace
@@ -654,6 +654,27 @@ def compute_chess_token_candidate_loss(logits, candidate_label, candidate_mask):
     index move_to_index (contrat .npz chess_token_candidate_spike, candidate_label).
     candidate_mask: (Batch, num_candidates) - 1 si le slot est un candidat reel, 0 si
     padding (int8 au chargement, caste en bool ici).
+
+    label_smoothing (2026-08-14, Aymeric, reponse a un overfitting marque observe
+    apres token_dim 64->128) : 0.0 par defaut -> comportement strictement inchange
+    (cross-entropy sparse contre l'index entier). Si > 0, NE REUTILISE PAS
+    smooth_labels (utils.py, utilise par compute_chess_policy_loss ci-dessus) telle
+    quelle - cette fonction repartit la masse epsilon sur LES num_classes FIXES, ce qui
+    enverrait de la probabilite sur des slots de padding ici (masques, jamais candidats
+    a etre le bon coup). Formule adaptee, meme convention Szegedy que smooth_labels
+    (target[j] = (1-eps) + eps/n_valid sur le slot label, eps/n_valid sur chaque AUTRE
+    slot VALIDE, 0 sur chaque slot invalide) mais n_valid = candidate_mask.sum(axis=-1)
+    (par ligne, PAS num_candidates=50 fixe) :
+        n_valid = candidate_mask.sum(axis=-1, keepdims=True)
+        one_hot = jax.nn.one_hot(candidate_label, num_candidates)
+        smoothed = one_hot * (1 - eps) + (eps / n_valid) * candidate_mask
+        loss = optax.softmax_cross_entropy(masked_logits, smoothed)
+    Somme verifiee = 1 sur les slots valides (n_valid*(eps/n_valid) + (1-eps) = 1),
+    exactement 0 sur les slots invalides - la loss dense (pas sparse) est necessaire
+    car optax.softmax_cross_entropy_with_integer_labels n'accepte pas de distribution.
+    Le masquage additif -1e9 (pas -inf) est ce qui rend cette extension sure : sur un
+    slot invalide, target=0 (exactement, pas epsilon) x log_softmax(-1e9-ish, fini) = 0
+    en arithmetique IEEE, jamais 0*(-inf) -> NaN.
 
     Masquage additif -1e9 (pas -inf, evite tout risque de NaN si un batch degenere
     contenait une ligne entierement masquee - ne devrait jamais arriver en pratique,
@@ -687,6 +708,106 @@ def compute_chess_token_candidate_loss(logits, candidate_label, candidate_mask):
     compute_chess_legal_moves_loss ci-dessus.
     """
     masked_logits = jnp.where(candidate_mask.astype(bool), logits, -1e9)
-    loss = optax.softmax_cross_entropy_with_integer_labels(masked_logits, candidate_label)
+    if label_smoothing > 0:
+        num_candidates = logits.shape[-1]
+        n_valid = candidate_mask.sum(axis=-1, keepdims=True).astype(logits.dtype)
+        one_hot = jax.nn.one_hot(candidate_label, num_candidates, dtype=logits.dtype)
+        smoothed = one_hot * (1 - label_smoothing) + (label_smoothing / n_valid) * candidate_mask.astype(logits.dtype)
+        loss = optax.softmax_cross_entropy(masked_logits, smoothed)
+    else:
+        loss = optax.softmax_cross_entropy_with_integer_labels(masked_logits, candidate_label)
     return loss.mean()
+
+
+# Nombre de types de coups par case de depart (chess_ai/chess_target_encoding.py:243,
+# NUM_MOVES = 64*73 = 4672, index = from_square*73 + move_type) - constante LOCALE a ce
+# fichier (PAS un import de model_library.py::NUM_MOVE_TYPES, qui definit la MEME valeur
+# pour le meme motif) : garde loss_functions.py independant de model_library.py, aucune
+# autre loss de ce fichier n'importe une classe/constante de modele - meme discipline
+# que le reste de ce fichier (chaque fonction de loss ne depend que de jax/optax/utils).
+CHESS_TOKEN_1_MOVE_NUM_MOVE_TYPES = 73
+
+
+def compute_chess_token_1_move_loss(outputs, move_index, from_square_weight=1.0, move_type_weight=1.0, label_smoothing=0.0):
+    """
+    Loss du domaine chess_token_1_move (spec-chess-token-1-move, 2026-08-15, spike,
+    contrat chess_ai §3 CHESS_TOKEN_1_MOVE) - 2 cross-entropy softmax INDEPENDANTES
+    (une par tete, aucun conditionnement de l'une sur l'autre - contrainte explicite du
+    contrat), combinees en une somme ponderee. PAS compute_chess_token_candidate_loss
+    ci-dessus (masquage sur 50 slots candidats variables) : ici l'espace de sortie de
+    chaque tete est FIXE (64 puis 73), aucun masquage necessaire - le contrat veut au
+    contraire l'illegalite MESURABLE, jamais absorbee (aucun masquage de legalite cote
+    modele/loss, "Never" du SPEC).
+
+    outputs : dict {"from_square": (Batch,64), "move_type": (Batch,73)} logits bruts
+    (ChessTokenOneMoveModel, model_library.py). move_index : (Batch,) int32, LABEL REEL
+    UNIQUE dans [0,4672) - deja derive une seule fois a la construction du dataset
+    (ChessTokenOneMoveDataset.__init__, data_management.py, candidate_moves[i,
+    candidate_label[i]]), PAS une paire (from_square, move_type) precalculee.
+
+    Decomposition arithmetique PURE, inverse exacte de move_to_index (index =
+    from_square*73 + move_type, cote chess_ai) - PAS 73 en dur ici, reutilise
+    CHESS_TOKEN_1_MOVE_NUM_MOVE_TYPES ci-dessus (une seule occurrence du litteral 73
+    dans ce fichier) :
+        from_square_target, move_type_target = divmod(move_index, CHESS_TOKEN_1_MOVE_NUM_MOVE_TYPES)
+    Aucune validation de legalite ici (le contrat le proscrit explicitement - "Never" du
+    SPEC) : divmod est une operation arithmetique pure, jamais d'echec possible pour
+    move_index dans son domaine de definition [0,4672) (deja garanti par l'assert
+    defensif de ChessTokenOneMoveDataset.__init__).
+
+    Chaque tete reutilise TELLE QUELLE compute_chess_policy_loss ci-dessus (meme style
+    label_smoothing, meme formule optax.softmax_cross_entropy_with_integer_labels/
+    optax.softmax_cross_entropy dense - AUCUNE duplication de cette logique ici) : pas
+    de masquage necessaire (espace de sortie fixe par tete), donc pas de variante
+    adaptee comme compute_chess_token_candidate_loss ci-dessus (qui, elle, doit repartir
+    la masse de label_smoothing sur un nombre de slots reels VARIABLE par ligne).
+
+    from_square_weight/move_type_weight : ponderation de la somme (defaut 1.0/1.0 =
+    poids egal entre les 2 tetes - point de depart NON TUNE, ajustable via
+    dataset_configs.py::loss_params, meme convention que policy_weight/value_weight de
+    compute_chess_policy_value_loss ci-dessus).
+
+    Reduction : chaque compute_chess_policy_loss reduit deja en moyenne batch (voir sa
+    docstring) - la somme ponderee des deux reste donc une moyenne batch, meme
+    convention que compute_chess_policy_value_loss/compute_centernet_loss ci-dessus.
+    """
+    from_square_target, move_type_target = jnp.divmod(move_index, CHESS_TOKEN_1_MOVE_NUM_MOVE_TYPES)
+
+    from_square_loss = compute_chess_policy_loss(
+        outputs["from_square"], from_square_target, label_smoothing=label_smoothing
+    )
+    move_type_loss = compute_chess_policy_loss(
+        outputs["move_type"], move_type_target, label_smoothing=label_smoothing
+    )
+
+    return from_square_weight * from_square_loss + move_type_weight * move_type_loss
+
+
+def compute_chess_token_1_move_joint_accuracy(outputs, move_index):
+    """
+    Metrique "accuracy jointe" du domaine chess_token_1_move (spec-chess-token-1-move,
+    2026-08-15) : vaut 1.0 pour un exemple UNIQUEMENT si from_square ET move_type sont
+    TOUS LES DEUX predits correctement (argmax par tete) - PAS une moyenne des deux
+    accuracies par tete separement (qui masquerait le cas frequent "bonne case de
+    depart, mauvais type de coup" ou l'inverse, chacun compte comme un demi-succes dans
+    une moyenne alors que le COUP complet est faux). C'est LA metrique de comparaison
+    contractuelle face a CHESS_SEARCH_TEACHER (28.00% val PolicyAccuracy, contrat
+    chess_ai §3) - primary_metric_name de ChessTokenOneMoveStrategy (task_strategies.py).
+
+    outputs : dict {"from_square": (Batch,64), "move_type": (Batch,73)} logits bruts.
+    move_index : (Batch,) int32, meme label reel unique que compute_chess_token_1_move_loss
+    ci-dessus - decompose ici avec la MEME formule (divmod, CHESS_TOKEN_1_MOVE_NUM_MOVE_TYPES)
+    pour rester coherente avec le decoupage utilise a l'entrainement.
+
+    Reduction : moyenne sur le batch (fraction d'exemples avec les 2 tetes correctes
+    simultanement), meme convention que ChessMoveTokenStrategy/ChessTokenStrategy.compute_metrics
+    (task_strategies.py).
+    """
+    from_square_target, move_type_target = jnp.divmod(move_index, CHESS_TOKEN_1_MOVE_NUM_MOVE_TYPES)
+
+    from_square_pred = jnp.argmax(outputs["from_square"], axis=-1)
+    move_type_pred = jnp.argmax(outputs["move_type"], axis=-1)
+
+    both_correct = (from_square_pred == from_square_target) & (move_type_pred == move_type_target)
+    return both_correct.mean()
 

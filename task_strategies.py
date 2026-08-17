@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import optax
 from abc import ABC, abstractmethod
-from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss, compute_segmentation_loss, compute_centernet_loss, compute_chess_policy_value_loss, compute_chess_policy_loss, compute_chess_value_loss, compute_chess_legal_moves_loss, compute_chess_token_candidate_loss
+from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss, compute_segmentation_loss, compute_centernet_loss, compute_chess_policy_value_loss, compute_chess_policy_loss, compute_chess_value_loss, compute_chess_legal_moves_loss, compute_chess_token_candidate_loss, compute_chess_token_1_move_loss, compute_chess_token_1_move_joint_accuracy, CHESS_TOKEN_1_MOVE_NUM_MOVE_TYPES
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
 from utils import mixup_batch, smooth_labels
 
@@ -710,11 +710,17 @@ class ChessTokenStrategy(TaskStrategy):
     réutilise compute_chess_policy_loss telle quelle (AD-26).
     """
     def __init__(self, loss_params: dict = None):
-        # loss_params : reserve pour extension future (ex. label_smoothing), non
-        # consomme par compute_chess_token_candidate_loss aujourd'hui (masquage seul,
-        # voir Design Notes du SPEC) - meme convention dict que les strategies echecs
-        # ci-dessus (loss_params toujours accepte, meme si vide en pratique).
+        # loss_params.label_smoothing (2026-08-14, Aymeric, overfitting observe apres
+        # token_dim 64->128) : lu ici et transmis a compute_chess_token_candidate_loss,
+        # qui implemente sa PROPRE variante masquee (voir sa docstring) - PAS
+        # smooth_labels/compute_chess_policy_loss (repartirait la masse sur des slots
+        # de padding). Meme convention dict que les strategies echecs ci-dessus
+        # (loss_params toujours accepte).
         self.loss_params = loss_params or {}
+
+    @property
+    def label_smoothing(self) -> float:
+        return self.loss_params.get("label_smoothing", 0.0)
 
     @property
     def primary_metric_name(self) -> str:
@@ -742,7 +748,8 @@ class ChessTokenStrategy(TaskStrategy):
 
     def compute_loss(self, outputs, targets, **kwargs):
         return compute_chess_token_candidate_loss(
-            outputs, targets["candidate_label"], targets["candidate_mask"]
+            outputs, targets["candidate_label"], targets["candidate_mask"],
+            label_smoothing=self.label_smoothing,
         )
 
     def compute_metrics(self, outputs, targets):
@@ -791,3 +798,124 @@ class ChessTokenStrategy(TaskStrategy):
                 print("⚠️  val_ds est vide - aucun détail chess_token généré")
         except Exception as e:
             print(f"❌ Erreur lors de la génération du rapport chess_token: {e}")
+
+
+class ChessTokenOneMoveStrategy(TaskStrategy):
+    """
+    Tâche policy-only à tête factorisée (spec-chess-token-1-move, 2026-08-15, spike,
+    contrat chess_ai §3 CHESS_TOKEN_1_MOVE) : prédit directement le coup joué dans
+    l'espace complet (from_square 64 x move_type 73 = 4672), sans filtrage préalable par
+    candidats légaux (contrairement à ChessTokenStrategy ci-dessus) - l'illégalité de
+    coup redevient un échec mesurable (ChessTokenOneMoveModel, model_library.py, voir sa
+    docstring pour le rationale complet).
+
+    outputs est un DICT {"from_square": (B,64), "move_type": (B,73)} - PAS un tenseur
+    unique (contrairement à ChessTokenStrategy/ChessMoveTokenStrategy/
+    ChessLegalMovesStrategy ci-dessus) : 2 têtes indépendantes, aucun conditionnement de
+    l'une sur l'autre (contrainte explicite du contrat).
+
+    targets est un DICT {"move_index": (B,) int32} - le label RÉEL unique déjà dérivé
+    par ChessTokenOneMoveDataset (data_management.py, candidate_moves[i,
+    candidate_label[i]]) - PAS from_square/move_type précalculés : la décomposition
+    divmod(move_index, 73) se fait à la volée dans compute_chess_token_1_move_loss/
+    compute_chess_token_1_move_joint_accuracy (loss_functions.py), jamais ici.
+
+    compute_loss délègue intégralement à compute_chess_token_1_move_loss (loss_functions.py,
+    nouvelle) - aucune loss existante ne combine 2 têtes softmax indépendantes de tailles
+    différentes sans masquage.
+
+    ATTENTION lecture des résultats (v2, spec-chess-token-1-move-v2, trouvaille Blind
+    Hunter 2026-08-16) : ChessTokenOneMoveModel v2 conditionne move_type sur from_square
+    par teacher-forcing UNIQUEMENT quand training=True (argmax(from_square_logits) sinon,
+    voir sa docstring). compute_metrics ci-dessous est appelé aussi bien par
+    Trainer._train_step (training=True) que _eval_step (training=False) sur le MÊME
+    outputs dict que compute_loss a déjà reçu - la JointMoveAccuracy loguée côté TRAIN
+    reflète donc le chemin teacher-forcé (plus facile), PAS le chemin argmax utilisé côté
+    VAL. Le diagnostic "train≈val => plafond de capacité, pas overfitting" (déjà utilisé
+    pour v1) N'EST PLUS directement comparable train vs val pour v2 : seule la valeur VAL
+    est comparable au plafond v1 (5,10%) ou entre runs v2. Un écart train>val ne doit pas
+    être lu comme de l'overfitting classique sans tenir compte de cette asymétrie
+    structurelle. Recalculer une accuracy train "libre" (argmax) nécessiterait un forward
+    pass supplémentaire dans Trainer._train_step - hors scope (contrainte "ne pas toucher
+    trainer.py" du spec v1/v2).
+
+    compute_metrics DOIT rester un scalaire unique (compilé sous @jax.jit,
+    Trainer._train_step/_eval_step, trainer.py:229/261, formaté directement avec :.4f -
+    même contrainte que toutes les stratégies existantes ci-dessus) : retourne
+    l'accuracy JOINTE (from_square ET move_type corrects simultanément sur le même
+    exemple, primary_metric_name="JointMoveAccuracy") - LA métrique de comparaison
+    contractuelle face à CHESS_SEARCH_TEACHER (28.00% val PolicyAccuracy, contrat chess_ai
+    §3, ChessPolicyValueStrategy ci-dessus). L'accuracy PAR TÊTE (from_square seul /
+    move_type seul - diagnostic, PAS la métrique de comparaison) n'est disponible que via
+    generate_reports (hors-jit, en fin d'entraînement) - même discipline que
+    ChessLegalMovesStrategy.generate_reports ci-dessus (precision/rappel en plus du F1
+    retourné par compute_metrics).
+    """
+    def __init__(self, loss_params: dict = None):
+        # loss_params : { "from_square_weight": float, "move_type_weight": float,
+        # "label_smoothing": float } - même convention dict que les autres stratégies
+        # échecs ci-dessus. Défauts (1.0/1.0/0.0) = comportement neutre : poids égal
+        # entre les 2 têtes, pas de label smoothing - point de départ NON TUNÉ (comme
+        # ChessLegalMovesStrategy.pos_weight/ChessTokenStrategy.label_smoothing à leur
+        # création).
+        self.loss_params = loss_params or {}
+
+    @property
+    def primary_metric_name(self) -> str:
+        return "JointMoveAccuracy"
+
+    @property
+    def optimization_mode(self) -> str:
+        return "max"
+
+    def preprocess_batch(self, images, targets, is_training, rng=None):
+        # "images" est en realite l'entree packee (token_position|global_flags) - nom
+        # generique herite de la signature TaskStrategy (meme situation que
+        # ChessTokenStrategy/ChessMoveTokenStrategy ci-dessus). targets = dict
+        # {"move_index": (B,)}, deja int32 au chargement (ChessTokenOneMoveDataset) -
+        # cast defensif ici, meme discipline que les autres strategies echecs.
+        targets = {"move_index": jnp.asarray(targets["move_index"], dtype=jnp.int32)}
+        return images, targets, False
+
+    def compute_loss(self, outputs, targets, **kwargs):
+        return compute_chess_token_1_move_loss(
+            outputs, targets["move_index"],
+            from_square_weight=self.loss_params.get("from_square_weight", 1.0),
+            move_type_weight=self.loss_params.get("move_type_weight", 1.0),
+            label_smoothing=self.loss_params.get("label_smoothing", 0.0),
+        )
+
+    def compute_metrics(self, outputs, targets):
+        # Accuracy JOINTE (primary_metric_name) - voir docstring classe : seul scalaire
+        # retourne ici, compatible @jax.jit (contrairement a un dict de metriques par
+        # tete, qui casserait le formatage :.4f de Trainer).
+        return compute_chess_token_1_move_joint_accuracy(outputs, targets["move_index"])
+
+    def generate_reports(self, val_ds, final_state, model, config):
+        # Detail par tete (from_square/move_type separement, diagnostic - PAS la
+        # metrique de comparaison contractuelle) en plus de l'accuracy jointe - meme
+        # convention que ChessLegalMovesStrategy.generate_reports ci-dessus
+        # (precision/rappel en plus du F1 de compute_metrics).
+        try:
+            batch_consumed = False
+            for batch_inputs, batch_targets in val_ds.take(1).as_numpy_iterator():
+                batch_consumed = True
+                vars = {'params': final_state.params, 'batch_stats': final_state.batch_stats}
+                outputs = final_state.apply_fn(vars, batch_inputs, training=False)
+                move_index = jnp.asarray(batch_targets["move_index"], dtype=jnp.int32)
+
+                loss = compute_chess_token_1_move_loss(outputs, move_index)
+                joint_acc = compute_chess_token_1_move_joint_accuracy(outputs, move_index)
+
+                from_square_target, move_type_target = jnp.divmod(move_index, CHESS_TOKEN_1_MOVE_NUM_MOVE_TYPES)
+                from_square_acc = (jnp.argmax(outputs["from_square"], axis=-1) == from_square_target).mean()
+                move_type_acc = (jnp.argmax(outputs["move_type"], axis=-1) == move_type_target).mean()
+
+                print(f"📊 Détail chess_token_1_move (validation, 1 batch) : "
+                      f"loss={float(loss):.4f}, JointMoveAccuracy={float(joint_acc):.4f}, "
+                      f"from_square_acc={float(from_square_acc):.4f}, move_type_acc={float(move_type_acc):.4f}")
+                break
+            if not batch_consumed:
+                print("⚠️  val_ds est vide - aucun détail chess_token_1_move généré")
+        except Exception as e:
+            print(f"❌ Erreur lors de la génération du rapport chess_token_1_move: {e}")

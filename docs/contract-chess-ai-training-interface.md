@@ -1,6 +1,6 @@
 # Contrat d'interface : `jax_supervised_training` ↔ `chess_ai`
 
-**Statut : mis à jour (2026-08-09), à faire évoluer des deux côtés.** Ce document n'est pas un
+**Statut : mis à jour (2026-08-16), à faire évoluer des deux côtés.** Ce document n'est pas un
 PRD ni une epic — c'est la surface d'interface entre deux repos indépendants qui doit
 rester identique des deux côtés, contrairement au reste du code échecs qui, lui, est
 dupliqué et volontairement laissé libre de diverger (voir `chess_ai/HANDOFF.md`).
@@ -136,6 +136,42 @@ est le contrat de données concret.
   de tuning : `_bmad-output/implementation-artifacts/chess-search-teacher-strategy.md`
   (`jax_supervised_training`).
 
+### 2.7 Dataset dédié "professeur décisif" (spec `spec-decisive-teacher-dataset`, `chess_ai`)
+
+**Implémenté côté `chess_ai` (2026-08-11/12)**, dataset généré mais **pas encore
+entraîné côté `jax_supervised_training`** au moment de l'écriture de cette section — voir
+`_bmad-output/implementation-artifacts/spec-decisive-teacher-dataset.md` pour le contexte
+de décision complet (variante de §2.6, ne garde qu'un sous-ensemble filtré des positions).
+
+- **Clé `.npz` et label** : `POLICY_KEY` seul (comme §2.6), coup choisi par un second
+  moteur Stockfish "professeur" (`teacher_depth=12`, même profondeur que §2.6) — mais une
+  position n'est **gardée** que si ce coup produit un vrai saut de valeur par rapport à
+  `chess_search.py::material_balance` (delta ≥ `min_delta_cp=150` centipawns, ou mat
+  délivré en faveur du joueur au trait) ; la majorité des positions d'auto-jeu visitées
+  sont donc filtrées, pas écrites. Aucun `VALUE_KEY` (même raisonnement que §2.6).
+- **Auto-jeu source volontairement asymétrique** (`weak_depth_range=(2, 5)` par défaut,
+  ajouté à `generate_selfplay_positions` de §2.5 — additif, `None` = comportement
+  §2.5/§2.6 inchangé) : une couleur plus faible par partie produit davantage de vraies
+  erreurs/coups punitifs, matière première du filtre delta. N'affecte que la génération
+  côté `chess_ai`, aucune conséquence sur le schéma `.npz`.
+- **Encodage position** : chemin par défaut inchangé, comme §2.6 (aucune nouvelle
+  variante de plans pour ce dataset).
+- **Sortie de fichiers** : préfixe dédié (`chess_decisive_teacher`), distinct des trois
+  préfixes existants (`chess`, `chess_legal_moves`, `chess_search_teacher`) — aucune
+  collision (AD-4 côté `chess_ai`).
+- **État du dataset (mesuré, pas supposé)** : run à pleine échelle 2026-08-12, 10 000
+  parties/7 workers, **286 107 positions gardées** (~2,9% des positions d'auto-jeu
+  visitées — filtre delta volontairement sélectif), 29 chunks. Smoke test préalable
+  (30 parties mono-processus) : taux de rétention ~26% par-position-non-terminale,
+  confirmé non-dégénéré avant de lancer le run complet.
+- **Statut côté `jax_supervised_training`** : aucune entrée `dataset_configs.py` créée à
+  ce jour — reste à faire côté training (probablement `CHESS_DECISIVE_TEACHER`, même
+  patron que `CHESS_SEARCH_TEACHER` §2.6 : `task_type="chess_policy_value"`,
+  `model_name="chess_cnn_attention_policy_value"`, tête value neutralisée par
+  `loss_params.value_weight=0.0`). Comparer l'accuracy et surtout le taux de
+  nulles-par-répétition en self-play contre le checkpoint `CHESS_SEARCH_TEACHER` existant
+  (28.00%, §2.6 ci-dessus) est la question ouverte que ce dataset doit trancher.
+
 ## 3. Ce qui reste ouvert (à trancher côté PRD `chess_ai`, puis à reporter ici)
 
 **Direction opérationnelle actuelle (Epic 3 `chess_ai`, 2026-08-03/04) — supersède la
@@ -177,6 +213,97 @@ priorité/direction change.
   `CHESS_NAKAMURA_NO_HISTORY` existants, à fixer une fois les 2 modèles nommés (le
   Modèle 1 a maintenant un dataset stable à référencer ; le nom d'entrée
   `dataset_configs.py` lui-même reste une décision côté `jax_supervised_training`).
+
+### CHESS_TOKEN_1_MOVE (spec `spec-chess-token-1-move`, `chess_ai`, 2026-08-15)
+
+Suite de `spec-chess-token-candidate-poc` (non documenté ici, reste hors contrat stable,
+spike non concluant à ce jour) — diagnostic : (a) `Dense(4672)` est structurellement
+gaspillé sur un espace de sortie qui n'a jamais 4672 coups réellement possibles par
+position ; (b) le scorer à 50 candidats de `chess-token-candidate-poc` ne peut, par
+construction, jamais produire de coup illégal (candidats pré-filtrés par `python-chess`
+avant même d'atteindre le modèle) — ce qui empêche de mesurer si le réseau "connaît" les
+règles. Spec complète (rationale, capabilities, contraintes) :
+`chess_ai/_bmad-output/specs/spec-chess-token-1-move/SPEC.md` + son companion
+`architecture-diagram.md`. **Rapport d'état pour lancer l'epic `jax_supervised_training`
+(§4), pas une promotion vers le contrat stable §2** — reste hors de §2 tant que non
+concluant, même discipline que `move_token`/`chess-token-candidate-poc`.
+
+- **Dataset : aucun changement côté `chess_ai` — mais PAS `chess_search_teacher`.**
+  **Correction 2026-08-15** (défaut trouvé côté `jax_supervised_training`, spec initiale
+  fausse) : `chess_search_teacher` (§2.6) stocke des plans binaires (`encode_position`,
+  8×8×29), incompatibles avec le tronc `token_embed`/`pos_embed` de ce modèle, qui a
+  besoin de `token_position` (`encode_position_tokenized`). Le bon dataset, déjà généré,
+  déjà au bon format, est celui de `chess-token-candidate-poc` :
+  `/home/aobled/Documents/data/chunks/chess_token_candidate_spike/chess_token_candidate_spike.npz`
+  (1 244 231 positions, 2026-08-13, professeur Stockfish profondeur 12 — même professeur
+  que `chess_search_teacher`, échantillon d'auto-jeu différent). Clés `token_position`
+  `(N,64)` et `global_flags` `(N,6)` utilisées directement comme entrée modèle ; le
+  label unique attendu par ce modèle se dérive de `candidate_moves[i, candidate_label[i]]`
+  (schéma complet :
+  `chess_ai/_bmad-output/specs/spec-chess-token-candidate-poc/token-candidate-dataset-schema.md`)
+  — les colonnes `candidate_moves`/`candidate_mask` restantes ne sont pas utilisées par
+  cette architecture à tête unique.
+- **Impact sur le calcul de la loss (côté `jax_supervised_training` uniquement)** : le
+  label dérivé ci-dessus (index unique dans `[0, NUM_MOVES)`, §2.2) doit être décomposé
+  en `(from_square, move_type)` au moment du calcul de la loss — nouvelle fonction
+  `chess_target_encoding.py::decompose_move_index(index) -> (from_square, move_type)`
+  (`chess_ai`, ajoutée 2026-08-15, inverse arithmétique de `move_to_index` existant §2.2,
+  `divmod(index, 73)`, aucune validation de légalité). Loss jointe sur 2 têtes
+  indépendantes (`from_square` 64 classes, `move_type` 73 classes, **prédites
+  indépendamment l'une de l'autre, sans conditionnement**) au lieu d'une seule loss
+  `Dense(4672)`.
+- **Modèle cible** : tronc auto-attention pure sur tokens-case (`token_embed`/`pos_embed`,
+  sans CNN — même principe d'entrée que `chess-token-candidate-poc`), **volontairement
+  allégé** (moins/plus étroit de couches d'attention) pour que `token_embed`/`pos_embed`
+  représentent une part significative des paramètres totaux (objectif explicite : rendre
+  `chess_bottleneck_genetic.py` capable d'un impact comportemental mesurable — 5
+  tentatives précédentes négatives sur un sous-espace mutable trop petit, voir
+  `chess_ai/docs/chess_ai_global_conclusions.md` §4). **Pas d'étage bottleneck**
+  (pas de cross-/auto-attention vers K tokens latents) — le tronc alimente directement
+  les 2 têtes de sortie.
+- **Comparaison** : accuracy jointe (`from_square` ET `move_type` corrects
+  simultanément) face à `CHESS_SEARCH_TEACHER` (28.00% val `PolicyAccuracy`, §2.6).
+- **Config `dataset_configs.py`** : nom de travail `CHESS_TOKEN_1_MOVE` — nommage
+  exact/`task_type`/`model_name` restent une décision côté `jax_supervised_training`
+  (même précédent que le nommage Modèle 1/2 ci-dessus).
+
+**Résultat 2026-08-15 (entraînement réel, `jax_supervised_training`) : version éliminée,
+pas concluante.** Training lancé (GPU, 50 epochs prévues), arrêté manuellement à
+l'epoch 40/50 — plateau net de `JointMoveAccuracy` depuis l'epoch ~34 (0.0500→0.0510,
+quasi stable sur 6 epochs). **Train ≈ Val** (Train ~4.5-4.6%, Val 5.06-5.10%, aucun
+écart) : signature d'un plafond de capacité/structurel, pas d'overfitting (même
+diagnostic que `chess-search-teacher-strategy.md`, §2.6). Très en-deçà des 28.00%
+`CHESS_SEARCH_TEACHER`, mais pas strictement comparable (accuracy jointe sur 2 têtes non
+masquées 64×73 vs top-1 sur 4672 déjà filtré). Checkpoint conservé (19 977 paramètres,
+`best_model_chess_token_1_move.pkl`) mais non retenu comme base de travail. Détail complet :
+`_bmad-output/implementation-artifacts/spec-chess-token-1-move.md` (section "Training
+Outcome").
+
+**Piste v2 à ÉTUDIER, non retenue/non planifiée à ce jour (diagnostic Winston,
+2026-08-15)** — suspect principal : l'absence de conditionnement entre les 2 têtes
+(contrainte actuelle du §3 ci-dessus, "prédites indépendamment") oblige le modèle à
+marginaliser sur l'identité de la pièce en case de départ pour prédire `move_type`, alors
+que ce type de coup en dépend presque entièrement aux échecs — un vrai verdict
+nécessiterait de lever cette contrainte, ce qui reviendrait sur l'objectif "illégalité
+mesurable" du diagnostic initial de ce spec (à rediscuter si cette piste est reprise, pas
+un simple réglage d'hyperparamètre). Options identifiées, par ordre d'impact attendu si
+cette piste est un jour reprise :
+1. Conditionner légèrement `move_type` sur `from_square` (ex. `[pooled ; embedding(from_square)]`
+   en entrée de la tête `move_type`, teacher-forcing à l'entraînement) — lève le verrou
+   structurel principal, sans réintroduire un conditionnement total (le `from_square`
+   prédit reste libre, donc un coup illégal reste possible).
+2. Remplacer le mean-pool actuel par un token de lecture appris, inséré comme 65e token
+   dans la même séquence auto-attention (pas un étage de cross-attention séparé façon
+   bottleneck — resterait conforme à la contrainte "pas d'étage bottleneck" ci-dessus).
+3. Élargir `token_dim`/`num_trunk_layers` (le tronc actuel, `token_dim=32`/1 couche, est
+   délibérément allégé) — levier confirmé dans ce domaine (`CHESS_SEARCH_TEACHER`,
+   64→128 = +6pts) mais probablement insuffisant seul vu le plafond train≈val observé.
+
+**Reprise actée 2026-08-16** — les 3 options ci-dessus testées en UN SEUL run combiné
+(pas 3 runs isolés) : `spec-chess-token-1-move-v2.md` (`jax_supervised_training`), édité
+EN PLACE sur `CHESS_TOKEN_1_MOVE` (pas de nouveau domaine). Détail complet (rationale,
+Boundaries & Constraints, résultat) : `_bmad-output/implementation-artifacts/
+spec-chess-token-1-move-v2.md` côté `jax_supervised_training`.
 
 ## 4. Process
 

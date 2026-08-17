@@ -237,6 +237,12 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
         # Pas de loss_method/metric_method/report_method : meme discipline que
         # ChessMoveTokenStrategy/ChessPolicyValueStrategy ci-dessus.
         strategy = ChessTokenStrategy(loss_params=loss_params)
+    elif task_type == "chess_token_1_move":
+        print("🎯 Application de la logique d'entraînement : CHESS TOKEN 1-MOVE (tête factorisée, spike)")
+        from task_strategies import ChessTokenOneMoveStrategy
+        # Pas de loss_method/metric_method/report_method : meme discipline que
+        # ChessTokenStrategy/ChessMoveTokenStrategy ci-dessus.
+        strategy = ChessTokenOneMoveStrategy(loss_params=loss_params)
     else:
         raise ValueError(f"task_type '{task_type}' non reconnu.")
 

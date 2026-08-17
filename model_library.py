@@ -1459,6 +1459,248 @@ def create_chess_token_candidate_model(num_classes, dropout_rate=0.1, **kwargs):
     return ChessTokenCandidateModel(num_candidates=num_classes, dropout_rate=dropout_rate, **kwargs)
 
 
+class ChessTokenOneMoveModel(nn.Module):
+    """
+    Modèle chess_token_1_move (spec-chess-token-1-move-v2, 2026-08-16, spike, contrat
+    chess_ai §3 CHESS_TOKEN_1_MOVE "Piste v2") : tronc auto-attention PURE sur les 64
+    tokens-case, copié PARTIELLEMENT de ChessTokenCandidateModel ci-dessus (mêmes
+    embeddings token_embed/pos_embed, même biais global_flags additif, mêmes blocs
+    auto-attention) mais SANS son étage bottleneck (pas de queries apprises
+    `bottleneck_queries`, pas de cross-/auto-attention vers K tokens latents, ligne
+    1393-1411 ci-dessus délibérément NON reprise - contrainte explicite du contrat,
+    "Never" du SPEC v1 ET v2) - le tronc alimente directement 2 têtes de sortie.
+
+    v1 (spec-chess-token-1-move, 2026-08-15) éliminée : plateau `JointMoveAccuracy` à
+    5,10% dès l'epoch ~34/50, train≈val (plafond structurel, pas overfitting).
+    Diagnostic (contrat §3, "Résultat 2026-08-15") : suspect principal = la contrainte
+    v1 "2 têtes prédites indépendamment, sans conditionnement" (SUPERSEDED, voir
+    spec-chess-token-1-move.md), qui forçait le modèle à marginaliser sur l'identité de
+    la pièce en case de départ pour prédire move_type, alors que ce dernier en dépend
+    presque entièrement aux échecs. v2 (spec-chess-token-1-move-v2, 2026-08-16) combine
+    3 leviers en UN SEUL run (pas 3 runs isolés) : (1) conditionnement léger de
+    move_type_head sur from_square (CI-DESSOUS), (2) read_token appris remplaçant le
+    mean-pool (CI-DESSOUS), (3) tronc élargi (dataset_configs.py : token_dim 32->64,
+    num_trunk_layers 1->2 - AUCUN changement dans cette classe, déjà en kwargs).
+
+    Pourquoi pas de bottleneck ici : CAP-1/CAP-5 côté chess-token-candidate-poc avaient
+    déjà motivé le passage à un tronc auto-attention pur (pas de CNN), mais leur tête de
+    scoring à 50 candidats pré-filtrés par python-chess ne peut, par construction, JAMAIS
+    produire de coup illégal - ce qui empêche de mesurer si le réseau "connaît" les
+    règles (diagnostic chess_ai, contrat §3). Ce modèle prédit directement le coup dans
+    l'espace complet (from_square 64 x move_type 73 = 4672), sans filtrage préalable :
+    l'illégalité redevient un échec mesurable (aucun masquage de légalité côté
+    modèle/loss - "Never" du SPEC).
+
+    Input (x) : UN SEUL tenseur (B, 71) = [token_position(64) | global_flags(6) |
+    from_square_teacher(1)] (v2 - 70 en v1, +1 colonne) - contrainte de plomberie réelle
+    héritée de ChessTokenCandidateModel (Trainer._train_step/_eval_step n'acheminent
+    jamais qu'UNE SEULE entrée `images` vers `apply_fn`, voir sa docstring pour la
+    référence trainer.py exacte) - packé par ChessTokenOneMoveDataset
+    (data_management.py). PAS de candidate_moves ici (contrairement à
+    ChessTokenCandidateModel) : ce modèle ne voit jamais les 50 candidats légaux du
+    dataset, seulement la position brute (+ le from_square RÉEL en 71e colonne, réservé
+    au conditionnement teacher-forcing ci-dessous) - c'est précisément ce qui rend
+    l'illégalité mesurable (voir ci-dessus).
+
+    x peut arriver en float32 (dummy d'initialisation de Trainer.create_train_state,
+    trainer.py:145, jamais modifié - AD-33) : casté explicitement en int32 dès la
+    première ligne, même pattern que ChessTokenCandidateModel/ChessMoveTokenTransformer
+    ci-dessus.
+
+    global_flags (trait/roques/répétition) : même traitement que ChessTokenCandidateModel
+    (biais additif de dimension token_dim, projeté par nn.Dense puis ajouté à chacun des
+    64 tokens-case AVANT le tronc) - même décision, même motivation (garder le tronc à
+    exactement 64 tokens-case, laisser l'auto-attention propager ce contexte global).
+
+    token_embed = nn.Embed(13, token_dim, name="token_embed") / pos_embed =
+    nn.Embed(64, token_dim, name="pos_embed") : NOMS EXACTS imposés par le contrat
+    (CAP-6 côté chess_ai cible ces noms de paramètres pour la mutation génétique de
+    chess_bottleneck_genetic.py) - ne jamais renommer ni remplacer par une autre forme
+    de couche. pos_embed est désormais RÉUTILISÉ (v2, poids partagés, 0 paramètre
+    supplémentaire - même instance de sous-module flax appelée deux fois, exactement le
+    pattern déjà en place sur ChessTokenCandidateModel pour from_square des candidats,
+    voir sa docstring) pour embedder le from_square de conditionnement ci-dessous - en
+    v1 pos_embed ne servait QUE le tronc, il n'y avait rien d'autre à encoder.
+
+    read_token (v2, nouveau `self.param`, PAS un nn.Embed) : un unique vecteur appris de
+    dimension token_dim, inséré comme 65e token de la séquence auto-attention AVANT le
+    tronc (concaténé à board_tokens, PAS un étage de cross-attention séparé - reste
+    conforme à la contrainte "pas de bottleneck" ci-dessus, contrat §3 "Piste v2" option
+    2). Après le tronc, sa représentation en sortie (h[:, 64, :], PAS h[:, :64].mean())
+    remplace le mean-pool v1 comme représentation poolée de la position - laisse
+    l'auto-attention "choisir" quoi lire dans les 64 tokens-case plutôt qu'une moyenne
+    uniforme fixe.
+
+    Conditionnement move_type_head sur from_square (v2, contrat §3 "Piste v2" option 1) :
+    from_square_logits reste calculé UNIQUEMENT depuis `pooled` (NON conditionné - un
+    coup illégal doit rester possible, objectif contractuel "illégalité mesurable"
+    préservé). move_type_head, elle, reçoit en entrée la concaténation [pooled ;
+    pos_embed(from_square_cond)] où from_square_cond = from_square_teacher (colonne 71,
+    label RÉEL, teacher-forcing) quand training=True, et argmax(from_square_logits)
+    quand training=False - JAMAIS le label réel utilisé en évaluation (fuite qui
+    invaliderait le diagnostic "illégalité mesurable" du contrat, I/O Matrix du SPEC v2).
+    Branche Python-level `if training:` (PAS jnp.where) : `training` arrive ici comme un
+    bool Python STATIQUE, jamais une valeur tracée JAX - vérifié en lisant trainer.py
+    avant d'implémenter (Trainer._train_step/_eval_step appellent toujours
+    `apply_fn(vars, images, training=True/False, ...)` avec un littéral Python, jamais un
+    argument passé à travers `jax.jit` - trainer.py:239-240/272), cohérent avec
+    `deterministic=not training` déjà utilisé pour le dropout dans cette même classe.
+
+    Sortie : dict {"from_square": (B,64), "move_type": (B,73)} - PAS un tenseur unique
+    (contrairement à ChessTokenCandidateModel/ChessCnnAttentionLegalMoves/
+    ChessMoveTokenTransformer) : 2 têtes Dense sur `pooled` (from_square) et
+    [pooled ; embedding(from_square_cond)] (move_type, v2 - conditionnement à SENS
+    UNIQUE, from_square ne dépend jamais de move_type). from_square/move_type sont des
+    tailles FIXES (64/NUM_MOVE_TYPES=73, propriété du schéma move_to_index existant, PAS
+    un hyperparamètre) - jamais paramétrées via num_classes (voir
+    create_chess_token_one_move_model ci-dessous, Design Notes du SPEC).
+
+    token_dim/num_heads/num_trunk_layers : tronc v1 délibérément ALLÉGÉ (valeurs de
+    départ plus petites que les défauts token_dim=64/num_trunk_layers=2 de
+    ChessTokenCandidateModel) - objectif explicite du contrat (§3) : que
+    token_embed/pos_embed pèsent une part SIGNIFICATIVE des paramètres totaux (pour que
+    chess_bottleneck_genetic.py, côté chess_ai, ait un espace de mutation avec un impact
+    comportemental mesurable - 5 tentatives précédentes négatives sur un sous-espace
+    mutable trop petit, chess_ai/docs/chess_ai_global_conclusions.md §4). Défauts de
+    CETTE CLASSE inchangés (token_dim=32, num_heads=4, num_trunk_layers=1) : le tronc
+    élargi de v2 (token_dim=64, num_trunk_layers=2) est appliqué UNIQUEMENT via les
+    kwargs de dataset_configs.py (entrée CHESS_TOKEN_1_MOVE), pas un changement de
+    défaut ici - aucune autre classe/usage de ChessTokenOneMoveModel n'est affecté.
+    """
+    dropout_rate: float = 0.1
+    token_dim: int = 32
+    num_heads: int = 4
+    num_trunk_layers: int = 1
+
+    @nn.compact
+    def __call__(self, x, training: bool = True):
+        assert self.num_heads > 0, f"num_heads doit etre > 0 (recu {self.num_heads})"
+        assert self.token_dim % self.num_heads == 0, (
+            f"token_dim ({self.token_dim}) doit etre divisible par num_heads ({self.num_heads})"
+        )
+
+        # AD-33 (pattern ChessTokenCandidateModel/ChessMoveTokenTransformer ci-dessus) :
+        # caste explicitement en int32, independamment du dtype fourni par l'appelant
+        # (dummy d'init float32 de Trainer.create_train_state, trainer.py:145 - jamais
+        # modifie).
+        packed = jnp.asarray(x, dtype=jnp.int32)
+
+        expected_width = 71  # v2 : 70 (v1) + 1 (from_square_teacher)
+        assert packed.shape[-1] == expected_width, (
+            f"attendu une entree packee (B, 71) [token_position(64) | global_flags(6) | "
+            f"from_square_teacher(1)] (ChessTokenOneMoveDataset, data_management.py), "
+            f"recu (B, {packed.shape[-1]})"
+        )
+
+        # --- DÉCOUPAGE de l'entrée packée ---
+        token_position = packed[:, :64]                      # (B, 64) int32 in [0,12]
+        global_flags = packed[:, 64:70].astype(jnp.float32)  # (B, 6) 0.0/1.0
+        from_square_teacher = packed[:, 70]                  # (B,) int32 in [0,64) - v2, teacher-forcing UNIQUEMENT (voir plus bas)
+
+        batch_size = packed.shape[0]
+
+        # --- EMBEDDINGS token + position, alimentent le tronc SANS projection (noms
+        # EXACTS imposes par le contrat, voir docstring) ---
+        token_embed = nn.Embed(num_embeddings=13, features=self.token_dim, name="token_embed")
+        pos_embed = nn.Embed(num_embeddings=64, features=self.token_dim, name="pos_embed")
+
+        board_tokens = token_embed(token_position)  # (B, 64, D)
+        position_ids = jnp.arange(64)
+        board_tokens = board_tokens + pos_embed(position_ids)[None, :, :]  # (B, 64, D)
+
+        # global_flags (trait/roques/repetition) : biais additif diffuse a chaque case
+        # AVANT le tronc - meme decision que ChessTokenCandidateModel ci-dessus.
+        global_bias = nn.Dense(self.token_dim, name="global_flags_proj")(global_flags)  # (B, D)
+        h = board_tokens + global_bias[:, None, :]  # (B, 64, D)
+
+        # --- read_token (v2, voir docstring) : 65e token de la sequence, AVANT le
+        # tronc - PAS de position_ids/pos_embed pour ce token (ce n'est pas une case du
+        # plateau), juste un vecteur appris directement, broadcast sur le batch. ---
+        read_token = self.param(
+            "read_token", nn.initializers.normal(0.02), (self.token_dim,)
+        )
+        read_token = jnp.broadcast_to(read_token[None, None, :], (batch_size, 1, self.token_dim))
+        h = jnp.concatenate([h, read_token], axis=1)  # (B, 65, D)
+
+        # --- TRONC : auto-attention PURE sur les 65 tokens (64 cases + read_token,
+        # copie du pattern ChessTokenCandidateModel ci-dessus, SANS le bottleneck qui
+        # suit normalement) - le read_token participe a l'auto-attention comme n'importe
+        # quel autre token, bidirectionnel (pas de masque causal). ---
+        for _ in range(self.num_trunk_layers):
+            residual = h
+            h = nn.LayerNorm()(h)
+            h = nn.MultiHeadDotProductAttention(num_heads=self.num_heads)(inputs_q=h)  # bidirectionnel, pas de masque
+            h = nn.Dropout(self.dropout_rate, deterministic=not training)(h)
+            h = residual + h
+
+            residual = h
+            h = nn.LayerNorm()(h)
+            h = nn.Dense(4 * self.token_dim)(h)
+            h = nn.gelu(h)
+            h = nn.Dense(self.token_dim)(h)
+            h = nn.Dropout(self.dropout_rate, deterministic=not training)(h)
+            h = residual + h
+
+        h = nn.LayerNorm()(h)  # (B, 65, D)
+
+        # --- PAS DE BOTTLENECK ICI (contrainte du contrat, voir docstring classe) :
+        # la representation en sortie du read_token (dernier token, index 64) remplace
+        # le mean-pool v1 - laisse l'auto-attention "choisir" quoi lire dans les 64
+        # tokens-case plutot qu'une moyenne uniforme fixe (v2). ---
+        pooled = h[:, 64, :]  # (B, D) - sortie du read_token, PAS jnp.mean(h[:, :64], axis=1)
+        pooled = nn.Dropout(self.dropout_rate, deterministic=not training)(pooled)
+
+        # --- TETE from_square : NON CONDITIONNEE, calculee UNIQUEMENT depuis `pooled`
+        # (contrat v2 "Always" : from_square doit rester libre, un coup illegal doit
+        # rester possible - objectif "illegalite mesurable" preserve). ---
+        from_square_logits = nn.Dense(64, name="from_square_head")(pooled)  # (B, 64)
+
+        # --- Conditionnement move_type_head sur from_square (v2, voir docstring) :
+        # teacher-forcing (label REEL, colonne 71 packee) UNIQUEMENT quand training=True ;
+        # argmax(from_square_logits) quand training=False - JAMAIS le label reel en
+        # evaluation (anti-fuite, I/O Matrix du SPEC v2). Branche Python-level (`if
+        # training:`), PAS jnp.where : `training` est un bool Python STATIQUE ici (voir
+        # docstring classe pour la verification trainer.py), donc un `if` classique
+        # trace une seule des deux branches, sans cout ni ambiguite a l'execution. ---
+        if training:
+            from_square_cond = from_square_teacher  # (B,) int32 in [0,64) - label reel (teacher-forcing)
+        else:
+            from_square_cond = jnp.argmax(from_square_logits, axis=-1)  # (B,) int32 in [0,64) - jamais le label
+
+        # pos_embed REUTILISE (meme instance que ci-dessus, poids partages - AUCUNE
+        # nouvelle table sur 64, meme pattern que ChessTokenCandidateModel pour
+        # from_square des candidats).
+        cond_embed = pos_embed(from_square_cond)  # (B, D)
+        move_type_input = jnp.concatenate([pooled, cond_embed], axis=-1)  # (B, 2*D)
+        move_type_logits = nn.Dense(NUM_MOVE_TYPES, name="move_type_head")(move_type_input)  # (B, 73)
+
+        return {
+            "from_square": from_square_logits.astype(jnp.float32),
+            "move_type": move_type_logits.astype(jnp.float32),
+        }
+
+
+def create_chess_token_one_move_model(num_classes=None, dropout_rate=0.1, **kwargs):
+    """
+    Factory pour ChessTokenOneMoveModel. `num_classes` (nom imposé par la plomberie
+    model_kwargs générique de main.py - main.py construit toujours
+    model_kwargs={"num_classes": ..., "dropout_rate": ...} même pour ce modèle) est
+    IGNORÉ ICI, délibérément : ce modèle a 2 têtes de tailles FIXES (from_square=64,
+    move_type=NUM_MOVE_TYPES=73, codées en dur dans ChessTokenOneMoveModel, propriété du
+    schéma move_to_index existant) - "un nombre de classes" unique n'a pas de sens
+    direct ici, contrairement à create_chess_token_candidate_model (num_classes=50=
+    MAX_CANDIDATES) ou create_chess_move_token_transformer (num_classes=4672=NUM_MOVES)
+    ci-dessus (Design Notes du SPEC). Convention choisie (dataset_configs.py, entrée
+    CHESS_TOKEN_1_MOVE) : num_classes porte une valeur SENTINELLE documentée dans la
+    config (jamais consommée ici, jamais transmise à ChessTokenOneMoveModel).
+
+    **kwargs transmis tel quel à ChessTokenOneMoveModel - permet de surcharger
+    token_dim/num_heads/num_trunk_layers sans modifier cette factory, même discipline
+    que create_chess_token_candidate_model ci-dessus.
+    """
+    return ChessTokenOneMoveModel(dropout_rate=dropout_rate, **kwargs)
+
+
 class Kepler1DConvNet(nn.Module):
     """
     Réseau de Neurones Convolutif 1D pour l'analyse de Séries Temporelles.
@@ -1514,6 +1756,7 @@ MODELS = {
     'chess_cnn_attention_legal_moves': create_chess_cnn_attention_legal_moves, # meme backbone, sans tete value, multi-label coups legaux
     'chess_move_token_transformer': create_chess_move_token_transformer, # decodeur causal sur move_tokens, policy-only (Epic 11, spike)
     'chess_token_candidate_model': create_chess_token_candidate_model, # tronc auto-attention pure + tete scoring 50 candidats (spec-chess-token-candidate-model, spike)
+    'chess_token_one_move_model': create_chess_token_one_move_model, # tronc auto-attention pure SANS bottleneck + 2 tetes independantes from_square/move_type (spec-chess-token-1-move, spike)
     'sophisticated_cnn_128_plus': create_sophisticated_cnn_128_plus,
     'sophisticated_cnn_128_lite': create_sophisticated_cnn_128_lite,
     'sophisticated_cnn_32_plus': create_sophisticated_cnn_32_plus,
