@@ -215,4 +215,186 @@ the door on zero-check-based filtering entirely rather than leaving it implicit.
 | 3 | HIGH | AD-1, AD-5 | Clashing shared-data shape/value (heatmap stride) |
 | 4 | MEDIUM | AD-7 | Two owners of one entity (threshold: config vs. constant) |
 | 5 | MEDIUM | AD-4, AD-8 | Two owners of one entity (224×224 literal) |
+| 6 | LOW-MEDIUM | AD-7 | Two owners of one entity (invalid-slot padding convention) |
+
+**Status note (2026-08-19):** Findings 1–6 above predate `AD-17` through `AD-21`. `AD-17`
+closes Finding 1 (`main.py` added to `task_type` dispatch scope, single literal pinned
+across three files). `AD-18` closes Finding 2 (heatmap+size `.npz` schema owned by a
+single encode/decode pair). `AD-13` closes Finding 3 (stride as a single named value).
+`AD-15` closes Finding 4 (threshold pinned to `JAX_DETECTOR` config, single location) and
+Finding 6 (`valid_mask` as sole authority, non-zero invalid-slot values documented). `AD-12`
+closes Finding 5 (224×224 literal replaced by `image_size` derived from `JAX_DETECTOR`
+config). Left in place for history; not re-litigated below.
+
+---
+
+# Adversarial Review Pass 2 — AD-21 (`build_kwargs_from_config`)
+
+**Date:** 2026-08-19
+**Scope:** `AD-21` only (signature-introspection kwargs construction in `main.py` +
+`model_library.py`), per the same mandate as Pass 1 above. Cross-checked AD-21's Rule text
+against the live pre-refactor code (`main.py:128-298`, `task_strategies.py` constructors,
+`model_library.py` factories `MODELS`/`get_model`) and against the inherited constraints
+from the sibling spine `architecture-compute-dtype-hardware-2026-08-17` (`AD-1`, `AD-3`).
+
+Method: for each clause of AD-21's Rule, tried to construct two separately-plausible,
+independently AD-21-compliant implementations of the same clause and checked whether they
+would produce different runtime behavior or diverging diagnostics with no test/error to
+catch it. Four incompatible-pair scenarios found.
+
+## Finding 7 [HIGH] — "overrides vs. config" has no rule for *which* keys are pre-computed, so two builders default-swap silently
+
+**Binds:** AD-21 (`main.py` construction of `overrides` for the Strategy call site)
+
+**The gap:** AD-21's Rule names exactly three keys that live in `overrides` because
+they're "calculées côté `main.py`": `compute_dtype`, `dropout_rate`, `num_classes`. It says
+nothing about the other kwargs the live code currently threads through the Strategy
+branches — `loss_method`, `metric_method`, `report_method`, `metric_threshold`,
+`label_smoothing`, `mixup_alpha` — which today are computed as **shared local variables in
+`main.py`** (`main.py:193-196`, `config.get("loss_method", "cross_entropy")` etc.) and
+passed explicitly into every branch, even branches whose own class default differs.
+Concretely: `DetectionStrategy.__init__` defaults `loss_method="segmentation"`
+(`task_strategies.py:172`), but `main.py`'s current call site always passes the
+shared `loss_method` local (default `"cross_entropy"` if config omits the key),
+overriding that class default. `FIGHTERJET_DETECTION`'s config happens to set
+`"loss_method": "segmentation"` explicitly today (`dataset_configs.py:191`), so this never
+surfaces — but nothing pins that it must for a future config.
+
+AD-21's Rule is silent on whether this class of value belongs in `overrides` (preserving
+today's "main.py-wide default always wins" behavior) or should flow through raw `config`
+(letting `build_kwargs_from_config`'s "not found → omitted → target's own default applies"
+path take over, which is the behavior AD-21's Prevents clause implies it wants: "son seul
+besoin réel est d'exister dans la signature de la factory/classe cible"). Both readings are
+individually AD-21-compliant; they are not the same reading.
+
+**Concrete incompatible pair:** Builder A wires the `model_kwargs` call site (per the
+Structural Seed, `overrides={"num_classes": ..., "dropout_rate": ..., "compute_dtype":
+...}`, exactly the three named keys — faithful to AD-21's literal list). Builder B, in a
+separate story, wires the Strategy-kwargs call site and — reasonably, minimal-diff — keeps
+`loss_method`/`metric_method`/`report_method`/`metric_threshold` as pre-computed
+`main.py` locals fed into `overrides` too, matching the *pre-AD-21* code's shape. Builder
+C, later, adds a brand-new `TaskStrategy` subclass with a new optional kwarg carrying a
+class-specific default that differs from whatever ad-hoc default `main.py` might
+independently compute for a similarly-named key — under Builder B's "everything
+pre-computed as override" convention, Builder C's class default is dead on arrival for any
+config that omits the key; under a "let it flow through config" convention it would work
+as the class author intended. Nothing in AD-21 tells Builder B or C which convention holds,
+and the disagreement is silent — no error, just a different default.
+
+**Fix direction:** Tighten AD-21 to state explicitly that `overrides` is reserved **only**
+for values not representable as a plain `config` lookup (values sourced from a *different*
+dict than `config`, e.g. `backend_config`, or genuinely computed/derived, e.g.
+`compute_dtype`) — everything else, including `loss_method`/`metric_method`/
+`report_method`/`metric_threshold`/`label_smoothing`/`mixup_alpha`, must be left to flow
+through raw `config`, with "absent from config" meaning "let the target class's own
+constructor default apply," never a `main.py`-wide substitute default.
+
+## Finding 8 [MEDIUM-HIGH] — `overrides` keys other than `compute_dtype` have no AD-1-style protection against config-key collision
+
+**Binds:** AD-21 (`overrides` mechanism), inherited `AD-1` (sibling spine)
+
+**The gap:** the inherited `AD-1` guarantees `compute_dtype` specifically can never appear
+in a dataset `config`, which is exactly what makes "`overrides` always wins" safe for that
+one key. AD-21 generalizes the override-wins mechanism to *all* forwarded kwargs but
+extends no equivalent protection to the other keys it names as overrides —
+`dropout_rate` and `num_classes` — nor to any future one a builder adds. `main.py`
+currently builds `dropout_rate` unconditionally for every model
+(`dropout_rate = backend_config["dropout_rate"]`, `main.py:129`, fed into every
+`model_kwargs`/`overrides` call), sourced from `backend_config`, not `config`.
+
+**Concrete incompatible pair:** Builder A adds a new model factory (e.g. a follow-on to
+`chess_token_candidate_model`) whose named parameter is also spelled `dropout_rate` but
+whose intended semantics differ (e.g. a per-block list rather than one scalar), documented
+by Builder A as a new field in that model's dataset config:
+`"dropout_rate": [0.1, 0.2, 0.1]`. This is exactly the pattern AD-21's Prevents clause
+promises works ("son seul besoin réel est d'exister dans la signature de la factory
+cible"). But `main.py`'s pre-existing, unconditional `overrides["dropout_rate"]` (a single
+float from `backend_config`) wins per AD-21's own rule, silently discarding Builder A's
+config value before the target ever sees it — the collision is invisible until the model
+crashes on a type mismatch (or worse, silently coerces/broadcasts and trains wrong).
+`compute_dtype` is safe from this only because a *different* spine's `AD-1` separately
+forbids it from ever appearing in `config`; no such rule exists for `dropout_rate` or
+`num_classes`.
+
+**Fix direction:** Either (a) tighten AD-21 to declare `dropout_rate` and `num_classes`
+reserved names — no dataset config may ever declare them for a different purpose, mirroring
+`AD-1`'s treatment of `compute_dtype` explicitly rather than by silent analogy — or (b)
+require `overrides` to be scoped per-target rather than passed as one blanket dict built
+once for every model/Strategy, so a collision would fail loudly (target sees two candidate
+sources) rather than resolving silently.
+
+## Finding 9 [MEDIUM] — `compute_dtype` "injected?" print is required to stay a hand-rolled duplicate of the helper's own introspection, with nothing pinning the two checks together
+
+**Binds:** AD-21 (`main.py`'s compute_dtype diagnostic print vs. `build_kwargs_from_config`'s internal introspection)
+
+**The gap:** AD-21's Rule explicitly carves the diagnostic print out of the helper: "le
+print diagnostique dédié à `compute_dtype` (« injecté »/« non applicable ») reste explicite
+à côté du helper, pas absorbé silencieusement." That means `main.py` must keep its own
+`"compute_dtype" in inspect.signature(target_factory).parameters` check (today at
+`main.py:185`, pre-refactor) purely to decide what the print says, **separate from** the
+equivalent check `build_kwargs_from_config` performs internally to decide what actually
+gets forwarded. AD-21 pins that both checks must exist; it does not pin that they must stay
+expression-identical.
+
+**Concrete incompatible pair:** Story A ships `build_kwargs_from_config` with a plain
+`inspect.signature(target).parameters` check (matches `main.py`'s hand-rolled one — prints
+and behavior agree). Story B, later, extends `build_kwargs_from_config` only — e.g. to
+correctly unwrap a `functools.partial`-wrapped or decorated factory before introspecting,
+a legitimate, AD-21-compliant enhancement to "introspecte la signature de `target`." Story
+B has no reason to touch `main.py`'s separate print-diagnostic check (AD-21 says it stays
+external to the helper), so it doesn't. Now the helper correctly forwards `compute_dtype`
+through the wrapper while `main.py`'s cruder check still reports "non applicable" — a
+diagnostic that actively lies about whether injection happened, for the exact value
+(`compute_dtype`) the sibling spine treats as high-stakes enough to warrant its own
+dedicated print in the first place.
+
+**Fix direction:** Tighten AD-21 to require the diagnostic print derive its
+injected/not-applicable verdict **from the same call** to
+`build_kwargs_from_config` (e.g. by having the helper return which override keys were
+actually consumed, and `main.py` print off that return value) rather than from an
+independently-maintained introspection expression — "explicit, not absorbed" should mean
+"a visible print statement," not "a second, separately-evolving implementation of the same
+check."
+
+## Finding 10 [LOW-MEDIUM] — `STRATEGIES` dict lookup failure mode for an unknown `task_type` is unspecified, inconsistent with the adjacent `get_model()` pattern
+
+**Binds:** AD-21 (Strategy dispatch), AD-17 (single dispatch point, same literal)
+
+**The gap:** the pre-refactor `if/elif` chain ends `else: raise ValueError(f"task_type
+'{task_type}' non reconnu.")` — an explicit, message-bearing error. AD-21 replaces this
+with `STRATEGIES = {task_type: Classe}` and says a dict "est une implémentation valide" of
+AD-17's single dispatch point, but does not say how a missing key is handled. A plain
+`STRATEGIES[task_type]` raises a bare `KeyError` with no explanatory message — a real
+regression in debuggability, and inconsistent with the pattern immediately adjacent in the
+same function: `model_kwargs` construction deliberately uses `MODELS.get(model_name)` +
+`get_model()`'s own explicit `ValueError` (`model_library.py:1812-1813`) specifically
+*because*, per `main.py`'s own comment at the call site, "un `model_name` invalide/mal
+orthographié ne doit pas planter ici avec un `KeyError` brut" (a lesson from the 2026-08-17
+Edge Case Hunter review, cited in-line). AD-21 does not require the same discipline for the
+`task_type` → `STRATEGIES` lookup it introduces right below it.
+
+**Concrete incompatible pair:** Builder A implements `STRATEGIES[task_type]` directly
+(terse, matches the dict-literal spirit of "dispatch unique" in AD-21's text). Builder B,
+adding a new `task_type` in a later story, writes a small config-validation helper (e.g. a
+pre-flight check invoked from a `tools/` script or test) that expects to catch a
+`ValueError` with the `"non reconnu"` message pattern to confirm a typo'd `task_type` is
+caught before a training run starts — matching every other dispatch failure mode in this
+codebase (`get_model`, the original `if/elif`). Builder B's check silently never fires
+(catches `ValueError`, gets `KeyError`), reporting configs as valid when they are not.
+
+**Fix direction:** Tighten AD-21 to require `STRATEGIES.get(task_type)` + an explicit
+`raise ValueError(f"task_type '{task_type}' non reconnu. Stratégies disponibles:
+{list(STRATEGIES)}")` on a `None` result — same shape as `get_model()`'s guard, stated
+explicitly rather than left to be inferred from "a dict is a valid implementation."
+
+---
+
+## Summary table — Pass 2 (AD-21)
+
+| # | Severity | ADs | Clash type |
+|---|----------|-----|------------|
+| 7 | HIGH | AD-21 | Two owners of one entity (default-value source: pre-computed override vs. raw config) |
+| 8 | MEDIUM-HIGH | AD-21, AD-1 (sibling) | Two owners of one entity (`dropout_rate`/`num_classes` key, unprotected collision) |
+| 9 | MEDIUM | AD-21 | Conflicting state-mutation paths (diagnostic print vs. actual injection, duplicated logic) |
+| 10 | LOW-MEDIUM | AD-21, AD-17 | Two owners of one entity (missing-key failure mode: `KeyError` vs. `ValueError`) |
 | 6 | LOW-MEDIUM | AD-7 | Conflicting consumption convention (padding/validity) |

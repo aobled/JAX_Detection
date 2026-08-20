@@ -4,15 +4,10 @@ Architecture orientée objet pour meilleure organisation et maintenance
 """
 
 import os
-# Supprimé: Ne pas désactiver la pré-allocation XLA sur TPU, cela cause une fragmentation mémoire (Crashes silencieux)
-# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-# os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-# Sans serveur X11 : OpenCV (plugins Qt embarqués) + matplotlib évite xcb / crash
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-import inspect
 import jax
 import jax.numpy as jnp
 import gc
@@ -20,10 +15,10 @@ import psutil
 from tqdm import tqdm
 
 # Import des modules
-from model_library import get_model, MODELS, resolve_compute_dtype
+from model_library import get_model, MODELS, resolve_compute_dtype, build_kwargs_from_config, MODEL_FORWARDED_CONFIG_KEYS
 from dataset_configs import get_dataset_config, print_config as print_dataset_config
 from trainer import Trainer
-from task_strategies import ClassificationStrategy, DetectionStrategy
+from task_strategies import STRATEGIES, STRATEGY_FORWARDED_CONFIG_KEYS
 
 
 # ======================
@@ -136,147 +131,48 @@ def main(dataset_name="FIGHTERJET_CLASSIFICATION"):
     print(f"Classes: {num_classes}")
     print(f"Dropout: {dropout_rate}")
     
-    model_kwargs = {"num_classes": num_classes, "dropout_rate": dropout_rate}
-    if "heatmap_prior" in config:
-        # aircraft_detector_centernet uniquement (Story 7.2 addendum) - les autres factories
-        # (sophisticated_cnn_*) n'ont pas de **kwargs de secours et leveraient un TypeError
-        # si on leur passait un argument inattendu, d'ou le passage conditionnel
-        model_kwargs["heatmap_prior"] = config["heatmap_prior"]
-    if "num_bottleneck_tokens" in config:
-        # modeles chess_cnn_attention_* uniquement (test K du bottleneck, 2026-07-27) -
-        # meme discipline de forwarding conditionnel que heatmap_prior ci-dessus
-        model_kwargs["num_bottleneck_tokens"] = config["num_bottleneck_tokens"]
-    if "token_dim" in config:
-        # modeles chess_cnn_attention_* uniquement (test capacite token_dim, recherche
-        # technique 2026-08-06) - meme discipline de forwarding conditionnel que
-        # num_bottleneck_tokens ci-dessus
-        model_kwargs["token_dim"] = config["token_dim"]
-    if "num_layers" in config:
-        # chess_move_token_transformer uniquement (Epic 11, spike) - meme discipline
-        # de forwarding conditionnel que token_dim/num_bottleneck_tokens ci-dessus
-        model_kwargs["num_layers"] = config["num_layers"]
-    if "d_model" in config:
-        # chess_move_token_transformer uniquement (Epic 11, spike)
-        model_kwargs["d_model"] = config["d_model"]
-    if "num_heads" in config:
-        # chess_move_token_transformer (Epic 11, spike) ET chess_token_candidate_model
-        # (spec-chess-token-candidate-model, 2026-08-13, spike) - les deux modeles
-        # exposent un champ num_heads, cette branche generique les sert tous les deux.
-        # Ne pas la restreindre/supprimer en pensant qu'elle ne sert qu'a
-        # chess_move_token_transformer.
-        model_kwargs["num_heads"] = config["num_heads"]
-    if "num_trunk_layers" in config:
-        # chess_token_candidate_model uniquement (spec-chess-token-candidate-model,
-        # 2026-08-13, spike) - meme discipline de forwarding conditionnel que
-        # num_bottleneck_tokens/token_dim/num_heads ci-dessus. Sans cette branche, la
-        # cle "num_trunk_layers" dans CHESS_TOKEN (dataset_configs.py) serait
-        # silencieusement ignoree malgre le commentaire de cette config qui la liste
-        # comme ajustable.
-        model_kwargs["num_trunk_layers"] = config["num_trunk_layers"]
-    # compute_dtype (spec-compute-dtype-hardware, 2026-08-17, AD-3) : injection par
-    # introspection de signature, PAS un forwarding conditionnel par config comme les
-    # branches ci-dessus. `compute_dtype` n'est jamais lu depuis `config` (AD-1) - la
-    # seule question est "la factory cible declare-t-elle un parametre NOMME
-    # compute_dtype ?" (pas juste **kwargs, qui absorberait silencieusement la valeur
-    # sans jamais la transmettre au constructeur - piege deja present sur
-    # aircraft_detector_unet/centernet/centernet_lite, voir architecture spine AD-3).
-    # Modeles non adaptes (9 sur 12) : rien injecte, comportement inchange. Lookup via
-    # .get() (pas MODELS[model_name]) : un model_name invalide/mal orthographie ne doit
-    # pas planter ici avec un KeyError brut - on laisse get_model() ci-dessous lever son
-    # ValueError explicite habituel (liste les modeles disponibles), comme avant cette
-    # feature (revue Edge Case Hunter/Blind Hunter, 2026-08-17).
+    # Construction des kwargs modele via l'introspection centralisee (Story 12.1,
+    # AD-21) : MODEL_FORWARDED_CONFIG_KEYS.get(model_name, ()) (canal config,
+    # forwarding inconditionnel scope par modele - model_library.py, source unique
+    # partagee avec les tests, remplace les anciennes branches if "X" in config) +
+    # compute_dtype/dropout_rate/num_classes (canal overrides, forwarding strict par
+    # introspection de signature - AD-3 herite, compute_dtype jamais lu depuis config
+    # - AD-1 herite). Lookup via .get() (pas MODELS[model_name]) : un model_name
+    # invalide/mal orthographie ne doit pas planter ici avec un KeyError brut - on
+    # laisse get_model() ci-dessous lever son ValueError explicite habituel (liste
+    # les modeles disponibles).
     target_factory = MODELS.get(model_name)
-    compute_dtype_injected = target_factory is not None and "compute_dtype" in inspect.signature(target_factory).parameters
-    if compute_dtype_injected:
-        model_kwargs["compute_dtype"] = compute_dtype
+    model_kwargs, forwarded_overrides = build_kwargs_from_config(
+        target_factory,
+        config,
+        config_keys=MODEL_FORWARDED_CONFIG_KEYS.get(model_name, ()),
+        compute_dtype=compute_dtype,
+        dropout_rate=dropout_rate,
+        num_classes=num_classes,
+    )
+    compute_dtype_injected = "compute_dtype" in forwarded_overrides
     print(f"🔢 compute_dtype pour '{model_name}': {'injecte (' + compute_dtype.__name__ + ')' if compute_dtype_injected else 'non applicable (modele non adapte)'}")
     model = get_model(model_name, **model_kwargs)
     
-    # 4. INSTANCIATION DE LA STRATEGIE (Injection de dépendance)
+    # 4. INSTANCIATION DE LA STRATEGIE (Injection de dépendance) - dispatch via
+    # STRATEGIES (task_strategies.py, Story 12.2, AD-21/AD-17) et construction des
+    # kwargs via le meme helper que model_kwargs (build_kwargs_from_config, Story
+    # 12.1) : num_classes en overrides strict (ClassificationStrategy/KeplerStrategy
+    # uniquement), le reste via STRATEGY_FORWARDED_CONFIG_KEYS scope par task_type -
+    # aucune des 9 classes Strategy n'a de **kwargs, un forwarding non scope
+    # planterait immediatement (meme piege que model_kwargs, Story 12.1).
     task_type = config.get("task_type", "classification")
-    loss_method = config.get("loss_method", "cross_entropy")
-    loss_params = config.get("loss_params", {})
-    metric_method = config.get("metric_method", "accuracy")
-    report_method = config.get("report_method", "confusion_matrix")
-    
-    if task_type == "classification":
-        print("🎯 Application de la logique d'entraînement : CLASSIFICATION")
-        strategy = ClassificationStrategy(
-            num_classes=num_classes,
-            label_smoothing=config.get("label_smoothing", 0.0),
-            mixup_alpha=config.get("mixup_alpha", 0.0),
-            loss_method=loss_method,
-            loss_params=loss_params,
-            metric_method=metric_method,
-            report_method=report_method
-        )
-    elif task_type == "detection":
-        print("🎯 Application de la logique d'entraînement : DETECTION")
-        strategy = DetectionStrategy(
-            loss_method=loss_method,
-            loss_params=loss_params,
-            metric_method=metric_method,
-            report_method=report_method
-        )
-    elif task_type == "kepler":
-        print("🎯 Application de la logique d'entraînement : KEPLER 1D")
-        from task_strategies import KeplerStrategy
-        strategy = KeplerStrategy(
-            num_classes=num_classes,
-            loss_method=loss_method,
-            loss_params=loss_params,
-            metric_method=metric_method,
-            report_method=report_method
-        )
-    elif task_type == "detection_centernet":
-        print("🎯 Application de la logique d'entraînement : DETECTION CENTERNET")
-        from task_strategies import CenterNetDetectionStrategy
-        # CenterNetDetectionStrategy n'a pas de dispatch interne (une seule methode de
-        # perte/metrique, Story 7.6) - signature reelle (loss_params uniquement, plus de
-        # metric_threshold depuis l'addendum post-hoc 2026-07-18 : HeatmapActivation est
-        # une moyenne continue, pas un seuil dur), pas loss_method/metric_method/
-        # report_method comme les 3 branches ci-dessus.
-        strategy = CenterNetDetectionStrategy(loss_params=loss_params)
-    elif task_type == "chess_policy_value":
-        print("🎯 Application de la logique d'entraînement : CHESS POLICY+VALUE")
-        from task_strategies import ChessPolicyValueStrategy
-        # ChessPolicyValueStrategy n'a pas de dispatch interne (une seule methode de
-        # perte/metrique, Story 9.3) - meme pattern que CenterNetDetectionStrategy
-        # ci-dessus (loss_params uniquement, pas loss_method/metric_method/report_method).
-        strategy = ChessPolicyValueStrategy(loss_params=loss_params)
-    elif task_type == "chess_legal_moves":
-        print("🎯 Application de la logique d'entraînement : CHESS COUPS LÉGAUX (multi-label)")
-        from task_strategies import ChessLegalMovesStrategy
-        # Pas de loss_method/metric_method/report_method : meme discipline que
-        # ChessPolicyValueStrategy ci-dessus (une seule methode de perte/metrique).
-        # metric_threshold : optionnel, expose via config suite au balayage de seuil
-        # du 1er run (2026-08-02) - F1=0.60 a seuil 0.3 contre 0.53 au defaut 0.5.
-        # loss_params={"pos_weight": ...} : ponderation de la classe positive dans
-        # la BCE (2e run, 2026-08-02) - voir compute_chess_legal_moves_loss.
-        strategy = ChessLegalMovesStrategy(
-            metric_threshold=config.get("metric_threshold", 0.5),
-            loss_params=loss_params,
-        )
-    elif task_type == "chess_move_token":
-        print("🎯 Application de la logique d'entraînement : CHESS MOVE-TOKEN (policy-only, spike)")
-        from task_strategies import ChessMoveTokenStrategy
-        # Pas de loss_method/metric_method/report_method : meme discipline que
-        # ChessPolicyValueStrategy/ChessLegalMovesStrategy ci-dessus.
-        strategy = ChessMoveTokenStrategy(loss_params=loss_params)
-    elif task_type == "chess_token":
-        print("🎯 Application de la logique d'entraînement : CHESS TOKEN (scoring candidats, spike)")
-        from task_strategies import ChessTokenStrategy
-        # Pas de loss_method/metric_method/report_method : meme discipline que
-        # ChessMoveTokenStrategy/ChessPolicyValueStrategy ci-dessus.
-        strategy = ChessTokenStrategy(loss_params=loss_params)
-    elif task_type == "chess_token_1_move":
-        print("🎯 Application de la logique d'entraînement : CHESS TOKEN 1-MOVE (tête factorisée, spike)")
-        from task_strategies import ChessTokenOneMoveStrategy
-        # Pas de loss_method/metric_method/report_method : meme discipline que
-        # ChessTokenStrategy/ChessMoveTokenStrategy ci-dessus.
-        strategy = ChessTokenOneMoveStrategy(loss_params=loss_params)
-    else:
+    strategy_cls = STRATEGIES.get(task_type)
+    if strategy_cls is None:
         raise ValueError(f"task_type '{task_type}' non reconnu.")
+    strategy_kwargs, _ = build_kwargs_from_config(
+        strategy_cls,
+        config,
+        config_keys=STRATEGY_FORWARDED_CONFIG_KEYS.get(task_type, ()),
+        num_classes=num_classes,
+    )
+    print(f"🎯 Strategy: {task_type} -> {strategy_cls.__name__}")
+    strategy = strategy_cls(**strategy_kwargs)
 
     # 5. INITIALISATION DU TRAINER
     print("\n🎯 CRÉATION DU TRAINER")

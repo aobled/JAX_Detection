@@ -1,0 +1,346 @@
+/usr/local/lib/python3.12/dist-packages/jax/_src/cloud_tpu_init.py:86: UserWarning: Transparent hugepages are not enabled. TPU runtime startup and shutdown time should be significantly improved on TPU v5e and newer. If not already set, you may need to enable transparent hugepages in your VM image (sudo sh -c "echo always > /sys/kernel/mm/transparent_hugepage/enabled")
+  warnings.warn(
+🚀 TPU détecté - Optimisations activées
+📊 TPU: Utilisation de float16
+🔢 compute_dtype (calcul Conv/Dense/BatchNorm/LayerNorm): bfloat16
+Backend JAX: tpu
+Devices: [TpuDevice(id=0, process_index=0, coords=(0,0,0), core_on_chip=0)]
+Using device: TPU_0(process=0,(0,0,0,0))
+🎯 Dataset spécifié: FIGHTERJET_CLASSIFICATION
+
+📊 Chargement de la configuration: FIGHTERJET_CLASSIFICATION
+
+📊 CONFIGURATION: FIGHTERJET_CLASSIFICATION
+============================================================
+Classes: 32
+Noms: ['a10', 'a4', 'a400m', 'alphajet', 'b1b', 'b2', 'b52', 'c130', 'c17', 'f117', 'f14', 'f15', 'f16', 'f18', 'f22', 'f35', 'f4', 'flanker', 'gripen', 'harrier', 'hawk', 'hawkeye', 'mig29', 'mirage2000', 'mustang', 'rafale', 'spitfire', 'sr71', 'su57', 'tornado', 'typhoon', 'v22']
+Image size: (128, 128)
+Modèle: sophisticated_cnn_128_lite
+Epochs: 40
+Patience: 5
+
+TPU: batch=128×4, lr=0.008, wd=5e-05
+GPU: batch=128×4, lr=0.0008, wd=5e-05
+============================================================
+
+📁 GESTION DES DONNÉES
+============================================================
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1786965413.878576    1128 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1786965416.229182    1128 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+E0000 00:00:1786965423.679810    1128 cuda_platform.cc:52] failed call to cuInit: INTERNAL: CUDA error: Failed call to cuInit: UNKNOWN ERROR (303)
+🔄 Initialisation du pipeline de données pour la tâche : CLASSIFICATION
+📦 Classification Dataset: 4 train chunks, 1 val chunks [Grayscale (1 canal)]
+✅ Chunks de classification trouvés
+📊 Calcul des statistiques complètes...
+  Train chunk dataset_classification_train_chunk0.npz: 30000 échantillons
+  Train chunk dataset_classification_train_chunk1.npz: 30000 échantillons
+  Train chunk dataset_classification_train_chunk2.npz: 30000 échantillons
+  Train chunk dataset_classification_train_chunk3.npz: 27457 échantillons
+  Val chunk dataset_classification_val_chunk0.npz: 29342 échantillons
+📊 STATISTIQUES:
+   Train: 4 chunks, ~117457 échantillons
+   Val: 1 chunks, ~29342 échantillons
+
+🔍 Vérification des datasets...
+📊 Train: shape=(128, 128, 128, 1), targets=(128,)
+📊 Val: shape=(128, 128, 128, 1), targets=(128,)
+
+🏗️  CRÉATION DU MODÈLE
+============================================================
+Modèle: sophisticated_cnn_128_lite
+Classes: 32
+Dropout: 0.0
+🔢 compute_dtype pour 'sophisticated_cnn_128_lite': injecte (bfloat16)
+🎯 Application de la logique d'entraînement : CLASSIFICATION
+
+🎯 CRÉATION DU TRAINER
+============================================================
+
+🚀 LANCEMENT DE L'ENTRAÎNEMENT
+============================================================
+💾 RAM avant entraînement: 14.5%
+📐 decay_steps calculé automatiquement : 117457 échantillons réels, batch=128 -> 917 steps/epoch × 7 decay_epochs = 6419
+📊 TAILLE DU MODÈLE:
+   Paramètres totaux: 834,089
+   Taille: 3.2 MB
+⚠️  Aucun checkpoint valide trouvé: best_model_training_state_classification.pkl ([Errno 2] No such file or directory: 'best_model_training_state_classification.pkl')
+🚀 Démarrage d'un nouvel entraînement
+
+Epoch 1/40 - training...
+💾 RAM: 15.3% (6.6GB/47.0GB)
+Training: 918it [03:00,  5.08it/s]
+Train | Loss=2.8029 | Accuracy=0.1908 | Time=180.9s
+Val   | Loss=2.5008 | Accuracy=0.2128 | Time=22.5s
+[✓] New best model saved (Accuracy=0.2128)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 2/40 - training...
+Training: 918it [01:44,  8.78it/s]
+Train | Loss=2.0070 | Accuracy=0.4786 | Time=104.7s
+Val   | Loss=1.9350 | Accuracy=0.3905 | Time=14.0s
+[✓] New best model saved (Accuracy=0.3905)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 3/40 - training...
+Training: 918it [01:45,  8.73it/s]
+Train | Loss=1.6844 | Accuracy=0.6206 | Time=105.4s
+Val   | Loss=1.5229 | Accuracy=0.5156 | Time=12.5s
+[✓] New best model saved (Accuracy=0.5156)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 4/40 - training...
+Training: 918it [01:48,  8.48it/s]
+Train | Loss=1.5396 | Accuracy=0.6865 | Time=108.4s
+Val   | Loss=1.1505 | Accuracy=0.6396 | Time=12.3s
+[✓] New best model saved (Accuracy=0.6396)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 5/40 - training...
+Training: 918it [01:46,  8.58it/s]
+Train | Loss=1.4201 | Accuracy=0.7371 | Time=107.2s
+Val   | Loss=0.9911 | Accuracy=0.7218 | Time=12.5s
+[✓] New best model saved (Accuracy=0.7218)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 6/40 - training...
+💾 RAM: 19.7% (8.7GB/47.0GB)
+Training: 918it [01:45,  8.69it/s]
+Train | Loss=1.3556 | Accuracy=0.7685 | Time=105.8s
+Val   | Loss=0.8724 | Accuracy=0.7662 | Time=13.7s
+[✓] New best model saved (Accuracy=0.7662)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 7/40 - training...
+Training: 918it [01:45,  8.71it/s]
+Train | Loss=1.2708 | Accuracy=0.8044 | Time=105.6s
+Val   | Loss=0.7001 | Accuracy=0.8137 | Time=13.5s
+[✓] New best model saved (Accuracy=0.8137)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 8/40 - training...
+Training: 918it [01:47,  8.53it/s]
+Train | Loss=1.2152 | Accuracy=0.8264 | Time=107.7s
+Val   | Loss=0.5429 | Accuracy=0.8525 | Time=13.3s
+[✓] New best model saved (Accuracy=0.8525)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 9/40 - training...
+Training: 918it [01:46,  8.63it/s]
+Train | Loss=1.1843 | Accuracy=0.8399 | Time=106.6s
+Val   | Loss=0.5387 | Accuracy=0.8651 | Time=13.1s
+[✓] New best model saved (Accuracy=0.8651)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 10/40 - training...
+Training: 918it [01:48,  8.46it/s]
+Train | Loss=1.1625 | Accuracy=0.8504 | Time=108.7s
+Val   | Loss=0.5101 | Accuracy=0.8754 | Time=12.3s
+[✓] New best model saved (Accuracy=0.8754)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 11/40 - training...
+💾 RAM: 20.5% (9.1GB/47.0GB)
+Training: 918it [01:46,  8.59it/s]
+Train | Loss=1.0952 | Accuracy=0.8703 | Time=107.0s
+Val   | Loss=0.4412 | Accuracy=0.8859 | Time=14.2s
+[✓] New best model saved (Accuracy=0.8859)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 12/40 - training...
+Training: 918it [01:46,  8.63it/s]
+Train | Loss=1.0967 | Accuracy=0.8751 | Time=106.5s
+Val   | Loss=0.4239 | Accuracy=0.8983 | Time=13.5s
+[✓] New best model saved (Accuracy=0.8983)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 13/40 - training...
+Training: 918it [01:45,  8.70it/s]
+Train | Loss=1.0548 | Accuracy=0.8899 | Time=105.7s
+Val   | Loss=0.4444 | Accuracy=0.8811 | Time=13.9s
+
+Epoch 14/40 - training...
+Training: 918it [01:46,  8.62it/s]
+Train | Loss=1.0496 | Accuracy=0.8922 | Time=106.6s
+Val   | Loss=0.4102 | Accuracy=0.9006 | Time=13.6s
+[✓] New best model saved (Accuracy=0.9006)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 15/40 - training...
+Training: 918it [01:44,  8.76it/s]
+Train | Loss=1.0263 | Accuracy=0.9019 | Time=104.9s
+Val   | Loss=0.3742 | Accuracy=0.9060 | Time=12.5s
+[✓] New best model saved (Accuracy=0.9060)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 16/40 - training...
+💾 RAM: 20.4% (9.0GB/47.0GB)
+Training: 918it [01:45,  8.74it/s]
+Train | Loss=1.0033 | Accuracy=0.9095 | Time=105.2s
+Val   | Loss=0.3161 | Accuracy=0.9213 | Time=13.8s
+[✓] New best model saved (Accuracy=0.9213)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 17/40 - training...
+Training: 918it [01:47,  8.51it/s]
+Train | Loss=0.9985 | Accuracy=0.9114 | Time=108.0s
+Val   | Loss=0.3289 | Accuracy=0.9157 | Time=12.6s
+
+Epoch 18/40 - training...
+Training: 918it [01:46,  8.62it/s]
+Train | Loss=0.9674 | Accuracy=0.9222 | Time=106.8s
+Val   | Loss=0.2951 | Accuracy=0.9258 | Time=13.9s
+[✓] New best model saved (Accuracy=0.9258)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 19/40 - training...
+Training: 918it [01:49,  8.42it/s]
+Train | Loss=0.9767 | Accuracy=0.9229 | Time=109.2s
+Val   | Loss=0.3018 | Accuracy=0.9232 | Time=13.3s
+
+Epoch 20/40 - training...
+Training: 918it [01:47,  8.56it/s]
+Train | Loss=0.9517 | Accuracy=0.9283 | Time=107.4s
+Val   | Loss=0.2726 | Accuracy=0.9326 | Time=12.2s
+[✓] New best model saved (Accuracy=0.9326)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 21/40 - training...
+💾 RAM: 21.0% (9.3GB/47.0GB)
+Training: 918it [01:45,  8.71it/s]
+Train | Loss=0.9353 | Accuracy=0.9365 | Time=105.6s
+Val   | Loss=0.2570 | Accuracy=0.9353 | Time=13.5s
+[✓] New best model saved (Accuracy=0.9353)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 22/40 - training...
+Training: 918it [01:45,  8.74it/s]
+Train | Loss=0.9489 | Accuracy=0.9386 | Time=105.2s
+Val   | Loss=0.2722 | Accuracy=0.9347 | Time=13.4s
+
+Epoch 23/40 - training...
+Training: 918it [01:45,  8.69it/s]
+Train | Loss=0.9114 | Accuracy=0.9468 | Time=105.8s
+Val   | Loss=0.2523 | Accuracy=0.9396 | Time=13.5s
+[✓] New best model saved (Accuracy=0.9396)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 24/40 - training...
+Training: 918it [01:47,  8.52it/s]
+Train | Loss=0.8945 | Accuracy=0.9509 | Time=108.0s
+Val   | Loss=0.2395 | Accuracy=0.9434 | Time=13.3s
+[✓] New best model saved (Accuracy=0.9434)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 25/40 - training...
+Training: 918it [01:46,  8.58it/s]
+Train | Loss=0.9159 | Accuracy=0.9487 | Time=107.1s
+Val   | Loss=0.2498 | Accuracy=0.9409 | Time=12.0s
+
+Epoch 26/40 - training...
+💾 RAM: 20.4% (9.0GB/47.0GB)
+Training: 918it [01:47,  8.53it/s]
+Train | Loss=0.8996 | Accuracy=0.9546 | Time=107.7s
+Val   | Loss=0.2415 | Accuracy=0.9439 | Time=13.3s
+[✓] New best model saved (Accuracy=0.9439)
+   [💾] Export pur PKL généré: best_model.pkl
+
+Epoch 27/40 - training...
+Training: 918it [01:46,  8.59it/s]
+Train | Loss=0.8932 | Accuracy=0.9558 | Time=107.1s
+Val   | Loss=0.2392 | Accuracy=0.9436 | Time=13.8s
+
+Epoch 28/40 - training...
+Training: 918it [01:46,  8.64it/s]
+Train | Loss=0.9037 | Accuracy=0.9551 | Time=106.4s
+Val   | Loss=0.2392 | Accuracy=0.9438 | Time=13.7s
+
+Epoch 29/40 - training...
+Training: 918it [01:46,  8.59it/s]
+Train | Loss=0.8964 | Accuracy=0.9562 | Time=107.0s
+Val   | Loss=0.2397 | Accuracy=0.9438 | Time=13.0s
+
+Epoch 30/40 - training...
+Training: 918it [01:47,  8.50it/s]
+Train | Loss=0.9007 | Accuracy=0.9547 | Time=108.2s
+Val   | Loss=0.2395 | Accuracy=0.9438 | Time=12.5s
+
+Epoch 31/40 - training...
+💾 RAM: 20.9% (9.2GB/47.0GB)
+Training: 918it [01:46,  8.65it/s]
+Train | Loss=0.8835 | Accuracy=0.9572 | Time=106.3s
+Val   | Loss=0.2387 | Accuracy=0.9438 | Time=13.3s
+Early stopping at epoch 31
+
+🎯 ENTRAÎNEMENT TERMINÉ
+   Meilleur Accuracy validation: 0.9439
+
+📊 GÉNÉRATION DES MÉTRIQUES DÉLÉGUÉE À LA STRATÉGIE
+============================================================
+🔍 Chargement du modèle depuis le fichier .pkl...
+🔍 Modèle sauvegardé: sophisticated_cnn_128_lite, 32 classes
+⚠️  ATTENTION: Le fichier .pkl doit correspondre au modèle sophisticated_cnn_128_lite avec 32 classes
+📊 Collecte des données du dataset...
+📊 Dataset: 29342 images, 32 classes
+🔮 Génération des prédictions...
+Prédictions: 100% 230/230 [00:54<00:00,  4.25it/s]
+💾 Matrice de confusion sauvegardée: confusion_matrix.png
+
+📈 RÉSULTATS DE LA MATRICE DE CONFUSION:
+Accuracy globale: 0.9442
+Macro Precision: 0.9429
+Macro Recall: 0.9437
+Macro F1: 0.9430
+
+📊 DÉTAILS PAR CLASSE:
+a10: Precision=0.927, Recall=0.978, F1=0.952
+a4: Precision=0.923, Recall=0.944, F1=0.933
+a400m: Precision=0.956, Recall=0.981, F1=0.968
+alphajet: Precision=0.922, Recall=0.942, F1=0.932
+b1b: Precision=0.948, Recall=0.956, F1=0.952
+b2: Precision=0.939, Recall=0.970, F1=0.954
+b52: Precision=0.955, Recall=0.940, F1=0.947
+c130: Precision=0.981, Recall=0.947, F1=0.964
+c17: Precision=0.971, Recall=0.974, F1=0.972
+f117: Precision=0.942, Recall=0.960, F1=0.951
+f14: Precision=0.955, Recall=0.901, F1=0.927
+f15: Precision=0.959, Recall=0.896, F1=0.927
+f16: Precision=0.949, Recall=0.915, F1=0.932
+f18: Precision=0.902, Recall=0.929, F1=0.915
+f22: Precision=0.947, Recall=0.962, F1=0.954
+f35: Precision=0.944, Recall=0.948, F1=0.946
+f4: Precision=0.975, Recall=0.915, F1=0.944
+flanker: Precision=0.944, Recall=0.910, F1=0.927
+gripen: Precision=0.953, Recall=0.976, F1=0.964
+harrier: Precision=0.937, Recall=0.956, F1=0.947
+hawk: Precision=0.907, Recall=0.965, F1=0.935
+hawkeye: Precision=0.938, Recall=0.953, F1=0.945
+mig29: Precision=0.938, Recall=0.930, F1=0.934
+mirage2000: Precision=0.976, Recall=0.938, F1=0.957
+mustang: Precision=0.942, Recall=0.940, F1=0.941
+rafale: Precision=0.923, Recall=0.926, F1=0.925
+spitfire: Precision=0.955, Recall=0.951, F1=0.953
+sr71: Precision=0.884, Recall=0.875, F1=0.880
+su57: Precision=0.938, Recall=0.955, F1=0.946
+tornado: Precision=0.987, Recall=0.926, F1=0.956
+typhoon: Precision=0.906, Recall=0.978, F1=0.941
+v22: Precision=0.947, Recall=0.962, F1=0.954
+✅ Matrice de confusion générée avec succès depuis l'export pur (pkl) !
+
+🏁 Programme terminé
+   Meilleur score validation (Accuracy ou Loss): 0.9439
+
+🔌 Fin de script sur Colab : déconnexion du runtime (runtime.unassign)...
+Traceback (most recent call last):
+  File "/content/drive/MyDrive/jax_supervised_training/main.py", line 363, in <module>
+    colab_runtime.unassign()
+  File "/usr/local/lib/python3.12/dist-packages/google/colab/runtime.py", line 38, in unassign
+    _output.eval_js('google.colab.kernel.disconnect();', ignore_result=True)
+  File "/usr/local/lib/python3.12/dist-packages/google/colab/output/_js.py", line 36, in eval_js
+    kernel = _ipython.get_kernel()
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/google/colab/_ipython.py", line 24, in get_kernel
+    return get_ipython().kernel
+           ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'kernel'

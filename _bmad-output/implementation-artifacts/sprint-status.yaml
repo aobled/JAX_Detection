@@ -75,9 +75,15 @@
 #     trainer.py. Priorite explicite Aymeric (2026-08-10) : vitesse d'experimentation vers
 #     un premier run entrainable, decisions reversibles selon resultats - pas de PRD dedie,
 #     epics.md source = spine seul.
+# - jax_supervised_training-specific: Epic 12 (generalisation build_kwargs_from_config +
+#     STRATEGIES dict, AD-21, spine architecture-jax_supervised_training-2026-07-15)
+#     stories MUST run in strict sequence : 12-1 -> 12-2. Story 12-1 (helper + migration
+#     model_kwargs) est un prerequisite - 12-2 (dict STRATEGIES + migration kwargs Strategy)
+#     en depend explicitement. Refactor de plomberie pure, pas de PRD dedie (meme precedent
+#     qu'Epic 11) - epics.md source = AD-21 seul, coache avec Aymeric le 2026-08-19.
 
 generated: 2026-07-12
-last_updated: 2026-08-10
+last_updated: 2026-08-19
 project: jax_supervised_training
 project_key: NOKEY
 tracking_system: file-system
@@ -171,6 +177,10 @@ development_status:
   11-3-taskstrategy-chess-move-token-dispatch-et-fix-dtype-critique: done
   11-4-validation-par-execution-reelle-et-non-regression: done
   epic-11-retrospective: backlog
+
+  epic-12: done
+  12-1-build-kwargs-from-config-et-migration-model-kwargs: done
+  12-2-dict-strategies-et-migration-des-kwargs-strategy: done
 
 action_items:
   - epic: "1-3"

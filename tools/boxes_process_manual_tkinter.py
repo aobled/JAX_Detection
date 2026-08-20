@@ -45,7 +45,12 @@ class ImageManager:
 
     def get_bounding_boxes(self):
         base_name = os.path.splitext(self.image_list[self.current_image_index])[0]
-        bbox_files = [f for f in os.listdir(self.root_folder) if f.startswith(base_name) and f.endswith('.json')]
+        # "+ '_'" (pas juste base_name) - revue de code : les JSON sont toujours nommes
+        # f"{base_name}_{n}.json" (jamais base_name seul), un startswith(base_name) non
+        # ancre associerait aussi les JSON d'une AUTRE image dont le nom commence par le
+        # meme prefixe numerique (ex. "f16_1" matche aussi "f16_10_0.json") - meme motif
+        # corrige aux 7 sites de ce fichier qui font cette recherche.
+        bbox_files = [f for f in os.listdir(self.root_folder) if f.startswith(base_name + "_") and f.endswith('.json')]
 
         bounding_boxes = []
         for bbox_file in bbox_files:
@@ -99,6 +104,12 @@ class PhotoViewer:
 
         # Variables pour l'inférence JAX (calcul délégué à PredictionAssistant,
         # Étape 1 du refactor 2026-07-24 - voir refactor-boxes-process-manual-tkinter.md)
+        # False au demarrage (pas True, revue de code) : toggle_predictions() bascule
+        # sur `not self.show_predictions` - le mettre a True ici sans jamais afficher
+        # de prediction au demarrage desynchronise le premier appui sur 'p', qui prend
+        # alors la branche OFF (no-op visuel) au lieu de charger les modeles/generer
+        # une prediction. run_prediction_and_accept (auto-traitement) le met a True
+        # explicitement avant utilisation, independamment de cette valeur initiale.
         self.show_predictions = False
         self.prediction_assistant = PredictionAssistant()
         self.last_predictions = []  # Stocke les prédictions JAX pour acceptation
@@ -152,7 +163,7 @@ class PhotoViewer:
         self.root.bind("<Button-3>", self.on_right_click)
         self.root.bind("<B3-Motion>", self.on_right_drag)
         self.root.bind("<ButtonRelease-3>", self.on_right_release)
-        self.root.bind("<Escape>", lambda event: self.quit_app())
+        self.root.bind("<Escape>", self.handle_escape)
         self.root.bind("<KeyRelease>", self.handle_key_press)
         self.root.bind("<Control-a>", self.start_auto_processing)  # CTRL+a pour démarrer l'auto-traitement
 
@@ -202,7 +213,7 @@ class PhotoViewer:
         # Crée une nouvelle boxe en (0,0,50,50) avec une catégorie par défaut
         base_name = os.path.splitext(self.image_manager.image_list[self.image_manager.current_image_index])[0]
         # Chercher le prochain numéro disponible
-        existing = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name) and f.endswith('.json')]
+        existing = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name + "_") and f.endswith('.json')]
         nums = []
         for f in existing:
             try:
@@ -244,7 +255,7 @@ class PhotoViewer:
 
         os.remove(image_path)
 
-        bbox_files = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name) and f.endswith('.json')]
+        bbox_files = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name + "_") and f.endswith('.json')]
         for bbox_file in bbox_files:
             os.remove(os.path.join(self.image_manager.root_folder, bbox_file))
 
@@ -550,7 +561,7 @@ class PhotoViewer:
         for idx, (x1, y1, x2, y2) in enumerate(self.bbox_coords):
             if x1 <= x <= x2 and y1 <= y <= y2:
                 base_name = os.path.splitext(self.image_manager.image_list[self.image_manager.current_image_index])[0]
-                bbox_files = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name) and f.endswith('.json')]
+                bbox_files = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name + "_") and f.endswith('.json')]
 
                 if self.bbox_files[idx] in bbox_files:
                     bbox_file = self.bbox_files[idx]
@@ -681,7 +692,7 @@ class PhotoViewer:
             if idx < len(self.bbox_coords):
                 bbox_coords_map[bbox_file] = self.bbox_coords[idx]
 
-        bbox_files = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name) and f.endswith('.json')]
+        bbox_files = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name + "_") and f.endswith('.json')]
 
         for bbox_file in bbox_files:
             bbox_file_path = os.path.join(self.image_manager.root_folder, bbox_file)
@@ -810,7 +821,7 @@ class PhotoViewer:
             # 2. Mettre à jour tous les JSON associés
             base_name = os.path.splitext(self.image_manager.image_list[self.image_manager.current_image_index])[0]
             bbox_files = [f for f in os.listdir(self.image_manager.root_folder) 
-                         if f.startswith(base_name) and f.endswith('.json')]
+                         if f.startswith(base_name + "_") and f.endswith('.json')]
             
             updated_files = 0
             for bbox_file in bbox_files:
@@ -883,7 +894,33 @@ class PhotoViewer:
         """Traite automatiquement toutes les images restantes"""
         import threading
         import time
-        
+
+        prediction_done = threading.Event()
+        # Resultat de la derniere iteration (pas juste "termine" - "reussi ou pas",
+        # revue de code) : un `except Exception` qui se contente d'un print laissait
+        # process_loop enchainer sur image_save_folder() meme apres un echec de
+        # chargement de modele/prediction - sauvegardant silencieusement le reste du
+        # lot SANS labels corrects tant que l'erreur persiste (ex. checkpoint absent),
+        # jusqu'a la fin du dossier, sans jamais interrompre ni alerter autrement que
+        # par un print console noye dans le flux.
+        prediction_result = {"ok": False, "error": None}
+
+        def run_prediction_and_accept():
+            # Doit tourner sur le thread principal : Canvas/PhotoImage Tkinter
+            # et PredictionAssistant ne sont pas thread-safe (voir process_loop).
+            try:
+                if not self.prediction_assistant.loaded:
+                    self.prediction_assistant.load_models()
+                self.show_predictions = True
+                self.generate_and_show_predictions()
+                self.accept_predictions()
+                prediction_result["ok"] = True
+            except Exception as e:
+                prediction_result["error"] = e
+                print(f"Erreur lors de la prédiction automatique: {e}")
+            finally:
+                prediction_done.set()
+
         def process_loop():
             while self.auto_processing:
                 try:
@@ -892,9 +929,9 @@ class PhotoViewer:
                         self.auto_processing = False
                         print("Auto-traitement terminé - Toutes les images ont été traitées")
                         break
-                    
+
                     print(f"Auto-traitement: {self.image_manager.current_image_index + 1}/{len(self.image_manager.image_list)}")
-                    
+
                     # Vérifier que l'image courante existe encore (au cas où elle aurait été déplacée)
                     current_image_path = self.image_manager.get_image_path()
                     if not os.path.exists(current_image_path):
@@ -905,8 +942,38 @@ class PhotoViewer:
                             print("Auto-traitement terminé - Toutes les images ont été traitées")
                             break
                         continue
-                    
-                    # Sauvegarder l'image courante (équivalent à touche 's')
+
+                    # Prédire (équivalent à touche 'p') puis accepter (équivalent à touche 'a')
+                    # sur le thread principal, et attendre la fin avant de sauvegarder.
+                    prediction_done.clear()
+                    prediction_result["ok"] = False
+                    prediction_result["error"] = None
+                    self.root.after(0, run_prediction_and_accept)
+                    # Timeout defensif (pas juste un garde-fou theorique, revue de code) :
+                    # si root.after(0, ...) ne s'execute jamais (ex. mainloop deja
+                    # termine/ESC), .wait() sans timeout bloquerait ce thread pour
+                    # toujours au lieu d'echouer visiblement. 300s (pas 120s, trouve en
+                    # revue de code) : le tout premier appel inclut load_models() (lecture
+                    # checkpoint + 1ere compilation JAX/JIT), plausiblement plus lent que
+                    # 120s sur materiel modeste - un timeout trop court interromprait
+                    # l'auto-traitement des la 1ere image pour un simple demarrage a froid,
+                    # pas une vraie panne.
+                    _AUTO_PROCESS_TIMEOUT_S = 300
+                    if not prediction_done.wait(timeout=_AUTO_PROCESS_TIMEOUT_S):
+                        print(f"Timeout ({_AUTO_PROCESS_TIMEOUT_S}s) en attendant la prédiction/acceptation sur {current_image_path} - auto-traitement arrêté")
+                        self.auto_processing = False
+                        break
+
+                    if not prediction_result["ok"]:
+                        print(
+                            f"Échec de la prédiction/acceptation automatique sur {current_image_path} "
+                            f"({prediction_result['error']}) - auto-traitement arrêté, image NON sauvegardée"
+                        )
+                        self.auto_processing = False
+                        break
+
+                    # Sauvegarder l'image courante (équivalent à touche 's') - uniquement
+                    # si la prédiction/acceptation a réellement réussi ci-dessus.
                     self.image_save_folder()
                     
                     # Petite pause pour éviter les bugs
@@ -1043,7 +1110,7 @@ class PhotoViewer:
         current_image_name = self.image_manager.image_list[self.image_manager.current_image_index]
         base_name = os.path.splitext(current_image_name)[0]
         
-        bbox_files = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name) and f.endswith('.json')]
+        bbox_files = [f for f in os.listdir(self.image_manager.root_folder) if f.startswith(base_name + "_") and f.endswith('.json')]
         for bbox_file in bbox_files:
             try:
                 os.remove(os.path.join(self.image_manager.root_folder, bbox_file))
@@ -1085,6 +1152,23 @@ class PhotoViewer:
         self.draw_crop_zone()
         self.update_window_color_from_current_image()
 
+    def handle_escape(self, event=None):
+        """
+        ESC : arrête l'auto-traitement s'il est en cours (comme promis par le
+        dialogue de confirmation de start_auto_processing : "Appuyez sur ESC
+        pour arrêter à tout moment"), sinon quitte l'application - revue de
+        code, ESC était câblé uniquement sur quit_app() (destroy immédiat de
+        la fenêtre), jamais sur stop_auto_processing() : en plus de ne pas
+        tenir la promesse du dialogue, détruire la fenêtre pendant qu'un
+        root.after(0, run_prediction_and_accept) est en attente peut laisser
+        le thread d'arrière-plan bloqué indéfiniment sur prediction_done.wait()
+        si le callback ne s'exécute jamais (mainloop qui se termine avant).
+        """
+        if self.auto_processing:
+            self.stop_auto_processing()
+        else:
+            self.quit_app()
+
     def quit_app(self):
         self.root.destroy()
 
@@ -1093,7 +1177,7 @@ CROP_HEIGHT = 4  # Hauteur en pixels à croper (0 = désactivé)
 AUTO_CROP = False  # Croper automatiquement lors de la sauvegarde (touche 's')
 CATEGORY_NAME = 'unknown'
 if __name__ == "__main__":
-    root_folder = "/home/aobled/Downloads/tmp_multi/C130"
+    root_folder = "/home/aobled/Downloads/tmp_nara/f18/2"
     viewer = PhotoViewer(root_folder, category_name=CATEGORY_NAME, crop_height=CROP_HEIGHT, auto_crop=AUTO_CROP)
 
 

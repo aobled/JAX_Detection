@@ -3,6 +3,7 @@ Librairie des modèles de deep learning
 Contient tous les modèles utilisés pour l'entraînement
 """
 
+import inspect
 import math
 from typing import Any, Optional
 
@@ -1732,18 +1733,23 @@ class Kepler1DConvNet(nn.Module):
         return x.astype(jnp.float32)
 
 
-def create_kepler_1d_cnn(compute_dtype=jnp.float32, **kwargs):
+def create_kepler_1d_cnn(num_classes=2, dropout_rate=0.3, compute_dtype=jnp.float32, **kwargs):
     """Crée une instance de Kepler1DConvNet.
 
-    compute_dtype accepte explicitement comme parametre NOMME (AD-3) : **kwargs seul
-    forwarderait fonctionnellement la valeur, mais l'introspection stricte de main.py
-    (inspect.signature) ne detecte que les parametres nommes explicites, jamais la
+    num_classes/dropout_rate/compute_dtype acceptes explicitement comme parametres
+    NOMMES (AD-3, Story 12.1) : **kwargs seul forwarderait fonctionnellement la
+    valeur, mais le canal `overrides` strict de build_kwargs_from_config
+    (model_library.py) ne detecte que les parametres nommes explicites, jamais la
     simple presence d'un **kwargs catch-all - un parametre nomme est necessaire pour
-    que l'injection automatique par main.py cible reellement cette factory. Valide
-    compute_dtype (voir _validate_compute_dtype).
+    que num_classes/dropout_rate/compute_dtype soient reellement transmis depuis
+    dataset_configs.py (trouve en revue de code, Story 12.1 : cette factory etait la
+    seule a ne nommer ni num_classes ni dropout_rate, masque uniquement parce que les
+    defauts de Kepler1DConvNet coincidaient avec la config JAX_KEPLER actuelle -
+    tout futur changement de ces valeurs en config aurait ete silencieusement
+    ignore). Valide compute_dtype (voir _validate_compute_dtype).
     """
     _validate_compute_dtype(compute_dtype)
-    return Kepler1DConvNet(compute_dtype=compute_dtype, **kwargs)
+    return Kepler1DConvNet(num_classes=num_classes, dropout_rate=dropout_rate, compute_dtype=compute_dtype, **kwargs)
 
 
 MODELS = {
@@ -1760,6 +1766,25 @@ MODELS = {
     'kepler_1d_cnn': create_kepler_1d_cnn,
 }
 
+
+# Cles de dataset_configs.py forwardees sans condition vers model_kwargs quand
+# presentes, par model_name (Story 12.1, AD-21 - revue de code : evite qu'une
+# liste plate cross-modeles se retrouve dupliquee entre main.py et les tests,
+# et scope chaque cle au(x) seul(s) modele(s) qui la consomment reellement, au
+# lieu d'un simple commentaire pour le documenter). Source unique, importee
+# telle quelle par main.py (build_kwargs_from_config) et par les tests -
+# jamais redefinie independamment. Absent d'un model_name : aucune cle
+# supplementaire forwardee (get() avec defaut () cote appelant).
+MODEL_FORWARDED_CONFIG_KEYS = {
+    'aircraft_detector_centernet': ('heatmap_prior',),
+    'chess_cnn_attention_policy_value': ('num_bottleneck_tokens', 'token_dim'),
+    'chess_cnn_attention_legal_moves': ('num_bottleneck_tokens', 'token_dim'),
+    'chess_move_token_transformer': ('num_layers', 'd_model', 'num_heads'),
+    'chess_token_candidate_model': ('token_dim', 'num_heads', 'num_trunk_layers'),
+    'chess_token_one_move_model': ('token_dim', 'num_heads', 'num_trunk_layers'),
+}
+
+
 def resolve_compute_dtype(backend):
     """
     Derive compute_dtype (dtype de CALCUL des couches matmul lourdes, AD-1/AD-2,
@@ -1774,6 +1799,58 @@ def resolve_compute_dtype(backend):
     tests indesirable).
     """
     return jnp.bfloat16 if backend == "tpu" else jnp.float32
+
+
+def build_kwargs_from_config(target, config, config_keys=(), **overrides):
+    """
+    Construit les kwargs d'une factory/classe (Story 12.1, AD-21) selon deux
+    canaux distincts, jamais confondus :
+
+    1. `config_keys` (explicite, fourni par l'appelant) : chaque nom present
+       dans `config` est forwarde SANS CONDITION - meme comportement que les
+       branches `if "X" in config: kwargs["X"] = config["X"]` qu'il remplace
+       (main.py, avant migration). Pas d'introspection de signature ici : le
+       contrat "cette cle de config est destinee a ce modele" reste, comme
+       avant, la responsabilite de l'auteur de dataset_configs.py - jamais
+       "tout `config`" (la plupart des cles d'un DATASET_CONFIGS - task_type,
+       optimizer, tpu/gpu, loss_params... - ne sont pas des kwargs modele et
+       feraient planter un nn.Module qui n'a pas son propre `**kwargs`, ex.
+       ChessCnnAttentionLegalMoves).
+    2. `overrides` (valeurs CALCULEES par l'appelant - compute_dtype,
+       dropout_rate, num_classes) : forwarde uniquement si `target` nomme le
+       parametre EXPLICITEMENT dans sa signature - jamais absorbe par un
+       `**kwargs` catch-all (discipline stricte heritee d'AD-3,
+       architecture-compute-dtype-hardware-2026-08-17). Une cle presente a la
+       fois dans `config_keys`/`config` et dans `overrides` : `overrides`
+       gagne toujours, silencieusement.
+
+    `target` peut etre None (ex. MODELS.get(model_name) sur un nom invalide) -
+    retourne alors des kwargs vides plutot que de planter ici ; get_model()
+    leve son ValueError explicite habituel en aval.
+
+    Retourne (kwargs, forwarded_override_keys) : le second element (frozenset)
+    liste les cles d'`overrides` reellement forwardees - reutilise par
+    l'appelant pour un print diagnostique fidele (ex. compute_dtype), sans
+    dupliquer independamment la verification de signature.
+    """
+    if target is None:
+        return {}, frozenset()
+
+    parameters = inspect.signature(target).parameters
+
+    kwargs = {}
+    for key in config_keys:
+        if key in config:
+            kwargs[key] = config[key]
+
+    forwarded_override_keys = set()
+    for key, value in overrides.items():
+        param = parameters.get(key)
+        if param is not None and param.kind is not inspect.Parameter.VAR_KEYWORD:
+            kwargs[key] = value
+            forwarded_override_keys.add(key)
+
+    return kwargs, frozenset(forwarded_override_keys)
 
 
 _VALID_COMPUTE_DTYPES = (jnp.float32, jnp.bfloat16, jnp.float16)

@@ -14,6 +14,7 @@ inputDocuments:
   - _bmad-output/planning-artifacts/prds/prd-jax_supervised_training-2026-08-04/prd.md
   - _bmad-output/planning-artifacts/architecture/architecture-chess-move-token-2026-08-10/ARCHITECTURE-SPINE.md
   - /home/aobled/Desktop/Development/chess_ai/_bmad-output/specs/spec-chess-move-token-poc/SPEC.md
+  - _bmad-output/planning-artifacts/architecture/architecture-jax_supervised_training-2026-07-15/ARCHITECTURE-SPINE.md#AD-21
 ---
 
 # Refactor jax_supervised_training — Epic Breakdown
@@ -1586,3 +1587,135 @@ So that l'epic se clôture sur preuve, pas sur lecture de code.
 **Given** les Stories 11.1 à 11.4 complétées
 **When** cette story conclut l'Epic 11
 **Then** FR1 à FR8 sont confirmés couverts et `CHESS_MOVE_TOKEN` est entraînable de bout en bout via `Trainer`, sans régression mesurée sur les domaines existants
+
+## Requirements Inventory — Epic 12 (généralisation de la construction des kwargs modèle/`Strategy` dans `main.py`)
+
+Source : pas de PRD dédié (même précédent qu'Epic 11 — refactor interne de plomberie, pas une nouvelle capacité produit) — exigences extraites directement d'`AD-21` du spine `_bmad-output/planning-artifacts/architecture/architecture-jax_supervised_training-2026-07-15/ARCHITECTURE-SPINE.md`, coaché avec Aymeric le 2026-08-19 (voir le `.memlog.md` du spine, entrées à partir de « Resumed 2026-08-19 pour un nouvel amendement... »). Origine : Aymeric a remarqué, en lisant `main.py`, qu'une grande partie du fichier n'est que du forwarding répétitif de champs `dataset_configs.py` vers `model_kwargs` et les kwargs de chaque `Strategy` — refactor de simplification/normalisation, comportement strictement préservé.
+
+### Functional Requirements
+
+FR1 : Nouvelle fonction `build_kwargs_from_config(target, config, config_keys=(), **overrides)` dans `model_library.py`, à deux canaux distincts : (a) chaque clé d'`overrides` n'est forwardée que si `target` la nomme **explicitement** dans sa signature — jamais absorbée par un `**kwargs` catch-all (discipline stricte héritée d'`AD-3`, spine frère `architecture-compute-dtype-hardware-2026-08-17`) ; (b) chaque nom listé dans `config_keys` (ensemble **explicite et curé, fourni par l'appelant** — `MODEL_HYPERPARAM_CONFIG_KEYS` côté `main.py` — **jamais « tout `config` »**, corrigé en Story 12.1 après un `TypeError` réel constaté à l'implémentation) est forwardé **sans condition** dès qu'il existe dans `config`, sans introspection de signature (comportement identique à l'existant pour les 5 factories `create_chess_cnn_attention_policy_value`/`create_chess_cnn_attention_legal_moves`/`create_chess_move_token_transformer`/`create_chess_token_candidate_model`/`create_chess_token_one_move_model`, qui ne reçoivent `num_bottleneck_tokens`/`token_dim`/`num_layers`/`d_model`/`num_heads`/`num_trunk_layers` **que** via leur propre `**kwargs`, retransmis fidèlement à leur `nn.Module`). Une clé présente dans les deux : `overrides` gagne toujours, silencieusement — contrat documenté, pas une ambiguïté.
+FR2 : `main.py` construit `model_kwargs` via un unique appel à `build_kwargs_from_config`, remplaçant les branches `if "X" in config: model_kwargs["X"] = config["X"]` (`main.py:135-188` avant migration). `compute_dtype` est passé en `overrides` (jamais lu depuis `config` — `AD-1` hérité, inchangé). Le print diagnostique dédié (« compute_dtype pour X : injecté/non applicable ») réutilise la décision de forwarding que le helper vient de prendre pour cette clé précise — jamais une vérification dupliquée indépendamment.
+FR3 : `main.py` dispatche les `Strategy` via un dict `STRATEGIES = {task_type: Classe}` (remplace le `if/elif` à 9 branches, `main.py:198-273` avant migration), consulté via `STRATEGIES.get(task_type)` suivi d'un `raise ValueError(f"task_type '{task_type}' non reconnu.")` explicite si absent — jamais un `KeyError` brut (même pattern que `MODELS.get()` déjà en place, `main.py:184`). Les kwargs de chaque `Strategy` sont construits via `build_kwargs_from_config` ; une clé absente de `config`+`overrides` n'est **jamais** comblée par une valeur par défaut choisie par `main.py` — le paramètre est omis de l'appel, laissant le défaut propre du constructeur `Strategy` ciblé s'appliquer.
+FR4 : Non-régression vérifiée par exécution réelle (pas seulement lecture de code) sur les 9 `task_type` existants (`classification`, `detection`, `kepler`, `detection_centernet`, `chess_policy_value`, `chess_legal_moves`, `chess_move_token`, `chess_token`, `chess_token_1_move`) et sur les 11 factories de `MODELS` — en particulier les 5 factories `create_chess_*`/`create_aircraft_detector_unet` dont le forwarding par `**kwargs` (FR1b) est le point le plus fragile de cette migration.
+
+### NonFunctional Requirements
+
+NFR1 : `overrides` est un dict **neuf à chaque appel** de `build_kwargs_from_config` — jamais réutilisé/muté entre l'appel `model_kwargs` et l'appel kwargs `Strategy` (`compute_dtype` ne doit jamais apparaître dans l'appel `Strategy`, hors binding d'`AD-3` hérité : point d'injection `main.py` → `get_model` uniquement).
+NFR2 : `build_kwargs_from_config` est testable en isolation (nouveau module `tests/test_*.py` dédié), même discipline que `resolve_compute_dtype` (`AD-2` hérité du spine frère).
+NFR3 : Refactor strictement comportement-préservant — aucun `task_type`/modèle existant ne change de comportement runtime observable (valeurs de kwargs identiques avant/après migration), à l'exception de la correction assumée du défaut `DetectionStrategy` (voir Guardrails ci-dessous, qui ne change rien en pratique car `FIGHTERJET_DETECTION` déclare déjà `loss_method` explicitement).
+
+### Additional Requirements (Architecture)
+
+- **Héritage (read-only)** : `AD-1`/`AD-3` (spine frère `architecture-compute-dtype-hardware-2026-08-17` — dérivation matérielle unique de `compute_dtype`, injection par introspection stricte du paramètre nommé), `AD-17` (dispatch `task_type` à un point unique par fichier — un dict est une implémentation valide de ce point, pas une exception).
+- **Naming** : `build_kwargs_from_config` (préfixe `build_*`, cohérent avec `build_single_pass_predict_fn`/`build_predict_fn` existants), `STRATEGIES` (dict, majuscules, cohérent avec `MODELS`).
+- **Stack** : aucune nouvelle dépendance — `inspect.signature()` (stdlib) uniquement.
+- **Fichiers touchés** : `model_library.py` (nouvelle fonction), `main.py` (migration des deux points de construction). Aucun autre fichier du domaine (`task_strategies.py`, `data_management.py`, `dataset_configs.py`) n'est modifié par cette epic.
+
+### UX Design Requirements
+
+N/A — refactor interne pur, aucune interface.
+
+### Guardrails identifiés (Reviewer Gate du spine, 2026-08-19)
+
+Issus de la Reviewer Gate exécutée sur `AD-21` (3 subagents indépendants : rubric walker, vérification web/réalité, chasse-aux-incompatibilités) :
+
+- **Bug critique trouvé au premier jet du spine, corrigé avant clôture** : une discipline d'introspection stricte (« jamais `**kwargs` ») appliquée à *tous* les kwargs — pas seulement `compute_dtype` — aurait cassé silencieusement le forwarding de `num_bottleneck_tokens`/`token_dim`/`num_layers`/`d_model`/`num_heads`/`num_trunk_layers` vers 5 modèles échecs réellement entraînés (vérifié `model_library.py:925,1028,1168,1423,1659`). D'où le canal à deux modes (FR1). Story 12.1 AC dédiée : vérifier par instanciation réelle (`model.init()`, pas mocké) qu'un de ces 6 champs produit bien la forme de paramètres attendue.
+- **Incohérence latente trouvée (pas un bug vivant aujourd'hui)** : `main.py` fige actuellement un défaut `"cross_entropy"` partagé par toutes les branches `task_type` pour `loss_method`, alors que le vrai défaut de `DetectionStrategy.__init__` est `"segmentation"` — jamais atteint aujourd'hui uniquement parce que `FIGHTERJET_DETECTION` le redéclare explicitement en config. FR3 corrige ça en ne dupliquant plus aucun défaut côté `main.py`.
+- **`STRATEGIES` dict non protégé** : un accès direct `STRATEGIES[task_type]` lèverait un `KeyError` brut là où existait un `ValueError` explicite — incohérent avec `MODELS.get()` déjà en place juste au-dessus. FR3 fixe le pattern `.get()` + erreur explicite.
+- **Print diagnostique `compute_dtype`** : ne doit pas dupliquer indépendamment la logique d'introspection du helper (risque de dérive si l'un évolue sans l'autre) — doit réutiliser la décision réelle du helper (FR2).
+
+### FR Coverage Map
+
+FR1: Epic 12 — `build_kwargs_from_config`, deux canaux (overrides strict / config inconditionnel même via `**kwargs`)
+FR2: Epic 12 — Migration `model_kwargs` + print `compute_dtype` non dupliqué
+FR3: Epic 12 — `STRATEGIES` dict + `.get()`/`ValueError` + pas de défaut dupliqué côté `main.py`
+FR4: Epic 12 — Non-régression par exécution réelle (9 `task_type`, 11 factories `MODELS`)
+
+## Epic List
+
+### Epic 12: Généralisation de la construction des kwargs modèle/`Strategy` dans `main.py`
+
+`main.py` remplace ses branches répétitives de forwarding config→kwargs (modèle et `Strategy`) par un unique helper d'introspection (`build_kwargs_from_config`, `model_library.py`) et un dict de dispatch (`STRATEGIES`) — refactor de simplification, comportement strictement préservé, sans toucher `task_strategies.py`/`data_management.py`/`dataset_configs.py`. Standalone : ne dépend d'aucun epic futur.
+**FRs covered:** FR1, FR2, FR3, FR4
+**Note d'implémentation (revue du spine, 2026-08-19) :** 2 stories — (1) le helper + migration `model_kwargs` (FR1, FR2), testable en isolation avant de toucher le dispatch `Strategy` ; (2) le dict `STRATEGIES` + migration des kwargs `Strategy` + validation de non-régression complète (FR3, FR4), dépend explicitement de (1). Voir "Guardrails identifiés" ci-dessus pour les AC anti-`**kwargs`-cassé et anti-défaut-dupliqué.
+
+### Story 12.1: `build_kwargs_from_config` et migration de `model_kwargs`
+
+As a mainteneur du pipeline d'entraînement,
+I want une fonction générique d'introspection qui construit les kwargs d'une factory modèle depuis la config et des valeurs calculées,
+So that `main.py` n'a plus besoin d'une branche `if "X" in config` par hyperparamètre de modèle, sans rien casser pour les modèles qui ne reçoivent ces hyperparamètres que via `**kwargs`.
+
+**Acceptance Criteria:**
+
+**Given** `build_kwargs_from_config(target, config, **overrides)`
+**When** appelée avec une clé d'`overrides` que la signature de `target` ne nomme PAS explicitement (`target` n'a qu'un `**kwargs` catch-all)
+**Then** cette clé n'est PAS forwardée — FR1, préserve la discipline stricte héritée d'`AD-3`
+
+**Given** la même fonction
+**When** appelée avec une clé de `config` que la signature de `target` ne nomme pas explicitement mais que `target` possède un `**kwargs` catch-all
+**Then** cette clé EST forwardée via `**kwargs` — FR1, préserve le comportement réel actuel des 5 factories `create_chess_*`/`create_aircraft_detector_unet`
+
+**Given** une clé présente à la fois dans `config` et dans `overrides`
+**When** les kwargs sont construits
+**Then** la valeur d'`overrides` gagne silencieusement — FR1, contrat documenté
+
+**Given** `main.py:135-188` (avant migration)
+**When** la construction de `model_kwargs` est migrée
+**Then** elle devient un unique appel à `build_kwargs_from_config` avec `compute_dtype`/`dropout_rate`/`num_classes` en `overrides` — plus aucune branche `if "X" in config: model_kwargs["X"] = ...` — FR2
+
+**Given** le print diagnostique `compute_dtype` (« injecté »/« non applicable »)
+**When** migré
+**Then** son booléen provient de la décision de forwarding réellement prise par le helper pour la clé `compute_dtype` (le helper expose quelles clés d'`overrides` ont été forwardées) — jamais une vérification `inspect.signature` dupliquée indépendamment dans `main.py` — FR2, garde-fou identifié en revue de spine
+
+**Given** un nouveau module de test dédié (`tests/test_build_kwargs_from_config.py`)
+**When** il exerce `build_kwargs_from_config` en isolation (cible factice avec paramètres nommés + `**kwargs`, dict `config`, dict `overrides`)
+**Then** il couvre : override forwardé seulement si nommé explicitement ; clé `config` forwardée sans condition même via `**kwargs` ; `overrides` gagne sur une clé `config` de même nom ; une clé absente des deux n'est jamais comblée par une valeur par défaut choisie par le helper — NFR2
+
+**Given** les 5 factories `create_chess_cnn_attention_policy_value`/`create_chess_cnn_attention_legal_moves`/`create_chess_move_token_transformer`/`create_chess_token_candidate_model`/`create_chess_token_one_move_model`
+**When** chacune est appelée via `build_kwargs_from_config` avec sa vraie entrée `dataset_configs.py`
+**Then** une instanciation réelle (`model.init()`, pas mockée) produit un modèle dont les formes de paramètres reflètent exactement l'hyperparamètre configuré (ex. nombre de tokens du bottleneck, `d_model`) — FR1/FR2, garde-fou critique trouvé en revue de spine (`review-web-verify.md`)
+
+**Given** la suite de tests existante touchant `compute_dtype`/le forwarding de modèle (ex. `tests/test_compute_dtype_hardware.py`)
+**When** exécutée après cette story
+**Then** elle passe intégralement, sans modification — NFR3
+
+### Story 12.2: Dict `STRATEGIES` et migration des kwargs `Strategy`
+
+As a mainteneur du pipeline d'entraînement,
+I want un dict de dispatch `task_type` → `Strategy` et une construction de kwargs `Strategy` via le même helper générique,
+So that le dispatch `main.py` n'a plus de branches dupliquées, sans introduire de `KeyError` brut ni de défaut divergent du vrai constructeur `Strategy`.
+
+**Acceptance Criteria:**
+
+**Given** `main.py:198-273` (avant migration, `if/elif` à 9 branches)
+**When** le dispatch est migré
+**Then** il devient `STRATEGIES = {task_type: Classe}` consulté via `STRATEGIES.get(task_type)` suivi d'un `raise ValueError(f"task_type '{task_type}' non reconnu.")` explicite si absent — jamais un `KeyError` brut — FR3
+
+**Given** un `task_type` absent de `STRATEGIES` (ex. faute de frappe)
+**When** `main.py` dispatche
+**Then** il lève le même `ValueError` explicite qu'avant migration (vérifié par un test dédié) — FR3
+
+**Given** les kwargs de chaque `Strategy`
+**When** construits via `build_kwargs_from_config`
+**Then** aucun défaut n'est codé en dur côté `main.py` (ex. `"cross_entropy"`/`"accuracy"`/`"confusion_matrix"` partagés entre branches) — une clé absente de `config`+`overrides` est omise, laissant le défaut propre du constructeur `Strategy` ciblé s'appliquer — FR3, corrige l'incohérence latente `DetectionStrategy` trouvée en revue (défaut réel `"segmentation"`, jamais atteint aujourd'hui uniquement parce que `FIGHTERJET_DETECTION` le redéclare explicitement)
+
+**Given** le print sur-mesure par branche (« Application de la logique d'entraînement : X »)
+**When** migré
+**Then** il devient un print générique unique (`task_type` → nom de la classe `Strategy` choisie) — FR3
+
+**Given** les 9 `task_type` configurés dans `dataset_configs.py`
+**When** `main.py` construit `model_kwargs` et les kwargs `Strategy` pour chacun via le mécanisme migré
+**Then** une instanciation réelle (pas mockée) du modèle (`model.init()`) et de la `Strategy` réussit avec les mêmes valeurs de kwargs qu'avant migration — FR4, non-régression par exécution réelle (dry-run léger, pas un entraînement complet — cohérent avec la prudence documentée sur l'exécution locale lourde)
+
+**Given** `AD-1` (spine frère `compute-dtype-hardware`)
+**When** cette story est complétée
+**Then** aucune entrée `DATASET_CONFIGS` ne déclare `compute_dtype`, et sa valeur ne provient jamais du canal `config` du helper (vérifié par grep sur `dataset_configs.py`) — FR4, non-régression AD-1 hérité
+
+**Given** la suite de tests automatisée complète (`tests/`)
+**When** exécutée après cette story
+**Then** elle passe intégralement, sans modification — FR4, NFR3
+
+**Given** les Stories 12.1 et 12.2 complétées
+**When** cette story conclut l'Epic 12
+**Then** FR1 à FR4 sont confirmés couverts et `main.py` ne contient plus aucune branche `if "X" in config`/`if/elif task_type` dupliquée pour la construction de kwargs, sans régression mesurée sur les 9 `task_type` existants

@@ -1,113 +1,71 @@
-# Web-Verify Review — ARCHITECTURE-SPINE.md (JAX Single-Pass, 2026-07-15)
+# Review Lens: Web/Reality Verification — AD-21 (build_kwargs_from_config)
 
-Mandate: verify that committed decisions were web-researched or reality-checked rather than
-asserted from training data — specifically the three JAX APIs named load-bearing in AD-1, AD-3,
-and the Stack section: `jax.lax.reduce_window`, `jax.lax.top_k`, `jax.scipy.ndimage.map_coordinates`.
+**Target:** `ARCHITECTURE-SPINE.md`, AD-21 amendment (2026-08-19)
+**Lens:** Verify every committed decision was web-researched or reality-checked rather than asserted from training data — current library/framework versions, that each named technology still exists and fits, and (greenfield) live starter defaults. Flag anything out of date and unconfirmed against the web, the existing project, or the current starter.
 
-## Method
+## Scope note
 
-1. Checked the installed environment: `jax==0.6.2` (confirmed via `python3 -c "import jax;
-   print(jax.__version__)"`). `requirements.txt` deliberately excludes `jax`/`jaxlib` (pinned to
-   whatever the local conda env / Colab already has, per an explicit comment dated 2026-07-12) —
-   so 0.6.2 is a representative, current version for this project, not a stale pin.
-2. Searched the repo for prior usage of the three APIs:
-   `grep -rn "reduce_window|top_k|map_coordinates" --include=*.py` → **zero matches**. None of the
-   three APIs are in active use anywhere in the codebase today. The spine's Stack-section claim
-   ("no new external dependency — these are already part of JAX already used by the project") is
-   about the *library* (`jax` itself is an existing dependency), not about prior call-sites of
-   these specific functions — read that way the claim is accurate, but it should not be mistaken
-   for "reality-checked via existing usage," because there is none.
-3. Executed all three APIs directly against the installed jax 0.6.2 in a throwaway script
-   (top_k, reduce_window max-pool, map_coordinates order=1 with `jax.grad` through both the image
-   values and the coordinates). All three behaved exactly as the spine assumes:
-   - `jax.lax.top_k(x, k)` returns `(values, indices)`, stable, sorted descending — matches AD-1's
-     "Top-K=20" usage.
-   - `jax.lax.reduce_window(heat, -inf, lax.max, window_dimensions=..., padding='SAME')` performs
-     the max-pool used for local-maxima/peak extraction — matches AD-1.
-   - `jax.scipy.ndimage.map_coordinates(img, coords, order=1)` is differentiable both w.r.t. the
-     image (`jax.grad` w.r.t. `img` returned a finite, non-zero gradient) **and w.r.t. the
-     coordinates themselves** (`jax.grad` w.r.t. the coordinate arrays also returned finite
-     non-zero values) — this directly confirms AD-3's premise that the crop is a genuinely
-     differentiable, pure function of already-known box coordinates, unlike a cv2/PIL crop.
-4. Read the official current docstrings (`docs.jax.dev/en/latest`) for all three functions to
-   check for gotchas.
-5. Web-searched for deprecation/removal signals and known coordinate-convention issues.
-6. Cross-checked `notes-jax-single-pass.md` (the primary source behind the spine) to see whether
-   the spine's technical claims about these APIs were present in the exploration log, i.e.
-   reasoned about before being distilled into the spine, vs. invented at distillation time.
+AD-21 introduces **no new external dependency, no library, no version claim**. It is a pure Python-stdlib refactor (`inspect.signature()` + dict dispatch) applied to code already present in this repo. There is therefore nothing here that requires web research — no framework version to check, no "does this library still exist" question, no starter defaults to confirm. This review lens is satisfied by a **reality check against the actual codebase** instead, which is what follows.
+
+## Verification performed
+
+1. Read `main.py:120-276` (the `model_kwargs` construction and the `task_type` if/elif dispatch AD-21 claims to replace).
+2. Ran `grep -n "def __init__" task_strategies.py` and read the matched constructors.
+3. Ran a live Python check of `inspect.signature()` parameter-kind classification (`POSITIONAL_OR_KEYWORD` / `KEYWORD_ONLY` vs `VAR_KEYWORD`) to confirm the stdlib behavior AD-21's design depends on.
+4. Read the `MODELS` factory functions in `model_library.py` that the conditional branches in `main.py` currently feed (`heatmap_prior`, `num_bottleneck_tokens`, `token_dim`, `num_layers`, `d_model`, `num_heads`, `num_trunk_layers`).
 
 ## Findings
 
-### 1. `map_coordinates` has a documented coordinate-convention discrepancy from SciPy — already correctly flagged as Deferred, and now independently confirmed real (informational, not a gap)
+### 1. `inspect.signature()` parameter-kind claim — CONFIRMED correct (no flag)
 
-The current JAX docstring for `jax.scipy.ndimage.map_coordinates` states explicitly: *"Interpolation
-near boundaries differs from the scipy function, because JAX fixed an outstanding bug; see
-https://github.com/jax-ml/jax/issues/11097... This function interprets the `mode` argument as
-documented by SciPy, but not as implemented by SciPy."* There is a real history of related bugs/
-discrepancies (issues #11097 mode='mirror' mismatch, #14819 wrong extrapolation, #5687 mode=
-'constant' not properly applied).
+AD-21's rule depends on being able to tell an explicitly named parameter apart from a `**kwargs` catch-all. Live-checked:
 
-The spine's own Deferred section already anticipates exactly this class of problem: *"Parité pixel
-du `CROP` (`map_coordinates` vs `cv2.resize`)... convention d'alignement pixel (bord vs centre) à
-vérifier précisément, pas juste visuellement."* `notes-jax-single-pass.md:166` records the same
-caution dated 2026-07-14 ("le classique problème 'align corners' qui piège souvent les portages
-entre bibliothèques"). This is a case where the spine's caution was well-placed and is now
-externally corroborated — no correction needed, just confirming the Deferred item is grounded in
-a real, documented risk rather than generic hedging.
+```python
+def target(a, b=1, *, c=2, **kwargs): pass
+# a      -> POSITIONAL_OR_KEYWORD
+# b      -> POSITIONAL_OR_KEYWORD
+# c      -> KEYWORD_ONLY
+# kwargs -> VAR_KEYWORD
+```
 
-### 2. `jax.scipy.ndimage.map_coordinates` is flagged for possible future relocation out of JAX core (moderate — not checked by the spine, worth a Deferred note)
+`inspect.Parameter.kind` does distinguish `VAR_KEYWORD` from `POSITIONAL_OR_KEYWORD`/`KEYWORD_ONLY` as claimed. This is long-stable stdlib behavior (`inspect` module, unchanged for many Python major versions) — nothing here is version-sensitive or plausibly out of date. No web verification needed or warranted.
 
-JAX's own design document, JEP 18137 ("Scope of JAX NumPy & SciPy Wrappers",
-https://docs.jax.dev/en/latest/jep/18137-numpy-scipy-scope.html), concludes that `scipy.ndimage`
-should be considered **out-of-scope for JAX core**, and explicitly names `map_coordinates` as a
-candidate to move to `dm-pix` or another package. This is a live design decision on JAX's roadmap,
-not yet enacted (the function is present and unchanged in the current 0.6.2 install and in the
-latest published docs), but it directly concerns the one primitive AD-3 makes structurally
-load-bearing for the entire crop step, and the Stack section's "no new external dependency" framing
-implicitly depends on this function staying in JAX core. Neither the spine nor
-`notes-jax-single-pass.md` shows any awareness of this JEP. Nothing needs to change today, but
-this is exactly the kind of fact a web check catches that training-data recall would not (the JEP
-and its conclusion are dated after most training cutoffs a base model would rely on). Recommend a
-one-line Deferred note: watch for `map_coordinates` relocation out of `jax.scipy.ndimage` in future
-JAX releases; if it moves, either pin the JAX version or add `dm-pix` as a real new dependency
-(which would then need its own review).
+### 2. Repetitive-pattern description in `main.py` — CONFIRMED accurate
 
-### 3. `jax.lax.reduce_window` and `jax.lax.top_k` — no issues found
+`main.py:135-188` does contain the described chain of `if "X" in config: model_kwargs["X"] = config["X"]` branches (7 of them: `heatmap_prior`, `num_bottleneck_tokens`, `token_dim`, `num_layers`, `d_model`, `num_heads`, `num_trunk_layers`), followed by the AD-3-style introspection-based `compute_dtype` injection at lines 184-188. `main.py:198-275` does contain a 9-way `if/elif` (`classification`, `detection`, `kepler`, `detection_centernet`, `chess_policy_value`, `chess_legal_moves`, `chess_move_token`, `chess_token`, `chess_token_1_move`) constructing each `Strategy` with its own hand-picked kwarg subset. `task_strategies.py` constructors (via `grep -n "def __init__"`) confirm none of the 9 `Strategy.__init__` signatures accept `**kwargs` — all params are explicitly named. So for the **Strategy side**, AD-21's design (introspect `target`, forward only named params) is factually sound and matches reality with no gaps.
 
-Both are stable, long-standing `jax.lax` primitives (thin wraps over XLA `ReduceWindowWithGeneralPadding`
-and XLA TopK respectively), present unchanged in the current docs, with no deprecation signal, no
-open correctness issues found, and no ambiguity of the kind that afflicts `map_coordinates`'s
-boundary/mode handling. Local execution against jax 0.6.2 matches the documented behavior exactly
-(`top_k` returns sorted-descending `(values, indices)`, stable on ties; `reduce_window` with
-`lax.max` and `-inf` init performs the max-pool peak-extraction AD-1 requires). The spine's use of
-these two is sound and requires no correction.
+### 3. **HIGH — model-factory side: AD-21's own anti-pattern is already present in 6 of the 7 branches it proposes to replace**
 
-### 4. Technical claims trace back to the exploration notes, not invented at distillation time (informational)
+This is the one substantive reality-check finding, and it's significant enough to warrant amendment before implementation.
 
-`notes-jax-single-pass.md` (lines 36, 84, 94, 110, 134, 137, 166, 209, 221) shows the three APIs
-were identified and reasoned about during the 2026-07-14 exploration session, including the
-align-corners caution and the "differentiable w.r.t. pixel values and coordinates" claim for
-`map_coordinates` — both independently confirmed correct by direct execution in this review (see
-Method §3). This is reality-checking by mechanism (the person doing the exploration evidently knew
-or looked up the JAX API surface, and the claims hold up empirically), even though no citation/URL
-trail was recorded — worth noting as a gap in *evidence*, not a gap in *correctness*.
+AD-21's rule states the helper "ne forwarde que les paramètres **nommés explicitement**... jamais un `**kwargs` catch-all" — explicitly modeled on AD-3 (compute_dtype), where this works because `create_aircraft_detector_unet`, `create_aircraft_detector_centernet`, and `create_kepler_1d_cnn` all declare `compute_dtype` as an explicit named parameter.
 
-## Not flagged
+But reading the other `MODELS` factories that the *other* 6 conditional branches in `main.py` currently feed shows they do **not** declare those parameters by name — they only accept them through a `**kwargs` catch-all that is forwarded, un-renamed, straight into the underlying `nn.Module`:
 
-- JAX version currency: 0.6.2, installed and intentionally unpinned per `requirements.txt`'s own
-  rationale (matches whatever Colab/local CUDA build is already working) — appropriate for this
-  project, not stale.
-- No existing repo usage of the three APIs was found, which the spine does not claim either
-  (its "already used by the project" language refers to the `jax` library as a whole, which is
-  accurate).
+- `create_chess_cnn_attention_policy_value(num_classes, dropout_rate=0.1, **kwargs)` (model_library.py:925) — docstring literally says: *"`**kwargs` transmis tel quel à `ChessCnnAttentionPolicyValue` - permet de surcharger les hyperparamètres 'ajustables' documentés sur la classe (`token_dim`, `num_bottleneck_tokens`, `num_heads`)"*.
+- `create_chess_cnn_attention_legal_moves(num_classes, dropout_rate=0.1, **kwargs)` (model_library.py:1028) — same pattern; the class itself (`ChessCnnAttentionLegalMoves`) declares `token_dim`, `num_bottleneck_tokens`, `num_heads` as dataclass fields, but the **factory** does not.
+- `create_chess_move_token_transformer(num_classes, dropout_rate=0.1, compute_dtype="float32", **kwargs)` (model_library.py:1168) — `num_layers`, `d_model`, `num_heads` reach the model only via `**kwargs`.
+- `create_chess_token_candidate_model(num_classes, dropout_rate=0.1, **kwargs)` (model_library.py:1423) — docstring: *"`**kwargs` transmis tel quel... permet de surcharger `token_dim`/`num_bottleneck_tokens`/`num_heads`/`num_trunk_layers`"*.
+- `create_chess_token_one_move_model(num_classes=None, dropout_rate=0.1, **kwargs)` (model_library.py:1659) — same pattern.
 
-## Overall verdict
+Only `heatmap_prior` (on `create_aircraft_detector_centernet`) and `compute_dtype` are explicit named parameters on their factories; the remaining five config keys currently forwarded by `main.py`'s conditional branches — `num_bottleneck_tokens`, `token_dim`, `num_layers`, `d_model`, `num_heads`, `num_trunk_layers` — are **only** reachable today because `main.py` unconditionally stuffs them into `model_kwargs` whenever the config key is present, relying on each factory's own `**kwargs` to relay them to the `nn.Module`.
 
-The three named JAX APIs exist, behave as described, and are correctly used in the spine's design
-— confirmed by direct execution against the project's actual installed JAX version, not just
-documentation reading. The spine's own Deferred section already correctly anticipates the one real
-gotcha (`map_coordinates` boundary/align-corners convention) with a real basis in JAX's issue
-history. The one gap this review adds: no awareness in the spine or its source notes of JEP 18137's
-proposal to relocate `map_coordinates` out of JAX core — low urgency (not enacted), but it is
-exactly the kind of drift a web check surfaces that reasoning from a fixed knowledge cutoff would
-miss, and it bears directly on AD-3 and the Stack section's "no new dependency" claim.
+If `build_kwargs_from_config(target, config, **overrides)` is implemented literally as AD-21 specifies — introspecting `target` = the `MODELS` factory function and refusing to use its `**kwargs` — it will **silently stop forwarding all six of those parameters** the moment `main.py` switches to the helper, because none of them are named parameters of the factory functions themselves. This is not a hypothetical edge case: it is the exact chess-spike hyperparameter-sweep mechanism (`num_bottleneck_tokens`/`token_dim`/`num_heads` bottleneck search, `num_trunk_layers` for `chess_token_candidate_model`, `num_layers`/`d_model` for `chess_move_token_transformer`) that recent commit history and MEMORY show has been actively used (`chess_bottleneck_genetic_poc`, `chess_token_candidate_model_spec`).
+
+The renaming the factories perform (`num_classes` → `num_moves`/`num_candidates`) is also why the introspection target can't simply be swapped to the underlying `nn.Module` class instead — the factory is where the config-key-to-constructor-param mapping actually happens, and it's exactly the layer that currently doesn't name these six params.
+
+AD-21's own "Prevents" list calls out this exact failure mode ("le piège d'absorption silencieuse par un `**kwargs` catch-all") but does not notice that eliminating the conditional-branch escape hatch removes the only thing currently making these six parameters work. Nothing in the spine (Rule text, Structural Seed, or elsewhere) acknowledges this gap or specifies a resolution (e.g., adding the missing named parameters to the five factories as a prerequisite, or scoping AD-21 to exclude these factories until they're updated).
+
+**Recommendation:** amend AD-21's Rule or add a prerequisite/Deferred note requiring the five `**kwargs`-only factories (`create_chess_cnn_attention_policy_value`, `create_chess_cnn_attention_legal_moves`, `create_chess_move_token_transformer`, `create_chess_token_candidate_model`, `create_chess_token_one_move_model`) to gain explicit named parameters for their currently-`**kwargs`-only tunables *before* (or as part of) the `main.py` cutover to `build_kwargs_from_config` — otherwise the migration is a functional regression for every chess spike config that sets these fields.
+
+### 4. Minor — `dropout_rate`/`num_classes` as `overrides` — consistent with reality, not a flag
+
+AD-21's Rule text states `dropout_rate`/`num_classes` are `overrides`, not read from `config`. Verified: `dropout_rate = backend_config["dropout_rate"]` (main.py:129) comes from a nested per-backend sub-dict, not the flat `config` the helper would introspect against — so it genuinely can't be found by a flat `config` lookup and must be an override. `num_classes` is technically present at the flat `config["num_classes"]` (main.py:84) so listing it as an override too is redundant but not incorrect (override value equals the config value either way). No action needed.
+
+### 5. Stack section — CONFIRMED accurate
+
+"Aucune nouvelle dépendance externe introduite" is correct for AD-21: `inspect` is Python stdlib, no new import beyond what's already used elsewhere in the file for the `compute_dtype` mechanism (`main.py:172-188` already imports and uses `inspect.signature`).
+
+## Verdict
+
+Everything that is genuinely new-technology/version territory in AD-21 is non-existent (correctly — this is a pure stdlib refactor, nothing to web-verify). The `inspect.signature()` mechanics the design leans on are confirmed correct against a live interpreter check. However, the reality check against the actual codebase surfaces one concrete, high-severity gap: AD-21's chosen introspection target (the `MODELS` factory function) does not, for 5 of the 6 non-`compute_dtype`/`heatmap_prior` config keys currently forwarded by `main.py`'s conditional branches, declare those parameters by name — they only exist behind each factory's own `**kwargs`, which AD-21 explicitly forbids using. As written, adopting AD-21 would silently drop `num_bottleneck_tokens`, `token_dim`, `num_heads`, `num_layers`, `d_model`, and `num_trunk_layers` forwarding for the chess-spike models. This should be resolved (factory signatures updated, or AD-21 scoped/sequenced accordingly) before implementation.

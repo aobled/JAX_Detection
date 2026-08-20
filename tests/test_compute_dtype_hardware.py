@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import jax
 import jax.numpy as jnp
+from flax import linen as nn
 
 from model_library import (
     SophisticatedCNN32Plus,
@@ -525,6 +526,144 @@ def test_aircraft_detector_gradients_finite_under_bfloat16():
     print("OK - AircraftDetectorUNet/CenterNet : loss+gradients reels finis sous compute_dtype=bfloat16 (y compris heatmap_prior extreme reel de JAX_DETECTOR)")
 
 
+def test_aircraft_detector_gradients_finite_under_bfloat16_training_true():
+    # Revue de code (Story 12.1) : test_aircraft_detector_gradients_finite_under_bfloat16
+    # ci-dessus n'exerce que training=False (BatchNorm sur moyennes glissantes figees a
+    # l'init, aucune vraie statistique apprise) - jamais training=True (BatchNorm reduit
+    # EN DIRECT sur le batch, dtype=self.compute_dtype, chemin de code REELLEMENT
+    # utilise pendant un entrainement reel), ni combine a jax.value_and_grad. Meme motif
+    # que ce test se donne lui-meme pour exister (perte de precision bfloat16 la ou elle
+    # se manifesterait le plus plausiblement) - la reduction batch_stats EN DIRECT sous
+    # bfloat16, retropropagee, est un chemin distinct du forward-only deja teste dans
+    # test_aircraft_detector_unet/centernet_compute_dtype_really_observed (training=True
+    # y est teste, mais sans grad) et du gradient deja teste ci-dessus (avec grad, mais
+    # sans training=True). Ce test couvre l'intersection des deux, non testee ailleurs.
+    x = jnp.zeros((2, 32, 32, 3), dtype=jnp.float32)
+
+    model_unet = AircraftDetectorUNet(dropout_rate=0.0, compute_dtype=jnp.bfloat16)
+    variables_unet = model_unet.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    true_mask = jnp.zeros((2, 32, 32, 1), dtype=jnp.float32)
+
+    def unet_loss_fn_train(params):
+        pred_mask, _ = model_unet.apply(
+            {**variables_unet, "params": params}, x, training=True,
+            mutable=["batch_stats"], rngs={"dropout": jax.random.PRNGKey(3)},
+        )
+        return compute_segmentation_loss(pred_mask, true_mask)
+
+    unet_loss, unet_grads = jax.value_and_grad(unet_loss_fn_train)(variables_unet["params"])
+    assert bool(jnp.isfinite(unet_loss)), f"AircraftDetectorUNet (training=True): loss non finie sous compute_dtype=bfloat16, obtenu {unet_loss}"
+    unet_grad_leaves = jax.tree_util.tree_leaves(unet_grads)
+    assert all(bool(jnp.all(jnp.isfinite(g))) for g in unet_grad_leaves), "AircraftDetectorUNet (training=True): gradient non fini (NaN/Inf) sous compute_dtype=bfloat16"
+
+    model_centernet = AircraftDetectorCenterNet(dropout_rate=0.0, heatmap_prior=0.0000268, compute_dtype=jnp.bfloat16)
+    variables_centernet = model_centernet.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    targets = {
+        HEATMAP_KEY: jnp.zeros((2, 32, 32, 1), dtype=jnp.float32),
+        SIZE_KEY: jnp.zeros((2, 32, 32, 2), dtype=jnp.float32),
+    }
+
+    def centernet_loss_fn_train(params):
+        outputs, _ = model_centernet.apply(
+            {**variables_centernet, "params": params}, x, training=True,
+            mutable=["batch_stats"], rngs={"dropout": jax.random.PRNGKey(3)},
+        )
+        return compute_centernet_loss(outputs, targets)
+
+    centernet_loss, centernet_grads = jax.value_and_grad(centernet_loss_fn_train)(variables_centernet["params"])
+    assert bool(jnp.isfinite(centernet_loss)), f"AircraftDetectorCenterNet (training=True): loss non finie (heatmap_prior reel extreme) sous compute_dtype=bfloat16, obtenu {centernet_loss}"
+    centernet_grad_leaves = jax.tree_util.tree_leaves(centernet_grads)
+    assert all(bool(jnp.all(jnp.isfinite(g))) for g in centernet_grad_leaves), "AircraftDetectorCenterNet (training=True): gradient non fini (NaN/Inf) sous compute_dtype=bfloat16 avec heatmap_prior reel extreme"
+    print("OK - AircraftDetectorUNet/CenterNet : loss+gradients reels finis sous compute_dtype=bfloat16 EN training=True (reduction BatchNorm en direct, retropropagee)")
+
+
+def _last_conv_output_by_channels(mutated, num_channels):
+    # Retrouve l'intermediate Conv_* dont le dernier axe a exactement num_channels
+    # canaux (capture_intermediates=True) - selecteur robuste car UNet/CenterNet n'ont
+    # chacun qu'une seule couche Conv de sortie a 1 canal (masque/heatmap) et
+    # CenterNet une seule a 2 canaux (size), verifie empiriquement (aucune couche
+    # intermediaire du reseau ne partage ce nombre de canaux en sortie).
+    matches = [
+        val["__call__"][0]
+        for name, val in mutated["intermediates"].items()
+        if name.startswith("Conv_") and val["__call__"][0].shape[-1] == num_channels
+    ]
+    assert len(matches) == 1, (
+        f"attendu exactement 1 couche Conv de sortie a {num_channels} canal(aux), trouve {len(matches)}"
+    )
+    return matches[0]
+
+
+def test_aircraft_detector_unet_sigmoid_computed_in_float32_not_bfloat16():
+    # Revue de code (Story 12.1) : test_aircraft_detector_unet_compute_dtype_really_observed
+    # ne verifie que le DTYPE de la sortie finale (float32) - un recast DEPLACE apres
+    # nn.sigmoid (out = nn.sigmoid(conv_out).astype(jnp.float32), sigmoid calcule en
+    # bfloat16 - PAS le code reel, voir model_library.py) produirait EXACTEMENT le meme
+    # dtype final et passerait ce test-la sans le detecter, alors que c'est numeriquement
+    # different (sigmoid en precision reduite est plus lossy). Reconstruit ici les deux
+    # variantes depuis le logit brut capture (avant cast/sigmoid) et verifie laquelle la
+    # sortie reelle du modele reproduit. Entree aleatoire (pas des zeros) : un logit
+    # degenere pres de 0 peut rendre sigmoid(cast(x)) et sigmoid(x).astype(...)
+    # indistinguables a l'atol du test (verifie empiriquement) - meme discipline que
+    # tests/test_chess_token_model.py::_random_packed_batch.
+    x = jax.random.normal(jax.random.PRNGKey(7), (2, 32, 32, 3), dtype=jnp.float32)
+    model_bf16 = AircraftDetectorUNet(dropout_rate=0.0, compute_dtype=jnp.bfloat16)
+    variables_bf16 = model_bf16.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    out_bf16, mutated_bf16 = model_bf16.apply(
+        variables_bf16, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    raw_logit_bf16 = _last_conv_output_by_channels(mutated_bf16, 1)
+    assert raw_logit_bf16.dtype == jnp.bfloat16, f"logit brut attendu bfloat16, obtenu {raw_logit_bf16.dtype}"
+
+    reconstructed_correct = nn.sigmoid(raw_logit_bf16.astype(jnp.float32))  # cast PUIS sigmoid (code reel)
+    reconstructed_wrong_order = nn.sigmoid(raw_logit_bf16).astype(jnp.float32)  # sigmoid PUIS cast (alternative bugguee)
+
+    assert jnp.allclose(out_bf16, reconstructed_correct, atol=1e-6), (
+        "la sortie reelle du modele ne correspond pas a sigmoid(cast(logit)) - le recast float32 "
+        "n'a pas lieu AVANT nn.sigmoid comme attendu"
+    )
+    assert not jnp.allclose(out_bf16, reconstructed_wrong_order, atol=1e-6), (
+        "la sortie reelle du modele correspond a sigmoid(logit).astype(float32) (sigmoid calcule en "
+        "bfloat16) - le test ne peut alors plus distinguer le bon ordre du mauvais, verifier que "
+        "les deux reconstructions different reellement pour ce logit"
+    )
+    print("OK - AircraftDetectorUNet : nn.sigmoid est bien calcule en float32 (recast AVANT, pas apres)")
+
+
+def test_aircraft_detector_centernet_sigmoid_computed_in_float32_not_bfloat16():
+    # Meme preuve que ci-dessus pour la tete heatmap de AircraftDetectorCenterNet.
+    # Entree aleatoire (pas des zeros), meme raison que le test UNet ci-dessus.
+    x = jax.random.normal(jax.random.PRNGKey(7), (2, 32, 32, 3), dtype=jnp.float32)
+    model_bf16 = AircraftDetectorCenterNet(dropout_rate=0.0, heatmap_prior=0.01, compute_dtype=jnp.bfloat16)
+    variables_bf16 = model_bf16.init(
+        {"params": jax.random.PRNGKey(0), "dropout": jax.random.PRNGKey(0)}, x, training=True
+    )
+    outputs_bf16, mutated_bf16 = model_bf16.apply(
+        variables_bf16, x, training=False, mutable=["batch_stats", "intermediates"], capture_intermediates=True
+    )
+    raw_logit_bf16 = _last_conv_output_by_channels(mutated_bf16, 1)  # tete heatmap (1 canal)
+    assert raw_logit_bf16.dtype == jnp.bfloat16, f"logit brut attendu bfloat16, obtenu {raw_logit_bf16.dtype}"
+
+    reconstructed_correct = nn.sigmoid(raw_logit_bf16.astype(jnp.float32))
+    reconstructed_wrong_order = nn.sigmoid(raw_logit_bf16).astype(jnp.float32)
+
+    assert jnp.allclose(outputs_bf16[HEATMAP_KEY], reconstructed_correct, atol=1e-6), (
+        "la heatmap reelle ne correspond pas a sigmoid(cast(logit)) - le recast float32 "
+        "n'a pas lieu AVANT nn.sigmoid comme attendu"
+    )
+    assert not jnp.allclose(outputs_bf16[HEATMAP_KEY], reconstructed_wrong_order, atol=1e-6), (
+        "la heatmap reelle correspond a sigmoid(logit).astype(float32) (sigmoid calcule en bfloat16) - "
+        "verifier que les deux reconstructions different reellement pour ce logit"
+    )
+    print("OK - AircraftDetectorCenterNet : nn.sigmoid (tete heatmap) est bien calcule en float32 (recast AVANT, pas apres)")
+
+
 def test_factories_accept_and_forward_compute_dtype():
     # Les factories (pas seulement les classes) doivent accepter compute_dtype comme
     # parametre nomme explicite et le transmettre reellement au constructeur - pas
@@ -686,6 +825,10 @@ if __name__ == "__main__":
     test_shared_submodules_compute_dtype_really_observed()
     test_aircraft_detector_unet_compute_dtype_really_observed()
     test_aircraft_detector_centernet_compute_dtype_really_observed()
+    test_aircraft_detector_gradients_finite_under_bfloat16()
+    test_aircraft_detector_gradients_finite_under_bfloat16_training_true()
+    test_aircraft_detector_unet_sigmoid_computed_in_float32_not_bfloat16()
+    test_aircraft_detector_centernet_sigmoid_computed_in_float32_not_bfloat16()
     test_factories_accept_and_forward_compute_dtype()
     test_resolve_compute_dtype_both_branches()
     test_chess_move_token_transformer_factory_valid_string_still_works()

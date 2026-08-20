@@ -919,3 +919,43 @@ class ChessTokenOneMoveStrategy(TaskStrategy):
                 print("⚠️  val_ds est vide - aucun détail chess_token_1_move généré")
         except Exception as e:
             print(f"❌ Erreur lors de la génération du rapport chess_token_1_move: {e}")
+
+
+# Dispatch task_type -> classe Strategy (Story 12.2, AD-21) - remplace le if/elif
+# a 9 branches de main.py. Source unique du dispatch (AD-17 : meme litteral
+# task_type que data_management.py/model_library.py MODELS).
+STRATEGIES = {
+    "classification": ClassificationStrategy,
+    "detection": DetectionStrategy,
+    "kepler": KeplerStrategy,
+    "detection_centernet": CenterNetDetectionStrategy,
+    "chess_policy_value": ChessPolicyValueStrategy,
+    "chess_legal_moves": ChessLegalMovesStrategy,
+    "chess_move_token": ChessMoveTokenStrategy,
+    "chess_token": ChessTokenStrategy,
+    "chess_token_1_move": ChessTokenOneMoveStrategy,
+}
+
+
+# Cles de dataset_configs.py forwardees sans condition vers les kwargs Strategy
+# quand presentes, par task_type (Story 12.2, meme precedent que
+# model_library.MODEL_FORWARDED_CONFIG_KEYS, Story 12.1) - AUCUNE des 9 classes
+# Strategy ci-dessus n'a de **kwargs catch-all : un forwarding non scope par
+# task_type (une liste plate partagee) leverait un TypeError des qu'une classe
+# recevrait un champ qu'elle ne declare pas (ex. label_smoothing, propre a
+# ClassificationStrategy, vers DetectionStrategy). Contenu derive des branches
+# reelles de main.py avant migration - jamais un defaut ajoute ici qui ne soit
+# pas deja le defaut propre du constructeur cible.
+_LOSS_PARAMS_ONLY = ("loss_params",)  # les 5 strategies "une seule methode de perte/metrique" (voir classes ci-dessus)
+
+STRATEGY_FORWARDED_CONFIG_KEYS = {
+    "classification": ("label_smoothing", "mixup_alpha", "loss_method", "loss_params", "metric_method", "report_method"),
+    "detection": ("loss_method", "loss_params", "metric_method", "report_method"),
+    "kepler": ("loss_method", "loss_params", "metric_method", "report_method"),
+    "detection_centernet": _LOSS_PARAMS_ONLY,
+    "chess_policy_value": _LOSS_PARAMS_ONLY,
+    "chess_legal_moves": ("metric_threshold", "loss_params"),
+    "chess_move_token": _LOSS_PARAMS_ONLY,
+    "chess_token": _LOSS_PARAMS_ONLY,
+    "chess_token_1_move": _LOSS_PARAMS_ONLY,
+}

@@ -27,8 +27,8 @@ from inference_utils import (
 # 1. Configuration du dataset et du modèle de classification
 DATASET_NAME = "FIGHTERJET_CLASSIFICATION"     # Nom de la config dans dataset_configs.py
 CHECKPOINT_PATH = "best_model.pkl"      # Chemin vers le modèle de CLASSIFICATION
-INPUT_DIR = "/home/aobled/Downloads/tmp_multi"  # Dossier d'entrée (images à traiter)
-CLASSIFICATION_CONFIDENCE_THRESHOLD = 0.35            # Seuil de confiance pour valider une CLASSIFICATION (0.0-1.0)
+INPUT_DIR = "/home/aobled/Downloads/tmp_unknown"  # Dossier d'entrée (images à traiter)
+CLASSIFICATION_CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION (0.0-1.0)
 
 # 2. Backend de détection - rétrocompatibilité (2026-07-19, retour utilisateur : JAX_DETECTOR
 # se comporte moins bien que l'ancien pipeline en pratique sur ce script). Deux choix :
