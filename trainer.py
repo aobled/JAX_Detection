@@ -54,6 +54,80 @@ def _count_real_train_samples(output_prefix):
     return total if total > 0 else None
 
 
+def _resolve_lr_schedule_steps(backend_config, task_type, real_train_samples, micro_batch_size,
+                                accum_steps, decay_epochs, dataset_name, backend):
+    """Résout warmup_steps/decay_steps pour le schedule LR.
+
+    Priorité (2026-08-21) : une valeur `decay_steps` explicite dans backend_config
+    est TOUJOURS utilisée telle quelle, jamais recalculée ni écrasée - volonté
+    explicite de l'utilisateur. Inverse le comportement précédent où l'auto-calcul
+    écrasait silencieusement toute valeur en dur dès que des chunks étaient trouvés
+    sur disque (confirmé en pratique sur FIGHTERJET_CLASSIFICATION : la config
+    demandait 6000, l'ancien mécanisme appliquait en réalité 6419 sans le dire).
+
+    Sinon, calcule automatiquement depuis le vrai volume de données sur disque :
+    steps_per_epoch = N_train // micro_batch_size (drop_remainder=True - tous les
+    task_type sauf classification/kepler, cf. data_management.py classes Dataset)
+    ou ceil(N_train / micro_batch_size) (drop_remainder=False - ChunkManager,
+    data_management.py:224). Divise ensuite par accum_steps pour compter des steps
+    d'OPTIMISEUR, en arrondissant AU PLAFOND (ceil, pas floor - corrigé 2026-08-21
+    suite revue adversariale) : apply_gradients est appelé une fois tous les
+    accum_steps micro-batches, MAIS train_epoch (ci-dessous) applique aussi une
+    mise à jour finale pour les micro-batches restants en fin d'epoch même si ce
+    dernier groupe n'atteint pas accum_steps - le vrai compte de steps optimiseur
+    est donc ceil(steps_per_epoch / accum_steps), qu'un floor sous-estimerait
+    systématiquement d'un step dès que steps_per_epoch % accum_steps != 0.
+
+    Lève ValueError si ni valeur explicite ni chunks détectables (un mauvais
+    nombre silencieux, comme l'ancien repli générique sur 6000, est pire qu'un
+    plantage explicite qui force à trancher), ou si accum_steps est invalide, ou
+    si le résultat calculé est dégénéré (0 step/epoch - volume de données trop
+    faible pour accum_steps donné).
+    """
+    warmup_steps = backend_config.get("warmup_steps", 1200)
+
+    explicit_decay = backend_config.get("decay_steps")
+    if explicit_decay is not None:
+        if explicit_decay <= 0:
+            raise ValueError(
+                f"decay_steps={explicit_decay} invalide pour {dataset_name}/{backend} "
+                f"(doit être un entier positif)."
+            )
+        print(f"📌 decay_steps={explicit_decay} pris tel quel depuis la config ({dataset_name}/{backend}) - aucun recalcul.")
+        return warmup_steps, explicit_decay
+
+    if not real_train_samples:
+        raise ValueError(
+            f"decay_steps absent de dataset_configs.py pour {dataset_name}/{backend} et aucun "
+            f"chunk d'entraînement détectable sur disque pour le calculer automatiquement. "
+            f"Fixez 'decay_steps' explicitement dans la config de ce backend, ou vérifiez "
+            f"'output_prefix'."
+        )
+
+    if not accum_steps or accum_steps <= 0:
+        raise ValueError(f"accum_steps={accum_steps} invalide pour {dataset_name}/{backend} (doit être un entier positif).")
+
+    if task_type in ("classification", "kepler"):
+        steps_per_epoch = math.ceil(real_train_samples / micro_batch_size)
+    else:
+        steps_per_epoch = real_train_samples // micro_batch_size
+
+    steps_per_epoch_optimizer = math.ceil(steps_per_epoch / accum_steps)
+    if steps_per_epoch_optimizer == 0:
+        raise ValueError(
+            f"Volume de données ({real_train_samples} échantillons) trop faible pour produire "
+            f"un seul step d'optimiseur ({dataset_name}/{backend}, micro_batch_size="
+            f"{micro_batch_size}, accum_steps={accum_steps})."
+        )
+    decay_steps = steps_per_epoch_optimizer * decay_epochs
+    print(
+        f"📐 decay_steps calculé automatiquement ({dataset_name}/{backend}) : {real_train_samples} "
+        f"échantillons réels, batch={micro_batch_size}, accum_steps={accum_steps} -> "
+        f"{steps_per_epoch_optimizer} steps optimiseur/epoch × {decay_epochs} decay_epochs = {decay_steps}"
+    )
+    return warmup_steps, decay_steps
+
+
 class Trainer:
     """
     Classe principale pour l'entraînement des modèles JAX/Flax
@@ -155,32 +229,29 @@ class Trainer:
         # du steps/epoch (donc du micro_batch_size, backend-specific) - contrairement à
         # epochs/patience (comptes d'EPOCHS, backend-independants, restent top-level).
         # (2026-07-18, migration - voir dataset_configs.py pour la justification complète)
-        warmup_steps = self.backend_config.get("warmup_steps", 1200)
-
-        # decay_steps calcule automatiquement depuis le vrai volume de donnees sur
-        # disque (2026-07-21) plutot que lu tel quel depuis la config - elimine la
-        # classe de bug "steps/epoch mesure une fois a la main, jamais remis a jour
-        # quand le dataset ou micro_batch_size change" (3 incidents reels, voir
-        # deferred-work.md). Repli sur la config si aucun chunk trouve (ex. tests).
-        # decay_epochs (optionnel) decouple la duree du decay du budget total
-        # d'epochs - certaines configs veulent une longue queue de fine-tuning a
-        # bas LR (decay court) plutot qu'un decay etale sur tout l'entrainement.
-        # Repli sur self.epochs si absent (comportement inchange pour les configs
-        # existantes). Ajoute 2026-07-26 suite a la comparaison Plus/Lite sur
-        # FIGHTERJET_CLASSIFICATION (voir deferred-work.md).
+        #
+        # decay_epochs (optionnel) decouple la duree du decay du budget total d'epochs -
+        # certaines configs veulent une longue queue de fine-tuning a bas LR (decay court)
+        # plutot qu'un decay etale sur tout l'entrainement. Repli sur self.epochs si absent
+        # (comportement inchange pour les configs existantes). Ajoute 2026-07-26 suite a la
+        # comparaison Plus/Lite sur FIGHTERJET_CLASSIFICATION (voir deferred-work.md).
         decay_epochs = self.config.get("decay_epochs", self.epochs)
 
+        # Priorité config-explicite / auto-calcul + division par accum_steps + ValueError
+        # si aucune source disponible : voir _resolve_lr_schedule_steps ci-dessus
+        # (2026-08-21, remplace l'ancien auto-calcul qui ignorait accum_steps et écrasait
+        # silencieusement toute valeur en dur dès que des chunks étaient trouvés).
         real_train_samples = _count_real_train_samples(self.config.get("output_prefix", ""))
-        if real_train_samples:
-            real_steps_per_epoch = real_train_samples // self.micro_batch_size
-            decay_steps = real_steps_per_epoch * decay_epochs
-            print(
-                f"📐 decay_steps calculé automatiquement : {real_train_samples} échantillons réels, "
-                f"batch={self.micro_batch_size} -> {real_steps_per_epoch} steps/epoch × {decay_epochs} decay_epochs = {decay_steps}"
-            )
-        else:
-            decay_steps = self.backend_config.get("decay_steps", 6000)
-            print(f"⚠️  decay_steps automatique indisponible (aucun chunk .npz trouvé), repli sur la config : {decay_steps}")
+        warmup_steps, decay_steps = _resolve_lr_schedule_steps(
+            self.backend_config,
+            self.config.get("task_type", "classification"),
+            real_train_samples,
+            self.micro_batch_size,
+            self.accum_steps,
+            decay_epochs,
+            self.config.get("dataset_name", "unknown"),
+            self.backend,
+        )
 
         lr_schedule_type = self.config.get("lr_schedule", "cosine")
         if lr_schedule_type == "cosine":

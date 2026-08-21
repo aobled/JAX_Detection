@@ -121,10 +121,16 @@ DATASET_CONFIGS = {
             "learning_rate": 8e-3,     # 🔥 NOUVEAU: LR augmenté pour apprentissage plus agressif
             "weight_decay": 5e-5,      # ✅ Optimal trouvé
             "dropout_rate": 0.0,       # 🔥 NOUVEAU: Pas de dropout pour exploiter le potentiel
-            # warmup/decay_steps nichés ici (2026-07-18, migration structurelle) - meme
-            # micro_batch_size que gpu (128) donc memes valeurs, comportement inchange.
+            # warmup_steps nichés ici (2026-07-18, migration structurelle) - meme
+            # micro_batch_size que gpu (128) donc meme valeur, comportement inchange.
             "warmup_steps": 1200,
-            "decay_steps": 6000,
+            # decay_steps retire (2026-08-21) : ancienne valeur en dur = 6000, calculee a la
+            # main pour ~7 decay_epochs. Auto-calcul corrige (trainer.py::_resolve_lr_schedule_steps)
+            # prend le relais - divise desormais par accum_steps=4 (steps d'optimiseur, pas de
+            # micro-batch), donne ~1603 sur le volume actuel (117457 echantillons) au lieu du 6419
+            # que l'ancien auto-calcul bugue appliquait deja silencieusement en pratique (le 6000
+            # configure n'etait plus reellement utilise). Changement de comportement assume
+            # (Aymeric, 2026-08-21) sur un modele deja valide a 0.9521 val - a reevaluer.
         },
 
         # === Hyperparamètres GPU ===
@@ -135,7 +141,8 @@ DATASET_CONFIGS = {
             "weight_decay": 5e-5,
             "dropout_rate": 0.0,       # 🔥 NOUVEAU: Pas de dropout pour GPU aussi
             "warmup_steps": 1200,
-            "decay_steps": 6000,
+            # decay_steps retire (2026-08-21) : meme historique/raison que tpu ci-dessus
+            # (ancienne valeur en dur = 6000, auto-calcul corrige prend le relais).
         },
 
         # === Entraînement ===
@@ -209,6 +216,13 @@ DATASET_CONFIGS = {
             # (config.epochs) ; ecart deja present avant cette session, laisse tel quel
             # (fonctionne en pratique, hors perimetre de la demande utilisateur qui portait
             # sur le decalage TPU/GPU, corrige cote gpu ci-dessous).
+            #
+            # NON migre vers l'auto-calcul (2026-08-21, contrairement a FIGHTERJET_CLASSIFICATION/
+            # JAX_DETECTOR/CIFAR10) : aucun chunk "{output_prefix}_train_chunk*.npz" present sur
+            # disque (chunks/detection/ vide au moment de cette verification) - migrer leverait
+            # une ValueError au premier entrainement, violant AD-20 (non-regression, l'ancien
+            # pipeline doit rester pleinement fonctionnel). A remigrer si/quand le dataset est
+            # regenere.
             "warmup_steps": 400,
             "decay_steps": 22000,
         },
@@ -227,6 +241,10 @@ DATASET_CONFIGS = {
             # experimental, pas de raison de le remonter ici sans le demander explicitement).
             # 210 570 images train (verifie sur disque, chunks/detection/, cette session)
             # // 16 = 13160 steps/epoch reels x 8 epochs (config actuelle, inchangee) = 105280.
+            # Valeur calculee SANS diviser par accum_steps=2 (meme bug que l'ancien auto-calcul,
+            # jamais corrige manuellement) - a recalculer (~52640) en meme temps que la migration
+            # vers l'auto-calcul, differee (voir note tpu ci-dessus, meme raison : pas de chunk
+            # sur disque actuellement).
             # warmup_steps garde a 400 en valeur brute (meme convention que JAX_DETECTOR :
             # warmup_steps constant entre backends, seul decay_steps varie avec steps/epoch).
             "warmup_steps": 400,
@@ -295,8 +313,12 @@ DATASET_CONFIGS = {
             "label_smoothing": 0.0,
             "mixup_alpha": 0.0,
             # (2026-07-18, migration structurelle) valeur preexistante deplacee telle
-            # quelle. Pas de decay_steps historique (defaut Trainer 6000 s'applique
-            # toujours via backend_config.get(), inchange).
+            # quelle. Pas de decay_steps historique. Dataset sans donnees reelles sur
+            # cette machine (./data/chunks/kepler/ inexistant) - une tentative
+            # d'entrainement leve desormais une ValueError explicite a la construction
+            # du Trainer (2026-08-21, remplace l'ancien repli silencieux sur 6000,
+            # decision Aymeric : coherent avec le principe fail-loud de ce mecanisme -
+            # fixer "decay_steps" ici quand des donnees reelles existeront).
             "warmup_steps": 500,
         },
 
@@ -309,6 +331,7 @@ DATASET_CONFIGS = {
             "dropout_rate": 0.3,
             "label_smoothing": 0.0,
             "mixup_alpha": 0.0,
+            # decay_steps absent (meme raison qu'en tpu ci-dessus).
             "warmup_steps": 500,
         },
 
@@ -369,9 +392,13 @@ DATASET_CONFIGS = {
             "weight_decay": 5e-5,
             "dropout_rate": 0.3,
             # (2026-07-18, migration structurelle) meme micro_batch_size que tpu (128)
-            # donc memes valeurs, comportement inchange.
+            # donc meme valeur, comportement inchange.
             "warmup_steps": 200,
-            "decay_steps": 17595,  # 391 (steps/epoch à micro_batch_size=128) × 45 (epochs) - recalculer si l'un des deux change (cf. bug Epic 5 Addendum 3)
+            # decay_steps retire (2026-08-21) : ancienne valeur en dur = 17595 (391 steps/epoch
+            # a micro_batch_size=128 x 45 epochs). accum_steps=1 -> l'auto-calcul corrige
+            # (trainer.py::_resolve_lr_schedule_steps) reproduit cette meme valeur automatiquement,
+            # elimine le besoin de recalcul manuel signale par le commentaire precedent (cf. bug
+            # Epic 5 Addendum 3).
         },
 
         # === Hyperparamètres TPU ===
@@ -382,7 +409,7 @@ DATASET_CONFIGS = {
             "weight_decay": 5e-5,
             "dropout_rate": 0.3,
             "warmup_steps": 200,
-            "decay_steps": 17595,
+            # decay_steps retire (2026-08-21) : meme historique/raison que gpu ci-dessus.
         },
 
         # === Entraînement ===
@@ -522,17 +549,13 @@ DATASET_CONFIGS = {
             # davantage un apprentissage deja lent sur un signal heatmap eparse.
             "dropout_rate": 0.1,
             "warmup_steps": 400,
-            # 992 steps/epoch (mesure reellement, archive/training_jax_detector_rv7.txt,
-            # 2026-07-19) x 15 epochs. Recalcule suite a zoom_augment_probability=0.3
-            # (2026-07-19) : l'ancienne valeur (11415 = 761 steps/epoch x 15, mesuree AVANT
-            # cette augmentation, run v4) etait restee figee apres l'activation de
-            # l'augmentation, qui ajoute ~30% d'echantillons/epoch (992/761 = 1.304, coherent
-            # avec le +30% attendu) - le schedule cosine atteignait donc son plancher
-            # (LR~1e-6) vers l'epoch 12/15 au lieu de l'epoch 15, gelant l'apprentissage sur
-            # les ~3 dernieres epochs du run rv7 (plateau observe dans le log a partir de
-            # l'epoch 10). A recalculer de nouveau si le volume de donnees ou le nombre
-            # d'epochs changent encore.
-            "decay_steps": 14880,
+            # decay_steps retire (2026-08-21) : ancienne valeur en dur = 14880 (992 steps/epoch
+            # mesures reellement, archive/training_jax_detector_rv7.txt, 2026-07-19, x 15 epochs -
+            # deja recalculee une fois suite a zoom_augment_probability=0.3, remplacant un ancien
+            # 11415 devenu stale). accum_steps=1 -> l'auto-calcul corrige
+            # (trainer.py::_resolve_lr_schedule_steps) reproduit cette meme valeur automatiquement
+            # et elimine le besoin de recalcul manuel a chaque changement de volume/augmentation,
+            # exactement la classe de bug qui avait motive ce recalcul.
         },
 
         # === Hyperparamètres GPU (2026-07-18, cible T4 Colab) ===
@@ -547,10 +570,8 @@ DATASET_CONFIGS = {
         # ratio 4e-4(TPU,128)/2e-4(GPU,64) = 2, proportionnel au ratio de batch (128/64=2),
         # cohalent avec la calibration TPU. dropout_rate aligne sur le correctif TPU
         # (2026-07-18, divergence train/val observee - propriete du modele/tache, pas du
-        # materiel). warmup/decay_steps niches ici (plus top-level partage, migration
-        # structurelle 2026-07-18) : 97531 // 64 = 1523 steps/epoch reels (drop_remainder=True)
-        # x 15 epochs = 22845 - meme duree relative (15 epochs) que le TPU (761x15=11415),
-        # calcul distinct car steps/epoch differe (batch 64 vs 128).
+        # materiel). warmup_steps niche ici (plus top-level partage, migration structurelle
+        # 2026-07-18).
         "gpu": {
             "micro_batch_size": 64,
             "accum_steps": 1,
@@ -558,7 +579,10 @@ DATASET_CONFIGS = {
             "weight_decay": 5e-5,
             "dropout_rate": 0.1,
             "warmup_steps": 400,
-            "decay_steps": 22845,
+            # decay_steps retire (2026-08-21) : ancienne valeur en dur = 22845 (97531//64=1523
+            # steps/epoch reels x 15 epochs, meme duree relative que le tpu). accum_steps=1 ->
+            # l'auto-calcul corrige (trainer.py::_resolve_lr_schedule_steps) reproduit cette
+            # meme valeur automatiquement.
         },
 
         # === Entraînement ===
