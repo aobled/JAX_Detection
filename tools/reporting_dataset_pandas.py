@@ -210,6 +210,21 @@ def reporting_single_classe_images(df, target_class='b52', min_size=16):
 
 
 
+#  images ayant exactement boxes_count_nb boxes
+def reporting_all_images_by_boxes_count(df, boxes_count_nb):
+    boxes_count_nb = int(boxes_count_nb)
+    images_with_count = (
+        df.groupby('base_image_name')
+        .filter(lambda group: len(group) == boxes_count_nb)
+        .sort_values('base_image_name')
+    )
+    COLUMNS = ['base_image_name', 'image_filename', 'box_class', 'directory', 'split']
+    print(f"Images avec {boxes_count_nb} boxe(s) : {images_with_count['base_image_name'].nunique()}")
+    print(images_with_count[COLUMNS])
+    images_with_count[COLUMNS].to_csv(f"images_with_{boxes_count_nb}_boxes.csv", index=False)
+    return images_with_count
+
+
 #  specific classe searched
 def reporting_all_images_in_class_list(df, class_list):
     searched_box = (
