@@ -121,9 +121,9 @@ DATASET_CONFIGS = {
             "learning_rate": 8e-3,     # 🔥 NOUVEAU: LR augmenté pour apprentissage plus agressif
             "weight_decay": 5e-5,      # ✅ Optimal trouvé
             "dropout_rate": 0.0,       # 🔥 NOUVEAU: Pas de dropout pour exploiter le potentiel
-            # warmup_steps nichés ici (2026-07-18, migration structurelle) - meme
-            # micro_batch_size que gpu (128) donc meme valeur, comportement inchange.
-            "warmup_steps": 1200,
+            # warmup_steps retire (2026-08-23, generalisation ratio) : auto-calcul via
+            # DEFAULT_WARMUP_EPOCHS_RATIO=15% (trainer.py) reprend le relais - proche de
+            # l'ancienne valeur en dur (1200 steps ~ 5.2 epochs/40 = 13%).
             # decay_steps retire (2026-08-21) : ancienne valeur en dur = 6000, calculee a la
             # main pour ~7 decay_epochs. Auto-calcul corrige (trainer.py::_resolve_lr_schedule_steps)
             # prend le relais - divise desormais par accum_steps=4 (steps d'optimiseur, pas de
@@ -140,7 +140,7 @@ DATASET_CONFIGS = {
             "learning_rate": 8e-4,     # 🔥 NOUVEAU: LR/10 pour GPU (augmenté aussi)
             "weight_decay": 5e-5,
             "dropout_rate": 0.0,       # 🔥 NOUVEAU: Pas de dropout pour GPU aussi
-            "warmup_steps": 1200,
+            # warmup_steps retire (2026-08-23) : meme raison que tpu ci-dessus.
             # decay_steps retire (2026-08-21) : meme historique/raison que tpu ci-dessus
             # (ancienne valeur en dur = 6000, auto-calcul corrige prend le relais).
         },
@@ -150,7 +150,14 @@ DATASET_CONFIGS = {
         "lr_schedule": "cosine",
         "epochs": 40,              # 40
         "patience": 5,
-        "decay_epochs": 7,  # 🧪 2026-07-26: schedule cosinus decay sur 7 epochs (~6000 steps, comme l'ancien decay_steps fige) au lieu des 40 epochs par defaut - restaure la longue queue de fine-tuning a bas LR qui a produit 0.9458/0.9521 val avant le passage au calcul auto (trainer.py, 2026-07-21). Voir deferred-work.md pour le run sophisticated_cnn_128_lite (0.9322) qui a motive ce changement.
+        # decay_epochs retire (2026-08-23, generalisation ratio) : auto-calcul via
+        # DEFAULT_DECAY_EPOCHS_RATIO=70% (trainer.py) donne round(0.70*40)=28, valeur
+        # identique a l'ancienne valeur explicite - queue de fine-tuning a bas LR
+        # mesurablement benefique sur ce dataset (0.9322 sans plateau vs 0.9451/0.9521
+        # avec, deferred-work.md). Historique du bug "decay_epochs=7" (confusion epochs
+        # elapsed vs epochs de decay pure suite au fix accum_steps du 2026-08-21, cause
+        # d'une chute a 89.52% au lieu de 94.52%) : voir git log sur cette ligne avant
+        # ce nettoyage si besoin de retracer le diagnostic complet.
         "label_smoothing": 0.15,  # ✅ Validé 2026-07-14 (après fix task_strategies.py:110-118, ex-mort par if/elif) : combiné à mixup, 0.9521 val vs 0.9458 référence identique sans smoothing (+0.63pt, archive/training_classification_log_128x4_mixup_smoothing.txt)
         "mixup_alpha": 0.05,        # ✅ OPTIMAL: Mixup doux (meilleur compromis trouvé) - confirmé combinable avec label_smoothing (voir ci-dessus)
         
@@ -312,14 +319,13 @@ DATASET_CONFIGS = {
             "dropout_rate": 0.3,
             "label_smoothing": 0.0,
             "mixup_alpha": 0.0,
-            # (2026-07-18, migration structurelle) valeur preexistante deplacee telle
-            # quelle. Pas de decay_steps historique. Dataset sans donnees reelles sur
-            # cette machine (./data/chunks/kepler/ inexistant) - une tentative
-            # d'entrainement leve desormais une ValueError explicite a la construction
-            # du Trainer (2026-08-21, remplace l'ancien repli silencieux sur 6000,
-            # decision Aymeric : coherent avec le principe fail-loud de ce mecanisme -
-            # fixer "decay_steps" ici quand des donnees reelles existeront).
-            "warmup_steps": 500,
+            # warmup_steps/decay_steps absents (2026-08-23, generalisation ratio) : auto-calcul
+            # via DEFAULT_WARMUP_EPOCHS_RATIO/DEFAULT_DECAY_EPOCHS_RATIO (trainer.py). Dataset
+            # sans donnees reelles sur cette machine (./data/chunks/kepler/ inexistant) - une
+            # tentative d'entrainement leve une ValueError explicite a la construction du
+            # Trainer tant que les chunks ne sont pas generes (2026-08-21, remplace l'ancien
+            # repli silencieux sur 6000, decision Aymeric : coherent avec le principe fail-loud
+            # de ce mecanisme).
         },
 
         # === Hyperparamètres GPU ===
@@ -331,8 +337,7 @@ DATASET_CONFIGS = {
             "dropout_rate": 0.3,
             "label_smoothing": 0.0,
             "mixup_alpha": 0.0,
-            # decay_steps absent (meme raison qu'en tpu ci-dessus).
-            "warmup_steps": 500,
+            # warmup_steps/decay_steps absents (meme raison qu'en tpu ci-dessus).
         },
 
         # === Entraînement ===
@@ -391,14 +396,20 @@ DATASET_CONFIGS = {
             "learning_rate": 1e-3,
             "weight_decay": 5e-5,
             "dropout_rate": 0.3,
-            # (2026-07-18, migration structurelle) meme micro_batch_size que tpu (128)
-            # donc meme valeur, comportement inchange.
+            # warmup_steps=200 restaure explicitement (2026-08-24, retour arriere) : le
+            # passage au ratio auto (15% -> 7 epochs/2737 steps, 2026-08-23) a degrade le
+            # run reel (0.8401 vs 0.8582 valide, run archive/best_model_cifar10.pkl du
+            # 2026-07-14) - CIFAR10 a ete tune empiriquement avec un warmup quasi nul
+            # (200 steps ~ 0.5 epoch), contrairement a FIGHTERJET_CLASSIFICATION/
+            # JAX_DETECTOR ou le ratio colle a l'existant. Ne PAS reappliquer le ratio ici
+            # sans nouvelle validation.
             "warmup_steps": 200,
             # decay_steps retire (2026-08-21) : ancienne valeur en dur = 17595 (391 steps/epoch
             # a micro_batch_size=128 x 45 epochs). accum_steps=1 -> l'auto-calcul corrige
             # (trainer.py::_resolve_lr_schedule_steps) reproduit cette meme valeur automatiquement,
             # elimine le besoin de recalcul manuel signale par le commentaire precedent (cf. bug
-            # Epic 5 Addendum 3).
+            # Epic 5 Addendum 3). decay_epochs=45 (voir plus bas) restaure un decay etale sur la
+            # totalite, comportement equivalent a l'ancien defaut implicite.
         },
 
         # === Hyperparamètres TPU ===
@@ -408,6 +419,7 @@ DATASET_CONFIGS = {
             "learning_rate": 1e-3,
             "weight_decay": 5e-5,
             "dropout_rate": 0.3,
+            # warmup_steps=200 restaure (2026-08-24) : meme raison que gpu ci-dessus.
             "warmup_steps": 200,
             # decay_steps retire (2026-08-21) : meme historique/raison que gpu ci-dessus.
         },
@@ -417,6 +429,13 @@ DATASET_CONFIGS = {
         "lr_schedule": "cosine",
         "epochs": 45,          # 30 -> 45 (2026-07-14) : le levier qui compte vraiment - seul changement qui bat la référence v2 (0.8416 -> 0.8582)
         "patience": 8,  # 5 -> 8 : nécessaire pour laisser les 45 epochs se dérouler sans early-stop prématuré
+        # decay_epochs=45 (2026-08-24, retour arriere du ratio auto 70% qui plafonnait le LR
+        # des l'epoch 31 et perdait ~1.8pt val, cf. run du 2026-08-23) : =epochs, decay etale
+        # sur la totalite du budget, pas de plateau - reproduit le comportement (non documente
+        # a l'epoque comme un choix explicite, mais c'etait le defaut avant la generalisation)
+        # qui a produit le 0.8582 de reference. A NE PAS retirer sans re-valider : CIFAR10 est
+        # le seul dataset dont le schedule optimal connu n'a pas de queue de plateau.
+        "decay_epochs": 45,
         # PAS de mixup_alpha/label_smoothing : testés (v3 avec mixup=0.05 -> 0.8570, v4 +smoothing=0.15 -> 0.8534),
         # tous les deux sous la référence epochs-seul ci-dessus (0.8582) une fois isolés proprement du changement de batch/LR.
         # Le bug de code qui les rendait mutuellement exclusifs reste corrigé (task_strategies.py:110-118),
@@ -451,7 +470,7 @@ DATASET_CONFIGS = {
         # numpy empile simultanement, dataset_builder/jax_detector_dataset_tools.py::_save_chunk_v2) -
         # 3000 = ~4.5 Go, valide sur la machine locale (30 Go RAM + 2 Go swap). Recalculer avant
         # d'augmenter sur un environnement avec plus de RAM (ex. Colab).
-        "chunk_size": 12800,
+        "chunk_size": 13500,
         "image_size": (224, 224),
         "grayscale": True,
         "input_shape": (224, 224, 1),  # forme d'entrée modèle (Trainer, 2026-07-30) - dérivée de image_size+grayscale
@@ -548,7 +567,11 @@ DATASET_CONFIGS = {
             # (bottleneck, AircraftDetectorCenterNet), valeur moderee pour ne pas freiner
             # davantage un apprentissage deja lent sur un signal heatmap eparse.
             "dropout_rate": 0.1,
-            "warmup_steps": 400,
+            # warmup_steps retire (2026-08-23, generalisation ratio) : le run valide
+            # (archive/jax_detector.png, 21.35% best val) utilisait 2406 (3 epochs, ratio
+            # ~13% calque sur la classif) fixe en dur ce jour-la. Auto-calcul via
+            # DEFAULT_WARMUP_EPOCHS_RATIO=15% (trainer.py) donne desormais round(0.15*25)=4
+            # epochs, legerement plus long - pas encore reconfirme par un nouveau run.
             # decay_steps retire (2026-08-21) : ancienne valeur en dur = 14880 (992 steps/epoch
             # mesures reellement, archive/training_jax_detector_rv7.txt, 2026-07-19, x 15 epochs -
             # deja recalculee une fois suite a zoom_augment_probability=0.3, remplacant un ancien
@@ -578,7 +601,7 @@ DATASET_CONFIGS = {
             "learning_rate": 2e-4,
             "weight_decay": 5e-5,
             "dropout_rate": 0.1,
-            "warmup_steps": 400,
+            # warmup_steps retire (2026-08-23) : meme raison que tpu ci-dessus.
             # decay_steps retire (2026-08-21) : ancienne valeur en dur = 22845 (97531//64=1523
             # steps/epoch reels x 15 epochs, meme duree relative que le tpu). accum_steps=1 ->
             # l'auto-calcul corrige (trainer.py::_resolve_lr_schedule_steps) reproduit cette
@@ -595,8 +618,16 @@ DATASET_CONFIGS = {
         # early-stop premature") - le run v4 (detection/train seul) a plafonne en val a
         # partir de l'epoch 3 puis arrete a l'epoch 8 (patience=5 epuisee) alors que
         # train continuait de progresser ; plus de marge pour voir si ca se degage.
-        "epochs": 15,
+        # patience laissee a 8 malgre le nouveau plateau LR ci-dessous (2026-08-23) : cet
+        # incident (val plafonne des l'epoch 3, cause modele/tache) est independant de la
+        # forme du schedule LR - pas de raison de la reduire avant d'avoir un run reel avec
+        # le nouveau schedule.
+        "epochs": 25,
         "patience": 8,
+        # decay_epochs retire (2026-08-23, generalisation ratio) : auto-calcul via
+        # DEFAULT_DECAY_EPOCHS_RATIO=70% (trainer.py) donne round(0.70*25)=18, valeur
+        # identique a celle validee par le run archive/jax_detector.png (21.35% best val,
+        # plateau 18->25 = 7 epochs).
         # warmup_steps/decay_steps niches sous tpu/gpu (2026-07-18, migration structurelle -
         # ce sont des comptes de STEPS, dependants du steps/epoch donc du micro_batch_size,
         # contrairement a epochs/patience qui restent partages ici).

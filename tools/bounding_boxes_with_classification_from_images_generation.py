@@ -27,7 +27,7 @@ from inference_utils import (
 # 1. Configuration du dataset et du modèle de classification
 DATASET_NAME = "FIGHTERJET_CLASSIFICATION"     # Nom de la config dans dataset_configs.py
 CHECKPOINT_PATH = "best_model.pkl"      # Chemin vers le modèle de CLASSIFICATION
-INPUT_DIR = "/home/aobled/Downloads/tmp_unknown"  # Dossier d'entrée (images à traiter)
+INPUT_DIR = "/home/aobled/Downloads/tmp_nara/undetected"  # Dossier d'entrée (images à traiter)
 CLASSIFICATION_CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION (0.0-1.0)
 
 # 2. Backend de détection - rétrocompatibilité (2026-07-19, retour utilisateur : JAX_DETECTOR
@@ -57,8 +57,8 @@ CANONICAL_WIDTH, CANONICAL_HEIGHT = 1920, 1080
 # taille normale (pic étroit, pas de doublon), mais plus pour un objet plein-cadre
 # (voir deferred-work.md, `_gaussian_radius` produit un plateau large sur les grands
 # objets, source de doublons que le NMS nettoie).
-DETECTION_CONF_THRESHOLD = 0.3
-BOX_AERA_MIN = 225
+DETECTION_CONF_THRESHOLD = 0.05
+BOX_AERA_MIN = 400
 
 # Seuil IoU du NMS JAX-natif JAX_DETECTOR (même source que build_single_pass_predict_fn
 # en interne, 2026-07-22) - récupéré ici uniquement pour être passé explicitement,

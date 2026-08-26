@@ -392,7 +392,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Erreur chargement config: {e}")
         sys.exit(1)
-    #------------------------------
 
     # Charger les données
     df = load_dataset_to_dataframe(DATASET_PATH)
@@ -407,9 +406,10 @@ if __name__ == "__main__":
     #reporting_at_least_one_box_not_in_class_list(df, class_list=CLASS_NAMES)
 
     #reporting_single_classe_images(df, target_class='f8', min_size=16)
-    #reporting_all_images_in_class_list(df, class_list=['unknown'])
+    #reporting_all_images_in_class_list(df, class_list=['unknown', 'b1','vulcan','tu160', 'kc135'])
     #reporting_small_boxes(df, min_size=16)
     
     #reporting_global_boxes_size(df)
     #reporting_boxes_between_size_ratio(df, min_size=0, max_size=200)
     #reporting_incoherent_boxes(df)
+    #reporting_all_images_by_boxes_count(df, boxes_count_nb=13)
