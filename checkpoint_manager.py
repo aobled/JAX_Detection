@@ -21,7 +21,7 @@ class CheckpointManager:
     - Reprise d'entraînement
     """
     
-    def __init__(self, checkpoint_path: str = "best_model.pkl"):
+    def __init__(self, checkpoint_path: str = "best_model_fighterjet_classification.pkl"):
         """
         Initialise le gestionnaire de checkpoints
         

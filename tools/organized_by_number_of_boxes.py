@@ -28,5 +28,6 @@ def organiser_par_nombre_boxes(repertoire_source):
                 print(f"Déplacé {fichier} et {len(json_associes)} boxes dans {sous_repertoire}/")
 
 if __name__ == "__main__":
-    repertoire = "/home/aobled/Downloads/tmp_nara/multi/14"
+    repertoire = "/home/aobled/Downloads/tmp_multi/multi/save"
     organiser_par_nombre_boxes(repertoire)
+

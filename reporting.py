@@ -371,7 +371,7 @@ class Reporter:
         
         return confusion_matrix, accuracy, macro_precision, macro_recall, macro_f1
     
-    def show_predictions_from_dir(self, pkl_path="best_model.pkl", 
+    def show_predictions_from_dir(self, pkl_path="best_model_fighterjet_classification.pkl",
                                   images_dir=None, 
                                   dataset_config=None, 
                                   images_per_grid=16, 
@@ -385,7 +385,7 @@ class Reporter:
         Traite TOUTES les images par paquets de 16
         
         Args:
-            pkl_path: Chemin vers le fichier .pkl du modèle sauvegardé (défaut: "best_model.pkl")
+            pkl_path: Chemin vers le fichier .pkl du modèle sauvegardé (défaut: "best_model_fighterjet_classification.pkl")
             images_dir: Dossier contenant les images à prédire (défaut: premier dossier de val)
             dataset_config: Configuration du dataset (défaut: FIGHTERJET_8CLASSES)
             images_per_grid: Nombre d'images par grille (défaut: 16)

@@ -412,4 +412,4 @@ if __name__ == "__main__":
     #reporting_global_boxes_size(df)
     #reporting_boxes_between_size_ratio(df, min_size=0, max_size=200)
     #reporting_incoherent_boxes(df)
-    #reporting_all_images_by_boxes_count(df, boxes_count_nb=13)
+    #reporting_all_images_by_boxes_count(df, boxes_count_nb=17)

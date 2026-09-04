@@ -27,7 +27,7 @@ def run_audit():
     # Composition explicite (AD-1) : load_classification_model n'est pas migrée comme
     # 12e fonction nommée — charger le modèle et construire le predict_fn prêt à l'emploi
     # devient une composition directe au site d'appel.
-    checkpoint_path = config.get("checkpoint_path", "best_model_classification.pkl")
+    checkpoint_path = config.get("checkpoint_path", "best_model_fighterjet_classification.pkl")
     model, variables, mean, std = load_jax_model(checkpoint_path, config)
     predict_fn = build_predict_fn(model, variables)
 

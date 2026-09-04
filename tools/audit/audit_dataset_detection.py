@@ -26,7 +26,7 @@ BOX_AERA_MIN = 225
 
 def load_detection_audit_model(config):
     """Charge le modèle de détection JAX."""
-    checkpoint_path = config.get("checkpoint_path", "best_model_detection.pkl")
+    checkpoint_path = config.get("checkpoint_path", "best_model_fighterjet_detection.pkl")
     
     # Résoudre le chemin relatif
     script_dir = os.path.dirname(os.path.abspath(__file__))

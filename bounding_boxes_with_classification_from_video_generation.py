@@ -31,10 +31,10 @@ from inference_utils import build_single_pass_predict_fn
 # =================================================================================================
 # 1. Configuration du dataset et du modèle de classification
 DATASET_NAME = "FIGHTERJET_CLASSIFICATION"     # Nom de la config dans dataset_configs.py
-CHECKPOINT_PATH = "best_model.pkl"      # Chemin vers le modèle de CLASSIFICATION
+CHECKPOINT_PATH = "best_model_fighterjet_classification.pkl"      # Chemin vers le modèle de CLASSIFICATION
 
 # 2. Configuration du modèle de détection (Story 8.6 : JAX_DETECTOR remplace l'ancien
-# best_model_detection.pkl/AircraftDetectorUNet - celui-ci reste disponible et
+# best_model_fighterjet_detection.pkl/AircraftDetectorUNet - celui-ci reste disponible et
 # fonctionnel pour l'ancien pipeline FIGHTERJET_DETECTION, AD-20, non touché ici).
 DETECTOR_CHECKPOINT_PATH = "best_model_jax_detector.pkl"
 
@@ -58,16 +58,14 @@ BATCH_SIZE = 8                         # Batch single-pass (réduire si OOM GPU,
 # selon le nombre réel d'avions attendus (discussion perf 2026-07-19, voir deferred-work.md) :
 # plus petit = crop+classification plus rapide, mais toute frame avec plus de MAX_BOXES avions
 # réels en perdrait silencieusement l'excédent (uniquement les pics de heatmap les moins confiants).
-MAX_BOXES = 7
+MAX_BOXES = 5
 
-VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
-TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
-#VIDEO_PATH = "/home/aobled/Downloads/testvid2.mp4"
-#TARGET_CLASS_LIST = ["f15", "rafale", "mirage2000"]
+#VIDEO_PATH = "/home/aobled/Downloads/testvid.mp4"
+#TARGET_CLASS_LIST = ["f15", "f22", "b1b", "b2", "b52", "a10", "f16"]
 #VIDEO_PATH = "/home/aobled/Downloads/eaa2.mp4"
 #TARGET_CLASS_LIST = ["f35", "a10", "f22", "f16", "c130"]
-#VIDEO_PATH = "/home/aobled/Downloads/DEATH VALLEY - THE LAST SHOW OF FORCE  (4K).mp4"
-#TARGET_CLASS_LIST = ["f18", "f15", "f16", "f35", "a10", "c17", "f22","harrier"]
+VIDEO_PATH = "/media/aobled/Elements/Python/videos/DEATH VALLEY - THE LAST SHOW OF FORCE  (4K).mp4"
+TARGET_CLASS_LIST = ["f18", "f15", "f16", "f35", "a10", "c17", "f22","harrier"]
 #VIDEO_PATH = "/media/aobled/Elements/Python/videos/Awesome F-22 Raptor Tail slide in Full control.mp4"
 #TARGET_CLASS_LIST = ["f22"]
 #VIDEO_PATH = "/home/aobled/Downloads/Rafale Courchevel 2026.mp4"

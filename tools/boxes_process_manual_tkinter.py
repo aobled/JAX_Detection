@@ -36,7 +36,7 @@ class ImageManager:
         self.load_images()
         new_count = len(self.image_list)
         if old_count != new_count:
-            print(f"Liste d'images mise à jour: {old_count} -> {new_count} images")
+            #print(f"Liste d'images mise à jour: {old_count} -> {new_count} images")
             if (new_count == 0):
                 self.quit_app()
 
@@ -585,9 +585,8 @@ class PhotoViewer:
         # Si une seule boxe affichée (non supprimée)
         current_boxes = self.image_manager.get_bounding_boxes()
         boxes = [(i, box) for i, box in enumerate(current_boxes) if box[2] not in self.deleted_bboxes]
-        print("OK fill_box_full_image")
+
         if len(boxes) == 1:
-            print("resize")
             idx, (bbox, category_name, bbox_file) = boxes[0]
             # Trouver l'index correct dans self.bbox_coords
             bbox_coords_idx = None
@@ -605,8 +604,7 @@ class PhotoViewer:
                 x2_zoomed = width
                 y2_zoomed = height
                 self.bbox_coords[bbox_coords_idx] = (x1_zoomed, y1_zoomed, x2_zoomed, y2_zoomed)
-                print(self.bbox_coords[bbox_coords_idx])
-                
+                                
                 # Sauvegarder les nouvelles coordonnées dans le fichier JSON
                 bbox_file_path = os.path.join(self.image_manager.root_folder, bbox_file)
                 with open(bbox_file_path, 'r') as f:
@@ -629,11 +627,9 @@ class PhotoViewer:
     def fill_box_full_width(self):
         # Si une seule boxe affichée (non supprimée)
         current_boxes = self.image_manager.get_bounding_boxes()
-        print("AVANT fill_box_full_width")
         boxes = [(i, box) for i, box in enumerate(current_boxes) if box[2] not in self.deleted_bboxes]
-        print("OK fill_box_full_width")
+
         if len(boxes) == 1:
-            print("resize width")
             idx, (bbox, category_name, bbox_file) = boxes[0]
             # Trouver l'index correct dans self.bbox_coords
             bbox_coords_idx = None
@@ -652,7 +648,6 @@ class PhotoViewer:
                 x2_zoomed = width  # Prend toute la largeur
                 y2_zoomed = (y1 + h) * self.image_manager.zoom_factor  # Conserve la hauteur
                 self.bbox_coords[bbox_coords_idx] = (x1_zoomed, y1_zoomed, x2_zoomed, y2_zoomed)
-                print(self.bbox_coords[bbox_coords_idx])
                 
                 # Sauvegarder les nouvelles coordonnées dans le fichier JSON
                 bbox_file_path = os.path.join(self.image_manager.root_folder, bbox_file)
@@ -1177,7 +1172,7 @@ CROP_HEIGHT = 4  # Hauteur en pixels à croper (0 = désactivé)
 AUTO_CROP = False  # Croper automatiquement lors de la sauvegarde (touche 's')
 CATEGORY_NAME = 'unknown'
 if __name__ == "__main__":
-    root_folder = "/home/aobled/Downloads/tmp_nara/multi/14"
+    root_folder = "/home/aobled/Downloads/tmp_multi/multi/tmp"
     viewer = PhotoViewer(root_folder, category_name=CATEGORY_NAME, crop_height=CROP_HEIGHT, auto_crop=AUTO_CROP)
 
 

@@ -1,7 +1,7 @@
 """
 Story 8.5 : verifie _differentiable_crop/_normalize_crop_for_classifier (nouveaux,
 inference_utils.py) composes avec load_jax_model/build_clf_predict_fn (existants, non
-modifies) sur le checkpoint reel FIGHTERJET_CLASSIFICATION (best_model.pkl).
+modifies) sur le checkpoint reel FIGHTERJET_CLASSIFICATION (best_model_fighterjet_classification.pkl).
 
 Usage: python3 test_differentiable_crop_classification.py
 """
@@ -21,7 +21,7 @@ from inference_utils import (
 )
 from dataset_configs import get_dataset_config
 
-CHECKPOINT_PATH = "best_model.pkl"  # FIGHTERJET_CLASSIFICATION (nommage pre-Story 5.0)
+CHECKPOINT_PATH = "best_model_fighterjet_classification.pkl"  # FIGHTERJET_CLASSIFICATION (nommage derive de dataset_name, Story 5.0)
 
 
 def test_load_jax_model_unmodified_for_classification():

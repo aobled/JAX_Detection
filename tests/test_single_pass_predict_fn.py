@@ -2,7 +2,7 @@
 Story 8.6 : verifie build_single_pass_predict_fn (inference_utils.py) - assemblage
 complet RESIZE -> detecteur -> pics/Top-K -> RESCALE -> CROP+normalisation ->
 classification, sur les checkpoints reels JAX_DETECTOR (best_model_jax_detector.pkl) et
-FIGHTERJET_CLASSIFICATION (best_model.pkl).
+FIGHTERJET_CLASSIFICATION (best_model_fighterjet_classification.pkl).
 
 Usage: python3 test_single_pass_predict_fn.py
 """

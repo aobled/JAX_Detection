@@ -36,8 +36,8 @@ BLUE_BACKGROUND_IMAGES = {
     "8abad40539bd5ad2.jpg", "a18bde660a9935ea.jpg", "a9d916a47d19cf60.jpg",
     "c69339e4c69b3866.jpg", "c787589827e758d8.jpg", "c99216e5699a1ee5.jpg",
 }
-DETECTION_CHECKPOINT_PATH = "best_model_detection.pkl"
-CLASSIFIER_CHECKPOINT_PATH = "best_model.pkl"
+DETECTION_CHECKPOINT_PATH = "best_model_fighterjet_detection.pkl"
+CLASSIFIER_CHECKPOINT_PATH = "best_model_fighterjet_classification.pkl"
 DETECTOR_CHECKPOINT_PATH = "best_model_jax_detector.pkl"
 DETECTION_CONF_THRESHOLD = 0.8
 BOX_AERA_MIN = 60

@@ -108,7 +108,7 @@ DATASET_CONFIGS = {
         "mean_std_path": f"{DATA_ROOT}/chunks/classification/dataset_classification_meanstd.npz",
         
         # === Modèle ===
-        "model_name": "sophisticated_cnn_128_lite",  # ✅ VALIDE 2026-07-26 (Winston/Aymeric): variante allegee de sophisticated_cnn_128_plus (Bloc 1 96->64, Bloc 4 pic 512->384 canaux), 0.83M params vs 1.26M pour Plus (-34%), pour la vitesse d'inference. 0.9451 val obtenu (archive/training_classification_log_128x4_ligthv2.txt) vs 0.9521 pour Plus a schedule egal (-0.7pt pour -34% params) - premier essai (0.9322, training_classification_log_128x4_ligth.txt) fausse par un decay_steps etale sur 40 epochs au lieu de 7, corrige depuis (voir "decay_epochs" ci-dessous). Retour arriere: remettre "sophisticated_cnn_128_plus". ATTENTION: checkpoint_path/training_state_path ci-dessous sont derives de dataset_name, pas de model_name (trainer.py:511-512) - sauvegarder best_model.pkl/best_model_training_state_classification.pkl avant de lancer un run si vous voulez garder un point de comparaison.
+        "model_name": "sophisticated_cnn_128_lite",  # ✅ VALIDE 2026-07-26 (Winston/Aymeric): variante allegee de sophisticated_cnn_128_plus (Bloc 1 96->64, Bloc 4 pic 512->384 canaux), 0.83M params vs 1.26M pour Plus (-34%), pour la vitesse d'inference. 0.9451 val obtenu (archive/training_classification_log_128x4_ligthv2.txt) vs 0.9521 pour Plus a schedule egal (-0.7pt pour -34% params) - premier essai (0.9322, training_classification_log_128x4_ligth.txt) fausse par un decay_steps etale sur 40 epochs au lieu de 7, corrige depuis (voir "decay_epochs" ci-dessous). Retour arriere: remettre "sophisticated_cnn_128_plus". ATTENTION: checkpoint_path/training_state_path sont derives de dataset_name (Story 5.0), pas de model_name (trainer.py:511-512) - sauvegarder best_model_fighterjet_classification.pkl/best_model_training_state_fighterjet_classification.pkl avant de lancer un run si vous voulez garder un point de comparaison.
         "loss_method": "focal_loss",
         "loss_params": {"gamma": 2.0},
 
@@ -170,9 +170,9 @@ DATASET_CONFIGS = {
         "eval_max_subset": 100000,  
         
         # === Sauvegarde ===
-        "checkpoint_path": "best_model.pkl",
-        "training_state_path": "best_model_training_state_classification.pkl",
-        "confusion_matrix_path": "confusion_matrix.png",
+        # Pas de checkpoint_path/training_state_path/confusion_matrix_path explicite :
+        # nommage dérivé de dataset_name (Story 5.0) -> best_model_fighterjet_classification.pkl /
+        # best_model_training_state_fighterjet_classification.pkl / confusion_matrix_fighterjet_classification.png
     },
 
     "FIGHTERJET_DETECTION": {
@@ -272,8 +272,9 @@ DATASET_CONFIGS = {
         "vis_freq": 5,
         
         # === Sauvegarde ===
-        "checkpoint_path": "best_model_detection.pkl",
-        "training_state_path": "best_model_training_state_detection.pkl",
+        # Pas de checkpoint_path/training_state_path explicite : nommage dérivé de
+        # dataset_name (Story 5.0) -> best_model_fighterjet_detection.pkl /
+        # best_model_training_state_fighterjet_detection.pkl
         "save_dir": "./checkpoints_detection",
     },
     
@@ -350,9 +351,10 @@ DATASET_CONFIGS = {
         "report_method": "lightcurves",
         
         # === Sauvegarde ===
-        "checkpoint_path": "best_model_kepler.pkl",
-        "training_state_path": "best_model_training_state_kepler.pkl",
-        "confusion_matrix_path": "confusion_matrix_kepler.png",
+        # Pas de checkpoint_path/training_state_path/confusion_matrix_path explicite :
+        # nommage dérivé de dataset_name (Story 5.0) -> best_model_jax_kepler.pkl /
+        # best_model_training_state_jax_kepler.pkl / kepler_lightcurves_report_jax_kepler.png
+        # (KeplerStrategy a son propre fallback confusion_matrix_path, task_strategies.py)
     },
 
     "CIFAR10": {
@@ -447,8 +449,9 @@ DATASET_CONFIGS = {
         "eval_use_subset": False,  # 10 000 images val, taille déjà raisonnable
 
         # === Sauvegarde ===
-        # Pas de checkpoint_path/training_state_path explicite : nommage dérivé de dataset_name (Story 5.0)
-        "confusion_matrix_path": "confusion_matrix_cifar10.png",
+        # Pas de checkpoint_path/training_state_path/confusion_matrix_path explicite :
+        # nommage dérivé de dataset_name (Story 5.0) -> confusion_matrix_cifar10.png (identique
+        # à l'ancienne valeur explicite, la dérivation auto reproduit ce nom exactement)
     },
 
     "JAX_DETECTOR": {

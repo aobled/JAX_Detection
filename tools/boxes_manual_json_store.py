@@ -35,7 +35,7 @@ def validate_and_fix_bbox_coordinates(data, image_width, image_height):
             # Mettre à jour les coordonnées corrigées
             data['annotation']['bbox'] = [x, y, w, h]
 
-            print(f"[✓] Coordonnées corrigées : [{x:.1f}, {y:.1f}, {w:.1f}, {h:.1f}]")
+            #print(f"[✓] Coordonnées corrigées : [{x:.1f}, {y:.1f}, {w:.1f}, {h:.1f}]")
 
     return data
 

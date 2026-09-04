@@ -91,6 +91,18 @@ class TaskStrategy(ABC):
         """
         return config.get("training_state_path") or f"best_model_training_state_{config.get('dataset_name', 'unknown').lower()}.pkl"
 
+    def _get_report_path(self, config, default_prefix: str) -> str:
+        """Retourne le chemin cible pour un rapport (confusion_matrix.png, lightcurves...).
+
+        Défaut concret dérivé de dataset_name (2026-09-04, revue de code sur la story de
+        normalisation des chemins de sauvegarde) - même raisonnement que _get_export_path/
+        get_training_state_path ci-dessus : `or` plutôt que `.get(key, default)` pour que
+        la clé "confusion_matrix_path" explicitement vide/None retombe bien sur la
+        dérivation auto (cohérence avec les deux méthodes ci-dessus), pas seulement son
+        absence.
+        """
+        return config.get("confusion_matrix_path") or f"{default_prefix}_{config.get('dataset_name', 'unknown').lower()}.png"
+
 class ClassificationStrategy(TaskStrategy):
     def __init__(self, num_classes: int, label_smoothing: float = 0.0, mixup_alpha: float = 0.0, loss_method: str = "cross_entropy", loss_params: dict = None, metric_method: str = "accuracy", report_method: str = "confusion_matrix"):
         self.num_classes = num_classes
@@ -159,7 +171,7 @@ class ClassificationStrategy(TaskStrategy):
             reporter.confusion_matrix_from_pkl(
                 dataset=val_ds,
                 pkl_path=pkl_path,
-                confusion_matrix_png_path=config.get("confusion_matrix_path", "confusion_matrix.png"),
+                confusion_matrix_png_path=self._get_report_path(config, "confusion_matrix"),
                 use_subset=config.get("eval_use_subset", False),
                 batch_size=config.get("eval_batch_size", 32),
                 max_subset=config.get("eval_max_subset", 1000)
@@ -451,7 +463,7 @@ class KeplerStrategy(TaskStrategy):
                 ax.set_ylabel("Normalized Flux")
                 
             plt.tight_layout()
-            report_path = config.get("confusion_matrix_path", "kepler_lightcurves_report.png")
+            report_path = self._get_report_path(config, "kepler_lightcurves_report")
             plt.savefig(report_path)
             plt.close()
             print(f"   [🖼️] Rapport généré : {report_path}")

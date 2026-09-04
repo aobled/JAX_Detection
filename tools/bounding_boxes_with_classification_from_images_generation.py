@@ -26,9 +26,9 @@ from inference_utils import (
 # =================================================================================================
 # 1. Configuration du dataset et du modèle de classification
 DATASET_NAME = "FIGHTERJET_CLASSIFICATION"     # Nom de la config dans dataset_configs.py
-CHECKPOINT_PATH = "best_model.pkl"      # Chemin vers le modèle de CLASSIFICATION
-INPUT_DIR = "/home/aobled/Downloads/tmp_nara/undetected"  # Dossier d'entrée (images à traiter)
-CLASSIFICATION_CONFIDENCE_THRESHOLD = 0.5            # Seuil de confiance pour valider une CLASSIFICATION (0.0-1.0)
+CHECKPOINT_PATH = "best_model_fighterjet_classification.pkl"      # Chemin vers le modèle de CLASSIFICATION
+INPUT_DIR = "/home/aobled/Downloads/tmp_multi"  # Dossier d'entrée (images à traiter)
+CLASSIFICATION_CONFIDENCE_THRESHOLD = 0.45            # Seuil de confiance pour valider une CLASSIFICATION (0.0-1.0)
 
 # 2. Backend de détection - rétrocompatibilité (2026-07-19, retour utilisateur : JAX_DETECTOR
 # se comporte moins bien que l'ancien pipeline en pratique sur ce script). Deux choix :
@@ -41,7 +41,7 @@ DETECTOR_BACKEND = "JAX_DETECTOR"  # "JAX_DETECTOR" ou "FIGHTERJET_DETECTION"
 
 # Checkpoint du détecteur - dépend du backend choisi ci-dessus.
 DETECTOR_CHECKPOINT_PATH = (
-    "best_model_jax_detector.pkl" if DETECTOR_BACKEND == "JAX_DETECTOR" else "best_model_detection.pkl"
+    "best_model_jax_detector.pkl" if DETECTOR_BACKEND == "JAX_DETECTOR" else "best_model_fighterjet_detection.pkl"
 )
 
 # Repère canonique attendu par build_single_pass_predict_fn (AD-12) - uniquement utilisé
@@ -57,7 +57,7 @@ CANONICAL_WIDTH, CANONICAL_HEIGHT = 1920, 1080
 # taille normale (pic étroit, pas de doublon), mais plus pour un objet plein-cadre
 # (voir deferred-work.md, `_gaussian_radius` produit un plateau large sur les grands
 # objets, source de doublons que le NMS nettoie).
-DETECTION_CONF_THRESHOLD = 0.05
+DETECTION_CONF_THRESHOLD = 0.2
 BOX_AERA_MIN = 400
 
 # Seuil IoU du NMS JAX-natif JAX_DETECTOR (même source que build_single_pass_predict_fn

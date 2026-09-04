@@ -4,7 +4,7 @@ PhotoViewer, Étape 1 du refactor du 2026-07-24 - voir
 refactor-boxes-process-manual-tkinter.md). Contrainte AD-20 : consomme
 exactement le même pipeline FIGHTERJET_DETECTION/UNet legacy que l'ancienne
 implémentation inline (load_detection_model/build_predict_fn/
-decode_segmentation_and_detect_batch, best_model_detection.pkl + best_model.pkl)
+decode_segmentation_and_detect_batch, best_model_fighterjet_detection.pkl + best_model_fighterjet_classification.pkl)
 - aucun changement de comportement, seulement de l'organisation du code.
 """
 import os
@@ -44,8 +44,8 @@ class PredictionAssistant:
         self.clf_config = get_dataset_config("FIGHTERJET_CLASSIFICATION")
         script_dir = os.path.dirname(os.path.abspath(__file__))
         parent_dir = os.path.dirname(script_dir)
-        det_path = os.path.join(parent_dir, "best_model_detection.pkl")
-        clf_path = os.path.join(parent_dir, "best_model.pkl")
+        det_path = os.path.join(parent_dir, "best_model_fighterjet_detection.pkl")
+        clf_path = os.path.join(parent_dir, "best_model_fighterjet_classification.pkl")
 
         det_model, det_vars, self.det_config = load_detection_model(det_path)
         clf_model, clf_vars, self.dataset_mean, self.dataset_std = load_jax_model(clf_path, self.clf_config)

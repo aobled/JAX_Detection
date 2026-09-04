@@ -793,7 +793,7 @@ def create_aircraft_detector_centernet(dropout_rate=0.2, heatmap_prior=0.01, com
 
 # MiniUNet/conv_block/create_aircraft_detector_miniunet supprimés le 2026-07-15 : non utilisés par
 # aucune des 4 configs actives (seule référence était une ligne commentée dans dataset_configs.py),
-# aucun .pkl versionné n'en dépendait (vérifié : best_model_detection.pkl est aircraft_detector_unet).
+# aucun .pkl versionné n'en dépendait (vérifié : best_model_fighterjet_detection.pkl est aircraft_detector_unet).
 # Récupérable via l'historique git si besoin.
 
 

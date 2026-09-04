@@ -4,7 +4,7 @@ import os
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(script_dir)
-filename = os.path.join(parent_dir, "best_model_detection.pkl")
+filename = os.path.join(parent_dir, "best_model_fighterjet_detection.pkl")
 
 if not os.path.exists(filename):
     print(f"File {filename} not found.")
