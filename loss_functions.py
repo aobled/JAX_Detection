@@ -811,3 +811,27 @@ def compute_chess_token_1_move_joint_accuracy(outputs, move_index):
     both_correct = (from_square_pred == from_square_target) & (move_type_pred == move_type_target)
     return both_correct.mean()
 
+
+def compute_classification_cross_entropy_loss(outputs, targets, use_onehot_labels=False, **kwargs):
+    """Wrapper optax cross-entropy pour dispatch uniforme via CLASSIFICATION_LOSS_FUNCTIONS."""
+    if use_onehot_labels:
+        return optax.softmax_cross_entropy(outputs, targets).mean()
+    return optax.softmax_cross_entropy_with_integer_labels(outputs, targets).mean()
+
+
+# Registres par domaine (pas un seul dict partagé) : une loss_method du mauvais domaine
+# (ex. "grid" sur une config classification) doit rester absente du dict et lever la
+# ValueError explicite de la Strategy, jamais s'executer silencieusement avec le mauvais
+# signal/forme de sortie.
+CLASSIFICATION_LOSS_FUNCTIONS = {
+    "cross_entropy": compute_classification_cross_entropy_loss,
+    "focal_loss":    compute_focal_loss,
+}
+
+DETECTION_LOSS_FUNCTIONS = {
+    "segmentation":    compute_segmentation_loss,
+    "grid":            compute_grid_loss,
+    "grid_multilevel": compute_grid_loss_multilevel,
+    "v7":              compute_v7_loss,
+}
+

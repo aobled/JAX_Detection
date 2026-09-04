@@ -24,7 +24,6 @@ from model_library import TrainStateWithBatchStats
 from checkpoint_manager import CheckpointManager
 from utils import smooth_labels, mixup_batch, tree_add, tree_div, batch_stats_div, count_parameters, get_model_size_mb
 from reporting import TrainingVisualizer
-from loss_functions import compute_grid_loss
 
 
 def _count_real_train_samples(output_prefix):

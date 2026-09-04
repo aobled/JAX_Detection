@@ -722,4 +722,10 @@ Suite de l'audit Winston du 2026-07-22 (ci-dessus) :
   evidence: Confirmé par Edge Case Hunter et Blind Hunter indépendamment sur ce cycle. Risque théorique seulement (`resolve_compute_dtype` ne produit jamais `float16` en production) — même statut que l'entrée précédente sur ce sujet, juste élargi à la portée complète du rollout maintenant terminé.
 - source_spec: `_bmad-output/implementation-artifacts/spec-reporting-images-by-boxes-count.md`
   summary: `tools/reporting_dataset_pandas.py` n'a aucune couverture de tests (le projet a un dossier `tests/` actif pour d'autres modules, pas pour celui-ci) — rien ne vérifie la sémantique de comptage de boîtes (limites à `boxes_count_nb=0`, lignes dupliquées/corrompues) avant qu'elle serve de base à des décisions manuelles sur le dataset.
+
+## Deferred from: code review of docs/loss_audit.md (2026-09-04)
+
+- source_spec: `docs/loss_audit.md`
+  summary: `KeplerStrategy.compute_loss` (`task_strategies.py`) duplique inline la formule cross-entropy `optax` au lieu de réutiliser `compute_classification_cross_entropy_loss` (introduite le même jour dans `loss_functions.py` pour `CLASSIFICATION_LOSS_FUNCTIONS`). Préexistant à ce diff (le code inline de Kepler n'a pas changé), pas bloquant.
+  evidence: Confirmé par Blind Hunter. Kepler reste volontairement mono-loss (Option B, §4.2 de `docs/loss_audit.md`) donc pas de dispatch à réutiliser — mais rien n'empêchait d'appeler directement la fonction partagée pour éviter la duplication de formule. À reprendre si `KeplerStrategy` est retouchée pour une autre raison.
   evidence: Confirmé par Blind Hunter sur ce diff — absence pré-existante à tout le fichier (aucune des fonctions `reporting_*` n'a de test), pas introduite par l'ajout de `reporting_all_images_by_boxes_count`. À reprendre si ce fichier est un jour repris pour une passe de fiabilisation dédiée.

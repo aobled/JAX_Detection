@@ -307,7 +307,6 @@ DATASET_CONFIGS = {
         
         # === Modèle ===
         "model_name": "kepler_1d_cnn",
-        "loss_method": "cross_entropy",
 
         
         # === Hyperparamètres TPU ===
@@ -466,30 +465,12 @@ DATASET_CONFIGS = {
         # dataset_builder/jax_detector_dataset_tools.py (Story 7.4) pour que le glob de
         # CenterNetDetectionDataset (Story 7.5) trouve les chunks.
         "output_prefix": f"{DATA_ROOT}/chunks/jax_detector/jax_detector_targets",
-        # Pic memoire pendant la generation ~ chunk_size x 784 Ko x 2 (liste Python + tableau
-        # numpy empile simultanement, dataset_builder/jax_detector_dataset_tools.py::_save_chunk_v2) -
-        # 3000 = ~4.5 Go, valide sur la machine locale (30 Go RAM + 2 Go swap). Recalculer avant
-        # d'augmenter sur un environnement avec plus de RAM (ex. Colab).
-        "chunk_size": 13500,
+        "chunk_size": 11000,
         "image_size": (224, 224),
         "grayscale": True,
         "input_shape": (224, 224, 1),  # forme d'entrée modèle (Trainer, 2026-07-30) - dérivée de image_size+grayscale
         "max_boxes": 20,
-        # Seuil de score pour valid_mask a l'inference (Story 8.3, AD-15 : seuil en config,
-        # jamais une constante privee dupliquee). Valeur de depart alignee sur le
-        # conf_threshold=0.3 deja utilise par decode_segmentation_and_detect
-        # (inference_utils.py) pour le pipeline actuel - pas encore tunee pour ce format.
-        # Abaisse a 0.2 le 2026-07-19 (retour utilisateur : avions petits/lointains sur fond
-        # de ville non confirmes malgre un vrai pic de score visible dans le heatmap
-        # exploratoire bas-gauche) - le diagnostic threshold_sensitivity (archive/) avait
-        # deja verifie zero faux positif sur les images annotees jusqu'a 0.1.
-        # Abaisse a 0.1 le 2026-07-22 : audit_dataset_detection_jax.py (v10, dilatation +
-        # contexte global) a montre que le score de confiance BRUT (avant seuil) est
-        # correct geometriquement dans 81% des cas sur les boites plein-cadre (70-100%
-        # de l'image), mais que seulement 9.6% depassaient le seuil de 0.2 - un probleme
-        # de calibration de confiance, pas de capacite geometrique. Puisque 0.1 est deja
-        # verifie sans faux positif (voir ci-dessus), pas de raison de garder la marge a 0.2.
-        "detection_score_threshold": 0.1,
+        "detection_score_threshold": 0.17,
 
         # Seuil IoU du NMS JAX-natif a l'inference (2026-07-22, voir deferred-work.md,
         # AD-15 : seuil en config, jamais une constante privee dupliquee - meme discipline
@@ -566,7 +547,7 @@ DATASET_CONFIGS = {
             # - train continue de monter, val plafonne. Seul point de dropout du modele
             # (bottleneck, AircraftDetectorCenterNet), valeur moderee pour ne pas freiner
             # davantage un apprentissage deja lent sur un signal heatmap eparse.
-            "dropout_rate": 0.1,
+            "dropout_rate": 0.05,
             # warmup_steps retire (2026-08-23, generalisation ratio) : le run valide
             # (archive/jax_detector.png, 21.35% best val) utilisait 2406 (3 epochs, ratio
             # ~13% calque sur la classif) fixe en dur ce jour-la. Auto-calcul via
@@ -591,9 +572,9 @@ DATASET_CONFIGS = {
         # se sont mieux comportes cette session que ceux a batch effectif accumule
         # (128x2) - pas de raison de recompliquer ici. learning_rate=2e-4 inchange :
         # ratio 4e-4(TPU,128)/2e-4(GPU,64) = 2, proportionnel au ratio de batch (128/64=2),
-        # cohalent avec la calibration TPU. dropout_rate aligne sur le correctif TPU
-        # (2026-07-18, divergence train/val observee - propriete du modele/tache, pas du
-        # materiel). warmup_steps niche ici (plus top-level partage, migration structurelle
+        # cohalent avec la calibration TPU. dropout_rate volontairement decorrele du TPU
+        # (2026-09-04) : les deux backends peuvent diverger, pas de contrainte d'alignement.
+        # warmup_steps niche ici (plus top-level partage, migration structurelle
         # 2026-07-18).
         "gpu": {
             "micro_batch_size": 64,

@@ -2,7 +2,14 @@ import jax
 import jax.numpy as jnp
 import optax
 from abc import ABC, abstractmethod
-from loss_functions import compute_grid_loss, compute_grid_loss_multilevel, compute_v7_loss, compute_segmentation_loss, compute_centernet_loss, compute_chess_policy_value_loss, compute_chess_policy_loss, compute_chess_value_loss, compute_chess_legal_moves_loss, compute_chess_token_candidate_loss, compute_chess_token_1_move_loss, compute_chess_token_1_move_joint_accuracy, CHESS_TOKEN_1_MOVE_NUM_MOVE_TYPES
+from loss_functions import (
+    compute_centernet_loss,
+    compute_chess_policy_value_loss, compute_chess_policy_loss,
+    compute_chess_value_loss, compute_chess_legal_moves_loss,
+    compute_chess_token_candidate_loss, compute_chess_token_1_move_loss,
+    compute_chess_token_1_move_joint_accuracy, CHESS_TOKEN_1_MOVE_NUM_MOVE_TYPES,
+    CLASSIFICATION_LOSS_FUNCTIONS, DETECTION_LOSS_FUNCTIONS,
+)
 from detection_target_encoding import HEATMAP_KEY, SIZE_KEY
 from utils import mixup_batch, smooth_labels
 
@@ -125,16 +132,10 @@ class ClassificationStrategy(TaskStrategy):
         return images, targets, use_onehot
         
     def compute_loss(self, outputs, targets, use_onehot_labels=False, **kwargs):
-        if self.loss_method == "cross_entropy":
-            if use_onehot_labels:
-                return optax.softmax_cross_entropy(outputs, targets).mean()
-            else:
-                return optax.softmax_cross_entropy_with_integer_labels(outputs, targets).mean()
-        elif self.loss_method == "focal_loss":
-            from loss_functions import compute_focal_loss
-            return compute_focal_loss(outputs, targets, use_onehot_labels=use_onehot_labels, **self.loss_params)
-        else:
+        loss_fn = CLASSIFICATION_LOSS_FUNCTIONS.get(self.loss_method)
+        if loss_fn is None:
             raise ValueError(f"Méthode de loss '{self.loss_method}' non supportée pour la classification.")
+        return loss_fn(outputs, targets, use_onehot_labels=use_onehot_labels, **self.loss_params)
 
             
     def compute_metrics(self, outputs, targets):
@@ -189,16 +190,10 @@ class DetectionStrategy(TaskStrategy):
         return images, targets, False
         
     def compute_loss(self, outputs, targets, **kwargs):
-        if self.loss_method == "segmentation":
-            return compute_segmentation_loss(outputs, targets, **self.loss_params)
-        elif self.loss_method == "grid":
-            return compute_grid_loss(outputs, targets, **self.loss_params)
-        elif self.loss_method == "grid_multilevel":
-            return compute_grid_loss_multilevel(outputs, targets, **self.loss_params)
-        elif self.loss_method == "v7":
-            return compute_v7_loss(outputs, targets, **self.loss_params)
-        else:
+        loss_fn = DETECTION_LOSS_FUNCTIONS.get(self.loss_method)
+        if loss_fn is None:
             raise ValueError(f"Méthode de loss '{self.loss_method}' non supportée pour la détection.")
+        return loss_fn(outputs, targets, **self.loss_params)
 
         
         
@@ -373,9 +368,8 @@ class CenterNetDetectionStrategy(TaskStrategy):
 
 
 class KeplerStrategy(TaskStrategy):
-    def __init__(self, num_classes: int, loss_method: str = "cross_entropy", loss_params: dict = None, metric_method: str = "accuracy", report_method: str = "lightcurves"):
+    def __init__(self, num_classes: int, loss_params: dict = None, metric_method: str = "accuracy", report_method: str = "lightcurves"):
         self.num_classes = num_classes
-        self.loss_method = loss_method
         self.loss_params = loss_params or {}
         self.metric_method = metric_method
         self.report_method = report_method
@@ -951,7 +945,7 @@ _LOSS_PARAMS_ONLY = ("loss_params",)  # les 5 strategies "une seule methode de p
 STRATEGY_FORWARDED_CONFIG_KEYS = {
     "classification": ("label_smoothing", "mixup_alpha", "loss_method", "loss_params", "metric_method", "report_method"),
     "detection": ("loss_method", "loss_params", "metric_method", "report_method"),
-    "kepler": ("loss_method", "loss_params", "metric_method", "report_method"),
+    "kepler": ("loss_params", "metric_method", "report_method"),
     "detection_centernet": _LOSS_PARAMS_ONLY,
     "chess_policy_value": _LOSS_PARAMS_ONLY,
     "chess_legal_moves": ("metric_threshold", "loss_params"),
