@@ -473,7 +473,7 @@ DATASET_CONFIGS = {
         "grayscale": True,
         "input_shape": (224, 224, 1),  # forme d'entrée modèle (Trainer, 2026-07-30) - dérivée de image_size+grayscale
         "max_boxes": 20,
-        "detection_score_threshold": 0.17,
+        "detection_score_threshold": 0.2,
 
         # Seuil IoU du NMS JAX-natif a l'inference (2026-07-22, voir deferred-work.md,
         # AD-15 : seuil en config, jamais une constante privee dupliquee - meme discipline
